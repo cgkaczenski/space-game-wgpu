@@ -1,0 +1,11 @@
+/out
+bin/
+build/
+/.vs
+.idea/
+CMakeSettings.json
+Makefile
+.DS_Store
+.cache/
+imgui.ini
+errorLogs.txt
