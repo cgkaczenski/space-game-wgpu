@@ -9,6 +9,11 @@ void Enemy::render(gl2d::Renderer2D &renderer,
 		sprites, atlas.get(type.x, type.y), viewDirection);
 }
 
+collision::Circle Enemy::getHitbox() const
+{
+	return collision::shipHitbox(position, enemyShipSize);
+}
+
 
 //returns true if should shoot bullet
 bool Enemy::update(float deltaTime, glm::vec2 playerPos)

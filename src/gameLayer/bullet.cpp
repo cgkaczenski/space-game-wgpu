@@ -28,9 +28,14 @@ void Bullet::render(gl2d::Renderer2D &renderer,
 	
 }
 
-void Bullet::update(float deltaTime)
+void Bullet::update(float deltaTime, float speedMultiplier)
 {
 
-	position += fireDirection * deltaTime * speed;
+	position += fireDirection * deltaTime * speed * speedMultiplier;
 
+}
+
+collision::Circle Bullet::getHitbox() const
+{
+	return {position + fireDirection * bulletHitboxForwardOffset, bulletHitboxRadius};
 }

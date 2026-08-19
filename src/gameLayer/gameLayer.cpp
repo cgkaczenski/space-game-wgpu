@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <glui/glui.h>
 #include <raudio.h>
+#include <collisionSystem.h>
 
 struct GameplayData
 {
@@ -33,6 +34,8 @@ struct GameplayData
 
 
 GameplayData data;
+
+collision::BasicCollisionSystem collisionSystem;
 
 gl2d::Renderer2D renderer;
 
@@ -54,10 +57,20 @@ gl2d::Texture health;
 Sound shootSound;
 bool soundEffectsEnabled = false;
 bool spawnEnemiesEnabled = false;
+bool showHitboxes = false;
+float bulletSpeedScale = 50.f;
 
-bool intersectBullet(glm::vec2 bulletPos, glm::vec2 shipPos, float shipSize)
+float bulletSpeedMultiplier()
 {
-	return glm::distance(bulletPos, shipPos) <= shipSize;
+	// 50 stays 1x. 100 is 1.5x. Below 50 uses an exponential curve so 0 is ~1% speed.
+	if (bulletSpeedScale <= 50.f)
+	{
+		float t = bulletSpeedScale / 50.f;
+		return 0.01f * glm::pow(100.f, t);
+	}
+
+	float t = (bulletSpeedScale - 50.f) / 50.f;
+	return 1.f + t * 0.5f;
 }
 
 void restartGame()
@@ -265,51 +278,54 @@ bool gameLogic(float deltaTime)
 			continue;
 		}
 
-		if (!data.bullets[i].isEnemy)
+		if (!showHitboxes)
 		{
-			bool breakBothLoops = false;
-			for (int e = 0; e < data.enemies.size(); e++)
+			if (!data.bullets[i].isEnemy)
 			{
-
-				if (intersectBullet(data.bullets[i].position, data.enemies[e].position,
-					enemyShipSize))
+				bool breakBothLoops = false;
+				for (int e = 0; e < data.enemies.size(); e++)
 				{
-					data.enemies[e].life -= 0.1;
 
-					if (data.enemies[e].life <= 0)
+					if (collisionSystem.overlaps(data.bullets[i].getHitbox(),
+						data.enemies[e].getHitbox()))
 					{
-						//kill enemy
-						data.enemies.erase(data.enemies.begin() + e);
+						data.enemies[e].life -= 0.1;
+
+						if (data.enemies[e].life <= 0)
+						{
+							//kill enemy
+							data.enemies.erase(data.enemies.begin() + e);
+						}
+
+						data.bullets.erase(data.bullets.begin() + i);
+						i--;
+						breakBothLoops = true;
+						continue;
 					}
+
+				}
+
+				if (breakBothLoops)
+				{
+					continue;
+				}
+			}
+			else
+			{
+				if (collisionSystem.overlaps(data.bullets[i].getHitbox(),
+					collision::shipHitbox(data.playerPos, shipSize)))
+				{
+					data.health -= 0.1;
 
 					data.bullets.erase(data.bullets.begin() + i);
 					i--;
-					breakBothLoops = true;
 					continue;
 				}
 
 			}
-
-			if (breakBothLoops)
-			{
-				continue;
-			}
-		}
-		else
-		{
-			if (intersectBullet(data.bullets[i].position, data.playerPos,
-				shipSize))
-			{
-				data.health -= 0.1;
-
-				data.bullets.erase(data.bullets.begin() + i);
-				i--;
-				continue;
-			}
-
 		}
 
-		data.bullets[i].update(deltaTime);
+		data.bullets[i].update(deltaTime, bulletSpeedMultiplier());
 
 	}
 
@@ -359,6 +375,10 @@ bool gameLogic(float deltaTime)
 			continue;
 		}
 
+		// Ship-ship (player vs enemy, enemy vs enemy) will use
+		// collisionSystem.overlaps(hitboxA, hitboxB) and
+		// collisionSystem.separation(circleA, circleB) to push them apart.
+
 		if (data.enemies[i].update(deltaTime, data.playerPos))
 		{
 			Bullet b;
@@ -397,6 +417,70 @@ bool gameLogic(float deltaTime)
 	for (auto &b : data.bullets)
 	{
 		b.render(renderer, bulletsTexture, bulletsAtlas);
+	}
+
+#pragma endregion
+
+#pragma region debug hitboxes
+
+	if (showHitboxes)
+	{
+		auto hitboxColor = [](bool overlapping) {
+			return overlapping ? Colors_Red : Colors_Green;
+		};
+
+		const auto playerHitbox = collision::shipHitbox(data.playerPos, shipSize);
+
+		bool playerHit = false;
+		for (auto &b : data.bullets)
+		{
+			if (b.isEnemy && collisionSystem.overlaps(b.getHitbox(), playerHitbox))
+			{
+				playerHit = true;
+				break;
+			}
+		}
+		renderer.renderCircleOutline(playerHitbox.center, hitboxColor(playerHit),
+			playerHitbox.radius, 8.f, 32);
+
+		for (auto &e : data.enemies)
+		{
+			const auto enemyHitbox = e.getHitbox();
+			bool enemyHit = false;
+			for (auto &b : data.bullets)
+			{
+				if (!b.isEnemy && collisionSystem.overlaps(b.getHitbox(), enemyHitbox))
+				{
+					enemyHit = true;
+					break;
+				}
+			}
+			renderer.renderCircleOutline(enemyHitbox.center, hitboxColor(enemyHit),
+				enemyHitbox.radius, 8.f, 32);
+		}
+
+		for (auto &b : data.bullets)
+		{
+			const auto bulletHitbox = b.getHitbox();
+			bool bulletHit = false;
+			if (b.isEnemy)
+			{
+				bulletHit = collisionSystem.overlaps(bulletHitbox, playerHitbox);
+			}
+			else
+			{
+				for (auto &e : data.enemies)
+				{
+					if (collisionSystem.overlaps(bulletHitbox, e.getHitbox()))
+					{
+						bulletHit = true;
+						break;
+					}
+				}
+			}
+			renderer.renderCircleOutline(bulletHitbox.center, hitboxColor(bulletHit),
+				bulletHitbox.radius, 6.f, 16);
+		}
 	}
 
 #pragma endregion
@@ -454,6 +538,10 @@ bool gameLogic(float deltaTime)
 	ImGui::SliderFloat("Player Health", &data.health, 0, 1);
 
 	ImGui::Checkbox("Spawn enemies", &spawnEnemiesEnabled);
+
+	ImGui::SliderFloat("Bullet speed", &bulletSpeedScale, 0, 100);
+
+	ImGui::Checkbox("Hitboxes", &showHitboxes);
 
 	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
 	{

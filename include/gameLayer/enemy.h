@@ -1,5 +1,6 @@
 #pragma once
 #include <gl2d/gl2d.h>
+#include <collisionSystem.h>
 
 constexpr float enemyShipSize = 250.f;
 
@@ -23,4 +24,6 @@ struct Enemy
 		gl2d::TextureAtlasPadding &atlas);
 
   bool update(float deltaTime, glm::vec2 playerPos);
+
+	collision::Circle getHitbox() const;
 };
