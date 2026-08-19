@@ -23,7 +23,7 @@ struct Enemy
 	void render(gl2d::Renderer2D &renderer, gl2d::Texture &sprites,
 		gl2d::TextureAtlasPadding &atlas);
 
-  bool update(float deltaTime, glm::vec2 playerPos);
+  bool update(float deltaTime, glm::vec2 playerPos, float speedMultiplier = 1.f);
 
 	collision::Circle getHitbox() const;
 };

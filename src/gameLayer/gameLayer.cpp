@@ -58,18 +58,19 @@ Sound shootSound;
 bool soundEffectsEnabled = false;
 bool spawnEnemiesEnabled = false;
 bool showHitboxes = false;
-float bulletSpeedScale = 50.f;
+float gameSpeedScale = 50.f;
+constexpr float playerMoveSpeed = 2000.f;
 
-float bulletSpeedMultiplier()
+float gameSpeedMultiplier()
 {
 	// 50 stays 1x. 100 is 1.5x. Below 50 uses an exponential curve so 0 is ~1% speed.
-	if (bulletSpeedScale <= 50.f)
+	if (gameSpeedScale <= 50.f)
 	{
-		float t = bulletSpeedScale / 50.f;
+		float t = gameSpeedScale / 50.f;
 		return 0.01f * glm::pow(100.f, t);
 	}
 
-	float t = (bulletSpeedScale - 50.f) / 50.f;
+	float t = (gameSpeedScale - 50.f) / 50.f;
 	return 1.f + t * 0.5f;
 }
 
@@ -203,7 +204,7 @@ bool gameLogic(float deltaTime)
 	if (move.x != 0 || move.y != 0)
 	{
 		move = glm::normalize(move);
-		move *= deltaTime * 2000; //500 pixels per seccond
+		move *= deltaTime * playerMoveSpeed * gameSpeedMultiplier();
 		data.playerPos += move;
 	}
 
@@ -325,7 +326,7 @@ bool gameLogic(float deltaTime)
 			}
 		}
 
-		data.bullets[i].update(deltaTime, bulletSpeedMultiplier());
+		data.bullets[i].update(deltaTime, gameSpeedMultiplier());
 
 	}
 
@@ -379,7 +380,7 @@ bool gameLogic(float deltaTime)
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
 		// collisionSystem.separation(circleA, circleB) to push them apart.
 
-		if (data.enemies[i].update(deltaTime, data.playerPos))
+		if (data.enemies[i].update(deltaTime, data.playerPos, gameSpeedMultiplier()))
 		{
 			Bullet b;
 			b.position = data.enemies[i].position;
@@ -539,7 +540,7 @@ bool gameLogic(float deltaTime)
 
 	ImGui::Checkbox("Spawn enemies", &spawnEnemiesEnabled);
 
-	ImGui::SliderFloat("Bullet speed", &bulletSpeedScale, 0, 100);
+	ImGui::SliderFloat("Game speed", &gameSpeedScale, 0, 100);
 
 	ImGui::Checkbox("Hitboxes", &showHitboxes);
 

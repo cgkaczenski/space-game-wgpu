@@ -16,7 +16,7 @@ collision::Circle Enemy::getHitbox() const
 
 
 //returns true if should shoot bullet
-bool Enemy::update(float deltaTime, glm::vec2 playerPos)
+bool Enemy::update(float deltaTime, glm::vec2 playerPos, float speedMultiplier)
 {
 
 	glm::vec2 directionToPlayer = playerPos - position;
@@ -67,7 +67,7 @@ bool Enemy::update(float deltaTime, glm::vec2 playerPos)
 	
 	length = glm::clamp(length, 0.1f, 3.f);
 
-	position += viewDirection * deltaTime * speed * length;
+	position += viewDirection * deltaTime * speed * length * speedMultiplier;
 
 	return shoot;
 }
