@@ -52,6 +52,7 @@ gl2d::Texture healthBar;
 gl2d::Texture health;
 
 Sound shootSound;
+bool soundEffectsEnabled = true;
 
 bool intersectBullet(glm::vec2 bulletPos, glm::vec2 shipPos, float shipSize)
 {
@@ -245,7 +246,10 @@ bool gameLogic(float deltaTime)
 
 		data.bullets.push_back(b);
 
-		PlaySound(shootSound);
+		if (soundEffectsEnabled)
+		{
+			PlaySound(shootSound);
+		}
 
 	}
 
@@ -364,7 +368,7 @@ bool gameLogic(float deltaTime)
 			b.isEnemy = true;
 			data.bullets.push_back(b);
 
-			if (!IsSoundPlaying(shootSound)) PlaySound(shootSound);
+			if (soundEffectsEnabled && !IsSoundPlaying(shootSound)) PlaySound(shootSound);
 
 		}
 	}
@@ -447,6 +451,14 @@ bool gameLogic(float deltaTime)
 	}
 
 	ImGui::SliderFloat("Player Health", &data.health, 0, 1);
+
+	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
+	{
+		if (!soundEffectsEnabled)
+		{
+			StopSound(shootSound);
+		}
+	}
 
 	ImGui::End();
 
