@@ -52,7 +52,8 @@ gl2d::Texture healthBar;
 gl2d::Texture health;
 
 Sound shootSound;
-bool soundEffectsEnabled = true;
+bool soundEffectsEnabled = false;
+bool spawnEnemiesEnabled = false;
 
 bool intersectBullet(glm::vec2 bulletPos, glm::vec2 shipPos, float shipSize)
 {
@@ -327,7 +328,7 @@ bool gameLogic(float deltaTime)
 
 #pragma region handle enemies
 
-	if (data.enemies.size() < 15) 
+	if (spawnEnemiesEnabled && data.enemies.size() < 15) 
 	{
 		data.spawnEnemyTimerSecconds -= deltaTime;
 
@@ -451,6 +452,8 @@ bool gameLogic(float deltaTime)
 	}
 
 	ImGui::SliderFloat("Player Health", &data.health, 0, 1);
+
+	ImGui::Checkbox("Spawn enemies", &spawnEnemiesEnabled);
 
 	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
 	{
