@@ -10,6 +10,11 @@ cmake_minimum_required(VERSION 3.16)
 option(PRODUCTION_BUILD "Make this a production build" OFF)
 #DELETE THE OUT FOLDER AFTER CHANGING THIS BECAUSE VISUAL STUDIO DOESN'T SEEM TO RECOGNIZE THIS CHANGE AND REBUILD!
 
+# Render with WebGPU (wgpu-native on Metal) instead of OpenGL. OFF keeps the
+# original OpenGL/gl2d path exactly as it was. Use a separate build directory
+# per setting, e.g. build/ for OpenGL and build-webgpu/ for WebGPU.
+option(RENDERER_WEBGPU "Use the WebGPU render path instead of OpenGL" OFF)
+
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDebug$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Release>:Release>")
@@ -90,3 +95,30 @@ target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_SOURC
 #enet not working yet on linux for some reason
 target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE glm glfw 
 	glad stb_image stb_truetype gl2d raudio imgui safeSave profilerLib glui)
+
+
+if(RENDERER_WEBGPU)
+	# WebGPU-distribution fetches a prebuilt wgpu-native release and exports the
+	# `webgpu` target plus the bundled webgpu.hpp. glfw3webgpu turns a GLFW
+	# window into a WGPUSurface; it assumes the `glfw` and `webgpu` targets exist
+	# and, on macOS, compiles itself as Objective-C and links Cocoa/QuartzCore.
+	# Both are pinned to tags that were tested together (GLFW 3.4 line).
+	include(FetchContent)
+	set(WEBGPU_BACKEND "WGPU" CACHE STRING "WebGPU implementation to use" FORCE)
+	set(WEBGPU_BUILD_FROM_SOURCE OFF CACHE BOOL "" FORCE)
+	FetchContent_Declare(webgpu-distribution
+		GIT_REPOSITORY https://github.com/eliemichel/WebGPU-distribution
+		GIT_TAG        v0.3.0-gamma
+	)
+	FetchContent_Declare(glfw3webgpu
+		GIT_REPOSITORY https://github.com/eliemichel/glfw3webgpu
+		GIT_TAG        v1.3.0-alpha
+	)
+	FetchContent_MakeAvailable(webgpu-distribution glfw3webgpu)
+
+	target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE webgpu glfw3webgpu)
+	target_copy_webgpu_binaries("${CMAKE_PROJECT_NAME}")
+	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC RENDERER_WEBGPU=1)
+else()
+	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC RENDERER_WEBGPU=0)
+endif()

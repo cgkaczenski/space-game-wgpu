@@ -10,6 +10,9 @@
 #include "platformInput.h"
 #include "otherPlatformFunctions.h"
 #include "gameLayer.h"
+#if RENDERER_WEBGPU
+#include <render/wgpuContext.h>
+#endif
 #include <fstream>
 #include <chrono>
 
@@ -306,6 +309,11 @@ int main()
 #pragma region window and opengl
 
 	permaAssertComment(glfwInit(), "err initializing glfw");
+
+#if RENDERER_WEBGPU
+	// No OpenGL context: WebGPU drives the window's Metal layer through a surface.
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+#else
 	glfwWindowHint(GLFW_SAMPLES, 4);
 
 #ifdef __APPLE__
@@ -314,13 +322,16 @@ int main()
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 #endif
+#endif
 
 
 	int w = 500;
 	int h = 500;
 	wind = glfwCreateWindow(w, h, "geam", nullptr, nullptr);
+#if !RENDERER_WEBGPU
 	glfwMakeContextCurrent(wind);
 	glfwSwapInterval(1);
+#endif
 
 	glfwSetKeyCallback(wind, keyCallback);
 	glfwSetMouseButtonCallback(wind, mouseCallback);
@@ -329,11 +340,30 @@ int main()
 	glfwSetCursorPosCallback(wind, cursorPositionCallback);
 	glfwSetCharCallback(wind, characterCallback);
 
+#if RENDERER_WEBGPU
+	permaAssertComment(render::wgpuInit(wind), "err initializing WebGPU");
+#else
 	//permaAssertComment(gladLoadGL(), "err initializing glad");
 	permaAssertComment(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress), "err initializing glad");
+#endif
 
 
 #pragma endregion
+
+#if RENDERER_WEBGPU
+	// Milestone 1a stops here on the WebGPU path: window open, instance,
+	// surface, and adapter created, adapter printed. gl2d, ImGui, audio, and
+	// the game loop still need the OpenGL context and are wired to WebGPU in
+	// later milestones. Until then this path only waits for the window to close.
+	while (!glfwWindowShouldClose(wind))
+	{
+		glfwPollEvents();
+	}
+	render::wgpuShutdown();
+	glfwDestroyWindow(wind);
+	glfwTerminate();
+	return 0;
+#endif
 
 #pragma region gl2d
 	gl2d::init();
