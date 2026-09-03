@@ -6,7 +6,10 @@
 #include <glfw3webgpu.h>     // glfwCreateWindowWGPUSurface
 
 #include <chrono>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include <thread>
 
 // File scope only, never in a header: wgpu:: names would otherwise leak into
@@ -36,6 +39,9 @@ namespace
 		int surfaceHeight = 0;
 		bool surfaceConfigured = false;
 		bool firstFramePresented = false;
+
+		// 2: created once at init, selected every frame
+		RenderPipeline trianglePipeline = nullptr;
 	};
 
 	Context g;
@@ -210,6 +216,117 @@ namespace
 		g.surfaceWidth = w;
 		g.surfaceHeight = h;
 		g.surfaceConfigured = true;
+	}
+
+	bool readTextFile(const char *path, std::string &out)
+	{
+		std::ifstream file(path, std::ios::binary);
+		if (!file.is_open()) { return false; }
+		std::stringstream ss;
+		ss << file.rdbuf();
+		out = ss.str();
+		return true;
+	}
+
+	// Compiles a WGSL file into a shader module. Compile errors arrive through
+	// the uncaptured-error callback with line and column numbers.
+	ShaderModule createShaderModuleFromFile(const char *path)
+	{
+		std::string source;
+		if (!readTextFile(path, source))
+		{
+			std::cerr << "WebGPU: cannot read shader file " << path << "\n";
+			return nullptr;
+		}
+
+		// The WGSL source is a chained struct hanging off the module descriptor.
+		// Default sets chain.sType = ShaderSourceWGSL and chain.next = nullptr.
+		ShaderSourceWGSL wgsl = Default;
+		wgsl.code = StringView(source);
+
+		ShaderModuleDescriptor desc = Default;
+		desc.label = StringView(path);
+		desc.nextInChain = &wgsl.chain;
+
+		return g.device.createShaderModule(desc);
+	}
+
+	// The render pipeline: every configurable stage of the GPU's fixed
+	// triangle pipeline, baked into one immutable object. Selected per pass
+	// with setPipeline; never mutated.
+	bool createTrianglePipeline()
+	{
+		ShaderModule module = createShaderModuleFromFile(RESOURCES_PATH "shaders/triangle.wgsl");
+		if (!module) { return false; }
+
+		RenderPipelineDescriptor desc = Default;
+		desc.label = StringView("triangle pipeline");
+
+		// Vertex stage: no vertex buffers yet, positions come from the shader.
+		desc.vertex.module = module;
+		desc.vertex.entryPoint = StringView("vs_main");
+		desc.vertex.constantCount = 0;
+		desc.vertex.constants = nullptr;
+		desc.vertex.bufferCount = 0;
+		desc.vertex.buffers = nullptr;
+
+		// Primitive assembly. Default already gives TriangleList, CCW front
+		// face, no culling; set explicitly so the choice is visible.
+		desc.primitive.topology = PrimitiveTopology::TriangleList;
+		desc.primitive.stripIndexFormat = IndexFormat::Undefined;
+		desc.primitive.frontFace = FrontFace::CCW;
+		desc.primitive.cullMode = CullMode::None; // gl2d never culled; quads may be flipped by negative sizes
+		desc.primitive.unclippedDepth = false;
+
+		// Blending, matching gl2d's enableNecessaryGLFeatures():
+		//   glBlendEquation(GL_FUNC_ADD)
+		//   glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+		BlendState blend = Default;
+		blend.color.operation = BlendOperation::Add;
+		blend.color.srcFactor = BlendFactor::SrcAlpha;
+		blend.color.dstFactor = BlendFactor::OneMinusSrcAlpha;
+		blend.alpha.operation = BlendOperation::Add;
+		blend.alpha.srcFactor = BlendFactor::One;
+		blend.alpha.dstFactor = BlendFactor::OneMinusSrcAlpha;
+
+		// The one color target: must match the surface's format exactly.
+		ColorTargetState colorTarget = Default;
+		colorTarget.format = g.surfaceFormat;
+		colorTarget.blend = &blend;
+		colorTarget.writeMask = ColorWriteMask::All;
+
+		// Fragment stage: one output, to color attachment 0.
+		FragmentState fragment = Default;
+		fragment.module = module;
+		fragment.entryPoint = StringView("fs_main");
+		fragment.constantCount = 0;
+		fragment.constants = nullptr;
+		fragment.targetCount = 1;
+		fragment.targets = &colorTarget;
+		desc.fragment = &fragment;
+
+		// No depth/stencil (gl2d disabled depth testing) and no multisampling.
+		desc.depthStencil = nullptr;
+		desc.multisample.count = 1;
+		desc.multisample.mask = 0xFFFFFFFFu;
+		desc.multisample.alphaToCoverageEnabled = false;
+
+		// No bind groups yet, so no layout: the pipeline infers an empty one.
+		// Milestone 4 replaces this with an explicit layout.
+		desc.layout = nullptr;
+
+		g.trianglePipeline = g.device.createRenderPipeline(desc);
+
+		// The pipeline holds what it needs from the module; the module itself
+		// can go now.
+		module.release();
+
+		if (!g.trianglePipeline)
+		{
+			std::cerr << "WebGPU: createRenderPipeline returned null\n";
+			return false;
+		}
+		return true;
 	}
 
 	void printAdapter(Adapter adapter)
@@ -425,6 +542,13 @@ bool wgpuInit(GLFWwindow *window)
 		return false;
 	}
 	std::cout << "WebGPU surface configured at " << g.surfaceWidth << "x" << g.surfaceHeight << "\n";
+
+	// 8. The triangle pipeline (milestone 2). Depends on the surface format.
+	if (!createTrianglePipeline())
+	{
+		return false;
+	}
+	std::cout << "WebGPU triangle pipeline created\n";
 	std::cout.flush();
 	return true;
 }
@@ -504,7 +628,8 @@ void wgpuRenderFrame()
 	passDesc.timestampWrites = nullptr;
 
 	RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
-	// Draw calls go here from milestone 2 on.
+	pass.setPipeline(g.trianglePipeline);
+	pass.draw(3, 1, 0, 0); // 3 vertices, 1 instance, starting at vertex 0, instance 0
 	pass.end();
 	pass.release();
 
@@ -536,6 +661,7 @@ void wgpuRenderFrame()
 
 void wgpuShutdown()
 {
+	if (g.trianglePipeline) { g.trianglePipeline.release(); g.trianglePipeline = nullptr; }
 	if (g.surface && g.surfaceConfigured) { g.surface.unconfigure(); g.surfaceConfigured = false; }
 	if (g.queue) { g.queue.release(); g.queue = nullptr; }
 	if (g.device) { g.device.release(); g.device = nullptr; }
