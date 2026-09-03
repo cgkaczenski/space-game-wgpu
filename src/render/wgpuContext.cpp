@@ -6,6 +6,7 @@
 #include <glfw3webgpu.h>     // glfwCreateWindowWGPUSurface
 
 #include <chrono>
+#include <cstddef>   // offsetof
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -41,8 +42,22 @@ namespace
 		bool firstFramePresented = false;
 
 		// 2: created once at init, selected every frame
-		RenderPipeline trianglePipeline = nullptr;
+		RenderPipeline quadPipeline = nullptr;
+
+		// 3: one static vertex buffer holding six interleaved vertices
+		Buffer vertexBuffer = nullptr;
+		uint64_t vertexBufferSize = 0;
+		uint32_t vertexCount = 0;
 	};
+
+	// One vertex as the GPU reads it: position then color, back to back.
+	// The pipeline's vertex layout below must describe exactly this.
+	struct Vertex
+	{
+		float x, y;
+		float r, g, b, a;
+	};
+	static_assert(sizeof(Vertex) == 24, "vertex layout stride assumes tightly packed floats");
 
 	Context g;
 
@@ -254,21 +269,40 @@ namespace
 	// The render pipeline: every configurable stage of the GPU's fixed
 	// triangle pipeline, baked into one immutable object. Selected per pass
 	// with setPipeline; never mutated.
-	bool createTrianglePipeline()
+	bool createQuadPipeline()
 	{
-		ShaderModule module = createShaderModuleFromFile(RESOURCES_PATH "shaders/triangle.wgsl");
+		ShaderModule module = createShaderModuleFromFile(RESOURCES_PATH "shaders/quad.wgsl");
 		if (!module) { return false; }
 
 		RenderPipelineDescriptor desc = Default;
-		desc.label = StringView("triangle pipeline");
+		desc.label = StringView("quad pipeline");
 
-		// Vertex stage: no vertex buffers yet, positions come from the shader.
+		// Vertex layout: how the pipeline reads bytes out of the vertex buffer.
+		// One buffer, interleaved, 24 bytes per vertex. Each attribute names
+		// the @location it feeds in the shader.
+		VertexAttribute attributes[2];
+		attributes[0] = Default;
+		attributes[0].shaderLocation = 0;                // @location(0) position
+		attributes[0].format = VertexFormat::Float32x2;
+		attributes[0].offset = offsetof(Vertex, x);
+		attributes[1] = Default;
+		attributes[1].shaderLocation = 1;                // @location(1) color
+		attributes[1].format = VertexFormat::Float32x4;
+		attributes[1].offset = offsetof(Vertex, r);
+
+		VertexBufferLayout vertexLayout = Default;
+		vertexLayout.arrayStride = sizeof(Vertex);
+		vertexLayout.stepMode = VertexStepMode::Vertex; // advance once per vertex, not per instance
+		vertexLayout.attributeCount = 2;
+		vertexLayout.attributes = attributes;
+
+		// Vertex stage: one vertex buffer in slot 0.
 		desc.vertex.module = module;
 		desc.vertex.entryPoint = StringView("vs_main");
 		desc.vertex.constantCount = 0;
 		desc.vertex.constants = nullptr;
-		desc.vertex.bufferCount = 0;
-		desc.vertex.buffers = nullptr;
+		desc.vertex.bufferCount = 1;
+		desc.vertex.buffers = &vertexLayout;
 
 		// Primitive assembly. Default already gives TriangleList, CCW front
 		// face, no culling; set explicitly so the choice is visible.
@@ -315,17 +349,58 @@ namespace
 		// Milestone 4 replaces this with an explicit layout.
 		desc.layout = nullptr;
 
-		g.trianglePipeline = g.device.createRenderPipeline(desc);
+		g.quadPipeline = g.device.createRenderPipeline(desc);
 
 		// The pipeline holds what it needs from the module; the module itself
 		// can go now.
 		module.release();
 
-		if (!g.trianglePipeline)
+		if (!g.quadPipeline)
 		{
 			std::cerr << "WebGPU: createRenderPipeline returned null\n";
 			return false;
 		}
+		return true;
+	}
+
+	// One quad as two triangles, six vertices, no index buffer, in the corner
+	// order gl2d emits (v1 v2 v4, v2 v3 v4 with v1 top-left, v2 bottom-left,
+	// v3 bottom-right, v4 top-right) so milestone 6a is a straight port.
+	// Positions are clip space; each corner gets its own color so the
+	// interpolation is visible.
+	bool createQuadVertexBuffer()
+	{
+		const Vertex topLeft     = {-0.5f,  0.5f,  1.0f, 0.2f, 0.2f, 1.0f}; // red
+		const Vertex bottomLeft  = {-0.5f, -0.5f,  0.2f, 1.0f, 0.2f, 1.0f}; // green
+		const Vertex bottomRight = { 0.5f, -0.5f,  0.2f, 0.4f, 1.0f, 1.0f}; // blue
+		const Vertex topRight    = { 0.5f,  0.5f,  1.0f, 0.9f, 0.2f, 1.0f}; // yellow
+
+		const Vertex vertices[6] = {
+			topLeft, bottomLeft, topRight,
+			bottomLeft, bottomRight, topRight,
+		};
+
+		g.vertexCount = 6;
+		g.vertexBufferSize = sizeof(vertices);
+		static_assert(sizeof(vertices) % 4 == 0, "writeBuffer size must be a multiple of 4");
+
+		// A buffer is GPU memory with a fixed purpose. Vertex: a pipeline may
+		// read it as vertex input. CopyDst: the queue may write into it.
+		BufferDescriptor desc = Default;
+		desc.label = StringView("quad vertices");
+		desc.usage = BufferUsage::Vertex | BufferUsage::CopyDst;
+		desc.size = g.vertexBufferSize;
+		desc.mappedAtCreation = false;
+		g.vertexBuffer = g.device.createBuffer(desc);
+		if (!g.vertexBuffer)
+		{
+			std::cerr << "WebGPU: createBuffer returned null\n";
+			return false;
+		}
+
+		// Upload through the queue. Ordered with the other queue work, so a
+		// later submit that draws from this buffer sees the data.
+		g.queue.writeBuffer(g.vertexBuffer, 0, vertices, g.vertexBufferSize);
 		return true;
 	}
 
@@ -543,12 +618,20 @@ bool wgpuInit(GLFWwindow *window)
 	}
 	std::cout << "WebGPU surface configured at " << g.surfaceWidth << "x" << g.surfaceHeight << "\n";
 
-	// 8. The triangle pipeline (milestone 2). Depends on the surface format.
-	if (!createTrianglePipeline())
+	// 8. The quad pipeline (milestones 2, 3). Depends on the surface format.
+	if (!createQuadPipeline())
 	{
 		return false;
 	}
-	std::cout << "WebGPU triangle pipeline created\n";
+	std::cout << "WebGPU quad pipeline created\n";
+
+	// 9. The vertex buffer (milestone 3).
+	if (!createQuadVertexBuffer())
+	{
+		return false;
+	}
+	std::cout << "WebGPU vertex buffer created: " << g.vertexCount << " vertices, "
+		<< g.vertexBufferSize << " bytes\n";
 	std::cout.flush();
 	return true;
 }
@@ -628,8 +711,9 @@ void wgpuRenderFrame()
 	passDesc.timestampWrites = nullptr;
 
 	RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
-	pass.setPipeline(g.trianglePipeline);
-	pass.draw(3, 1, 0, 0); // 3 vertices, 1 instance, starting at vertex 0, instance 0
+	pass.setPipeline(g.quadPipeline);
+	pass.setVertexBuffer(0, g.vertexBuffer, 0, g.vertexBufferSize); // slot 0 = the layout's buffer
+	pass.draw(g.vertexCount, 1, 0, 0); // vertices, instances, first vertex, first instance
 	pass.end();
 	pass.release();
 
@@ -661,7 +745,8 @@ void wgpuRenderFrame()
 
 void wgpuShutdown()
 {
-	if (g.trianglePipeline) { g.trianglePipeline.release(); g.trianglePipeline = nullptr; }
+	if (g.vertexBuffer) { g.vertexBuffer.release(); g.vertexBuffer = nullptr; }
+	if (g.quadPipeline) { g.quadPipeline.release(); g.quadPipeline = nullptr; }
 	if (g.surface && g.surfaceConfigured) { g.surface.unconfigure(); g.surfaceConfigured = false; }
 	if (g.queue) { g.queue.release(); g.queue = nullptr; }
 	if (g.device) { g.device.release(); g.device = nullptr; }
