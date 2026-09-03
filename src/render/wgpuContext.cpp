@@ -1,6 +1,9 @@
 #if RENDERER_WEBGPU
 
 #include <render/wgpuContext.h>
+#ifdef __APPLE__
+#include <render/wgpuMetalLayer.h>
+#endif
 
 #include <webgpu/webgpu.hpp> // WebGPU-Cpp wrapper over webgpu.h (+ wgpu.h extensions)
 #include <glfw3webgpu.h>     // glfwCreateWindowWGPUSurface
@@ -848,6 +851,19 @@ bool wgpuInit(GLFWwindow *window)
 		std::cerr << "WebGPU: glfwCreateWindowWGPUSurface returned null\n";
 		return false;
 	}
+
+#ifdef __APPLE__
+	// Pin the layer's color space so windowed and fullscreen presentation
+	// agree (otherwise fullscreen shows slightly lighter colors on macOS).
+	if (pinMetalLayerColorSpaceToSRGB(window))
+	{
+		std::cout << "WebGPU Metal layer color space pinned to sRGB\n";
+	}
+	else
+	{
+		std::cerr << "WebGPU: window layer is not a CAMetalLayer; color space not pinned\n";
+	}
+#endif
 
 	// 3. Adapter: a description of one physical GPU that fits the options.
 	//    The request is callback-based; on native backends it completes

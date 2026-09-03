@@ -119,6 +119,20 @@ if(RENDERER_WEBGPU)
 	target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE webgpu glfw3webgpu)
 	target_copy_webgpu_binaries("${CMAKE_PROJECT_NAME}")
 	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC RENDERER_WEBGPU=1)
+
+	if(APPLE)
+		# Objective-C++ helper that pins the CAMetalLayer color space to sRGB
+		# (see include/render/wgpuMetalLayer.h). The .mm is not in the *.cpp
+		# glob. Compiled through the C++ toolchain with -x objective-c++ (as
+		# glfw3webgpu does for its .c file) rather than enable_language(OBJCXX),
+		# which, called this late, breaks the rules already generated for GLFW.
+		set(WGPU_METAL_LAYER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/render/wgpuMetalLayer.mm")
+		set_source_files_properties("${WGPU_METAL_LAYER_SRC}" PROPERTIES
+			LANGUAGE CXX
+			COMPILE_OPTIONS "-x;objective-c++")
+		target_sources("${CMAKE_PROJECT_NAME}" PRIVATE "${WGPU_METAL_LAYER_SRC}")
+		target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE "-framework QuartzCore" "-framework CoreGraphics")
+	endif()
 else()
 	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC RENDERER_WEBGPU=0)
 endif()
