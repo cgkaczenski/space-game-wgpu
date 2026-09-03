@@ -16,15 +16,33 @@ namespace render
 
 namespace
 {
-	// Everything 1a creates. Grows into device/queue/surface config in 1b.
 	struct Context
 	{
+		GLFWwindow *window = nullptr;
+
+		// 1a
 		WGPUInstance instance = nullptr;
 		WGPUSurface surface = nullptr;
 		WGPUAdapter adapter = nullptr;
+
+		// 1b
+		WGPUDevice device = nullptr;
+		WGPUQueue queue = nullptr;
+		WGPUTextureFormat surfaceFormat = WGPUTextureFormat_Undefined;
+		int surfaceWidth = 0;
+		int surfaceHeight = 0;
+		bool surfaceConfigured = false;
+		bool firstFramePresented = false;
 	};
 
 	Context g;
+
+	// Labels and other input strings are passed as string views. WGPU_STRLEN
+	// as the length means "null-terminated, measure it".
+	WGPUStringView str(const char *s)
+	{
+		return WGPUStringView{s, WGPU_STRLEN};
+	}
 
 	// wgpu-native hands strings back as pointer + length, not null-terminated.
 	// A length of WGPU_STRLEN means "null-terminated, measure it yourself".
@@ -117,6 +135,92 @@ namespace
 		req->done = true;
 	}
 
+	const char *formatName(WGPUTextureFormat f)
+	{
+		switch (f)
+		{
+			case WGPUTextureFormat_BGRA8Unorm: return "BGRA8Unorm";
+			case WGPUTextureFormat_BGRA8UnormSrgb: return "BGRA8UnormSrgb";
+			case WGPUTextureFormat_RGBA8Unorm: return "RGBA8Unorm";
+			case WGPUTextureFormat_RGBA8UnormSrgb: return "RGBA8UnormSrgb";
+			default: return "other";
+		}
+	}
+
+	// Filled in by the request-device callback. Unsynchronized for the same
+	// reason as AdapterRequest: it only runs inside wgpuInstanceProcessEvents.
+	struct DeviceRequest
+	{
+		WGPUDevice device = nullptr;
+		bool done = false;
+	};
+
+	void onDeviceRequest(WGPURequestDeviceStatus status, WGPUDevice device,
+		WGPUStringView message, void *userdata1, void *)
+	{
+		auto *req = static_cast<DeviceRequest *>(userdata1);
+		if (status == WGPURequestDeviceStatus_Success)
+		{
+			req->device = device;
+		}
+		else
+		{
+			std::cerr << "WebGPU: requestDevice failed (status " << status << "): "
+				<< toStringView(message) << "\n";
+		}
+		req->done = true;
+	}
+
+	// Fires if the GPU connection dies (driver reset, device destroyed).
+	void onDeviceLost(WGPUDevice const *, WGPUDeviceLostReason reason,
+		WGPUStringView message, void *, void *)
+	{
+		std::cerr << "WebGPU: device lost (reason " << reason << "): "
+			<< toStringView(message) << "\n";
+	}
+
+	// Fires on every validation error the API catches. This is the main
+	// debugging channel from here on: a bad descriptor field, a wrong usage
+	// flag, a mismatched format all show up here as text.
+	void onUncapturedError(WGPUDevice const *, WGPUErrorType type,
+		WGPUStringView message, void *, void *)
+	{
+		const char *kind = type == WGPUErrorType_Validation ? "validation"
+			: type == WGPUErrorType_OutOfMemory ? "out of memory"
+			: type == WGPUErrorType_Internal ? "internal" : "unknown";
+		std::cerr << "WebGPU " << kind << " error: " << toStringView(message) << "\n";
+	}
+
+	// Configures (or reconfigures) the surface at the window's current
+	// framebuffer size. Framebuffer size, not window size: on a Retina
+	// display they differ by the scale factor.
+	void configureSurface()
+	{
+		int w = 0, h = 0;
+		glfwGetFramebufferSize(g.window, &w, &h);
+		if (w <= 0 || h <= 0)
+		{
+			return; // minimized; keep the old configuration
+		}
+
+		WGPUSurfaceConfiguration config = {};
+		config.nextInChain = nullptr;
+		config.device = g.device;
+		config.format = g.surfaceFormat;
+		config.usage = WGPUTextureUsage_RenderAttachment;
+		config.width = (uint32_t)w;
+		config.height = (uint32_t)h;
+		config.viewFormatCount = 0;
+		config.viewFormats = nullptr;
+		config.alphaMode = WGPUCompositeAlphaMode_Auto;
+		config.presentMode = WGPUPresentMode_Fifo; // vsync, always supported
+
+		wgpuSurfaceConfigure(g.surface, &config);
+		g.surfaceWidth = w;
+		g.surfaceHeight = h;
+		g.surfaceConfigured = true;
+	}
+
 	void printAdapter(WGPUAdapter adapter)
 	{
 		WGPUAdapterInfo info = {};
@@ -173,6 +277,7 @@ namespace
 
 bool wgpuInit(GLFWwindow *window)
 {
+	g.window = window;
 	wgpuSetLogCallback(logCallback, nullptr);
 	wgpuSetLogLevel(WGPULogLevel_Warn);
 
@@ -246,11 +351,221 @@ bool wgpuInit(GLFWwindow *window)
 	g.adapter = request.adapter;
 
 	printAdapter(g.adapter);
+
+	// 4. Device: the working connection to the GPU. Every later object is
+	//    created from it. No required features or limits: the defaults are
+	//    far above what a 2D sprite batcher needs.
+	WGPUDeviceDescriptor deviceDesc = {};
+	deviceDesc.nextInChain = nullptr;
+	deviceDesc.label = str("space-game device");
+	deviceDesc.requiredFeatureCount = 0;
+	deviceDesc.requiredFeatures = nullptr;
+	deviceDesc.requiredLimits = nullptr;
+	deviceDesc.defaultQueue.nextInChain = nullptr;
+	deviceDesc.defaultQueue.label = str("space-game queue");
+	deviceDesc.deviceLostCallbackInfo.nextInChain = nullptr;
+	deviceDesc.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+	deviceDesc.deviceLostCallbackInfo.callback = onDeviceLost;
+	deviceDesc.deviceLostCallbackInfo.userdata1 = nullptr;
+	deviceDesc.deviceLostCallbackInfo.userdata2 = nullptr;
+	deviceDesc.uncapturedErrorCallbackInfo.nextInChain = nullptr;
+	deviceDesc.uncapturedErrorCallbackInfo.callback = onUncapturedError;
+	deviceDesc.uncapturedErrorCallbackInfo.userdata1 = nullptr;
+	deviceDesc.uncapturedErrorCallbackInfo.userdata2 = nullptr;
+
+	DeviceRequest deviceRequest;
+	WGPURequestDeviceCallbackInfo deviceCallbackInfo = {};
+	deviceCallbackInfo.nextInChain = nullptr;
+	deviceCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+	deviceCallbackInfo.callback = onDeviceRequest;
+	deviceCallbackInfo.userdata1 = &deviceRequest;
+	deviceCallbackInfo.userdata2 = nullptr;
+
+	wgpuAdapterRequestDevice(g.adapter, &deviceDesc, deviceCallbackInfo);
+
+	for (int i = 0; !deviceRequest.done && i < 1000; i++)
+	{
+		wgpuInstanceProcessEvents(g.instance);
+		if (!deviceRequest.done)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
+
+	if (!deviceRequest.done)
+	{
+		std::cerr << "WebGPU: requestDevice never completed\n";
+		return false;
+	}
+	if (!deviceRequest.device)
+	{
+		return false;
+	}
+	g.device = deviceRequest.device;
+
+	// 5. Queue: the device's single inbox for command buffers and uploads.
+	g.queue = wgpuDeviceGetQueue(g.device);
+	if (!g.queue)
+	{
+		std::cerr << "WebGPU: wgpuDeviceGetQueue returned null\n";
+		return false;
+	}
+
+	// 6. Surface format. The first listed format is the surface's preferred
+	//    one and on Metal it is normally an sRGB variant. gl2d never gamma
+	//    corrected, so prefer the plain (non-sRGB) 8-bit format when offered
+	//    and only fall back to the preferred one otherwise. See the plan's
+	//    "surface format" risk.
+	WGPUSurfaceCapabilities caps = {};
+	if (wgpuSurfaceGetCapabilities(g.surface, g.adapter, &caps) != WGPUStatus_Success || caps.formatCount == 0)
+	{
+		std::cerr << "WebGPU: wgpuSurfaceGetCapabilities failed or listed no formats\n";
+		return false;
+	}
+
+	g.surfaceFormat = caps.formats[0];
+	std::cout << "WebGPU surface formats offered:";
+	for (size_t i = 0; i < caps.formatCount; i++)
+	{
+		std::cout << " " << formatName(caps.formats[i]);
+	}
+	std::cout << "\n";
+	for (size_t i = 0; i < caps.formatCount; i++)
+	{
+		if (caps.formats[i] == WGPUTextureFormat_BGRA8Unorm || caps.formats[i] == WGPUTextureFormat_RGBA8Unorm)
+		{
+			g.surfaceFormat = caps.formats[i];
+			break;
+		}
+	}
+	std::cout << "WebGPU surface format chosen: " << formatName(g.surfaceFormat) << "\n";
+	wgpuSurfaceCapabilitiesFreeMembers(caps);
+
+	// 7. Configure the surface: this is the OpenGL default framebuffer plus
+	//    swap interval, expressed as an explicit object.
+	configureSurface();
+	if (!g.surfaceConfigured)
+	{
+		std::cerr << "WebGPU: surface not configured (framebuffer size "
+			<< g.surfaceWidth << "x" << g.surfaceHeight << ")\n";
+		return false;
+	}
+	std::cout << "WebGPU surface configured at " << g.surfaceWidth << "x" << g.surfaceHeight << "\n";
+	std::cout.flush();
 	return true;
+}
+
+void wgpuRenderFrame()
+{
+	if (!g.surfaceConfigured)
+	{
+		configureSurface();
+		if (!g.surfaceConfigured) { return; }
+	}
+
+	// 1. Acquire: the texture that will next go on screen.
+	WGPUSurfaceTexture surfaceTexture = {};
+	wgpuSurfaceGetCurrentTexture(g.surface, &surfaceTexture);
+
+	switch (surfaceTexture.status)
+	{
+		case WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal:
+		case WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal:
+			break;
+
+		case WGPUSurfaceGetCurrentTextureStatus_Timeout:
+		case WGPUSurfaceGetCurrentTextureStatus_Outdated:
+		case WGPUSurfaceGetCurrentTextureStatus_Lost:
+			// The window was resized or the surface otherwise invalidated.
+			// Reconfigure at the current size and try again next frame.
+			if (surfaceTexture.texture) { wgpuTextureRelease(surfaceTexture.texture); }
+			configureSurface();
+			return;
+
+		default:
+			std::cerr << "WebGPU: wgpuSurfaceGetCurrentTexture failed (status "
+				<< surfaceTexture.status << ")\n";
+			if (surfaceTexture.texture) { wgpuTextureRelease(surfaceTexture.texture); }
+			return;
+	}
+
+	// 2. View: render passes attach to a view of a texture, never the texture.
+	WGPUTextureViewDescriptor viewDesc = {};
+	viewDesc.nextInChain = nullptr;
+	viewDesc.label = str("surface view");
+	viewDesc.format = g.surfaceFormat;
+	viewDesc.dimension = WGPUTextureViewDimension_2D;
+	viewDesc.baseMipLevel = 0;
+	viewDesc.mipLevelCount = 1;
+	viewDesc.baseArrayLayer = 0;
+	viewDesc.arrayLayerCount = 1;
+	viewDesc.aspect = WGPUTextureAspect_All;
+	viewDesc.usage = WGPUTextureUsage_RenderAttachment;
+	WGPUTextureView view = wgpuTextureCreateView(surfaceTexture.texture, &viewDesc);
+
+	// 3. Record: a command encoder collects GPU work; nothing runs yet.
+	WGPUCommandEncoderDescriptor encoderDesc = {};
+	encoderDesc.nextInChain = nullptr;
+	encoderDesc.label = str("frame encoder");
+	WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(g.device, &encoderDesc);
+
+	// The render pass: one color attachment, cleared on load, kept on store.
+	// This is gl2d's glClear, expressed as the pass's load operation.
+	WGPURenderPassColorAttachment colorAttachment = {};
+	colorAttachment.nextInChain = nullptr;
+	colorAttachment.view = view;
+	colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED; // required for a 2D target
+	colorAttachment.resolveTarget = nullptr;
+	colorAttachment.loadOp = WGPULoadOp_Clear;
+	colorAttachment.storeOp = WGPUStoreOp_Store;
+	colorAttachment.clearValue = WGPUColor{0.25, 0.45, 0.75, 1.0}; // deliberately not black
+
+	WGPURenderPassDescriptor passDesc = {};
+	passDesc.nextInChain = nullptr;
+	passDesc.label = str("clear pass");
+	passDesc.colorAttachmentCount = 1;
+	passDesc.colorAttachments = &colorAttachment;
+	passDesc.depthStencilAttachment = nullptr;
+	passDesc.occlusionQuerySet = nullptr;
+	passDesc.timestampWrites = nullptr;
+
+	WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+	// Draw calls go here from milestone 2 on.
+	wgpuRenderPassEncoderEnd(pass);
+	wgpuRenderPassEncoderRelease(pass);
+
+	// 4. Seal the recording into a command buffer and submit it.
+	WGPUCommandBufferDescriptor cmdDesc = {};
+	cmdDesc.nextInChain = nullptr;
+	cmdDesc.label = str("frame commands");
+	WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, &cmdDesc);
+	wgpuCommandEncoderRelease(encoder);
+
+	wgpuQueueSubmit(g.queue, 1, &commands);
+	wgpuCommandBufferRelease(commands);
+
+	// 5. Present: hand the texture to the compositor. This is glfwSwapBuffers.
+	wgpuSurfacePresent(g.surface);
+
+	wgpuTextureViewRelease(view);
+	wgpuTextureRelease(surfaceTexture.texture);
+
+	// Let pending callbacks (errors, device lost) run once per frame.
+	wgpuInstanceProcessEvents(g.instance);
+
+	if (!g.firstFramePresented)
+	{
+		g.firstFramePresented = true;
+		std::cout << "WebGPU first frame presented\n";
+		std::cout.flush();
+	}
 }
 
 void wgpuShutdown()
 {
+	if (g.surface && g.surfaceConfigured) { wgpuSurfaceUnconfigure(g.surface); g.surfaceConfigured = false; }
+	if (g.queue) { wgpuQueueRelease(g.queue); g.queue = nullptr; }
+	if (g.device) { wgpuDeviceRelease(g.device); g.device = nullptr; }
 	if (g.adapter) { wgpuAdapterRelease(g.adapter); g.adapter = nullptr; }
 	if (g.surface) { wgpuSurfaceRelease(g.surface); g.surface = nullptr; }
 	if (g.instance) { wgpuInstanceRelease(g.instance); g.instance = nullptr; }

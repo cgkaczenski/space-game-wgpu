@@ -351,13 +351,13 @@ int main()
 #pragma endregion
 
 #if RENDERER_WEBGPU
-	// Milestone 1a stops here on the WebGPU path: window open, instance,
-	// surface, and adapter created, adapter printed. gl2d, ImGui, audio, and
-	// the game loop still need the OpenGL context and are wired to WebGPU in
-	// later milestones. Until then this path only waits for the window to close.
+	// Milestone 1b: the WebGPU path clears the window to a solid color every
+	// frame. gl2d, ImGui, audio, and the game loop still need the OpenGL
+	// context and are wired to WebGPU in later milestones.
 	while (!glfwWindowShouldClose(wind))
 	{
 		glfwPollEvents();
+		render::wgpuRenderFrame();
 	}
 	render::wgpuShutdown();
 	glfwDestroyWindow(wind);
