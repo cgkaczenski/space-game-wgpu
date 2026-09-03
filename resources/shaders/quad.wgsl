@@ -1,11 +1,12 @@
-// Milestone 4: a textured quad.
+// Milestone 5: a textured quad in gl2d's pixel world, placed by a camera.
 //
 // Each vertex arrives as the attributes the pipeline's vertex layout maps to
 // these locations: location 0 position (Float32x2), location 1 color
 // (Float32x4), location 2 texture coordinate (Float32x2). Positions are
-// still clip space: x and y in [-1, 1], y up, origin at the center.
-// Milestone 5 adds the camera matrix that maps gl2d's y-down pixel world
-// into this space.
+// world pixels, y down, origin top-left: the numbers the game passes to
+// renderRectangle. The camera matrix maps them into clip space (x and y in
+// [-1, 1], y up, origin at the center). gl2d did that mapping on the CPU
+// per corner; here it is one matrix multiply per vertex.
 //
 // Texture coordinates use WebGPU's convention: (0, 0) is the top-left
 // texel, v grows downward. stb_image hands rows back top-first, so images
@@ -32,10 +33,18 @@ struct VertexOutput {
 @group(0) @binding(0) var spriteTexture: texture_2d<f32>;
 @group(0) @binding(1) var spriteSampler: sampler;
 
+// Group 1 is the camera: one matrix shared by every vertex of the draw,
+// rewritten from the CPU each frame. Separate group from the texture so
+// milestone 6b can swap textures per run without touching the camera.
+struct Camera {
+    viewProj: mat4x4f,
+};
+@group(1) @binding(0) var<uniform> camera: Camera;
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.position = vec4f(in.position, 0.0, 1.0);
+    out.position = camera.viewProj * vec4f(in.position, 0.0, 1.0);
     out.color = in.color;
     out.uv = in.uv;
     return out;

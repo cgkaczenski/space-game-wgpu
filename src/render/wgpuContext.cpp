@@ -5,8 +5,10 @@
 #include <webgpu/webgpu.hpp> // WebGPU-Cpp wrapper over webgpu.h (+ wgpu.h extensions)
 #include <glfw3webgpu.h>     // glfwCreateWindowWGPUSurface
 #include <stb_image/stb_image.h>
+#include <glm/glm.hpp>       // column-major like WGSL's mat4x4f
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>   // offsetof
 #include <fstream>
 #include <iostream>
@@ -61,7 +63,100 @@ namespace
 		BindGroup textureBindGroup = nullptr;
 		int textureWidth = 0;
 		int textureHeight = 0;
+
+		// 5: the camera uniform, one 64-byte matrix rewritten every frame
+		BindGroupLayout cameraBindGroupLayout = nullptr; // group 1: uniform buffer
+		Buffer uniformBuffer = nullptr;
+		BindGroup cameraBindGroup = nullptr;
+		std::chrono::steady_clock::time_point lastFrameTime = {};
+		float demoTime = 0.0f;
 	};
+
+	// gl2d's camera, fields and follow() copied verbatim so milestone 7 can
+	// call it under the same name with the same numbers. Rotation is omitted:
+	// the game never sets it.
+	struct Camera
+	{
+		glm::vec2 position = {};
+		float zoom = 1.0f;
+
+		void follow(glm::vec2 pos, float speed, float min, float max, float w, float h)
+		{
+			pos.x -= w / 2.f;
+			pos.y -= h / 2.f;
+
+			glm::vec2 delta = pos - position;
+			bool signX = delta.x >= 0;
+			bool signY = delta.y >= 0;
+
+			float len = glm::length(delta);
+
+			delta = glm::normalize(delta);
+
+			if (len < min * 2)
+			{
+				speed /= 4.f;
+			}
+			else if (len < min * 4)
+			{
+				speed /= 2.f;
+			}
+
+			if (len > min)
+			{
+				if (len > max)
+				{
+					len = max;
+					position = pos - (max * delta);
+					//fix jittering
+					//position += delta * speed;
+				}
+				else
+				{
+					position += delta * speed;
+				}
+
+				glm::vec2 delta2 = pos - position;
+				bool signX2 = delta.x >= 0;
+				bool signY2 = delta.y >= 0;
+				if (signX2 != signX || signY2 != signY || glm::length(delta2) > len)
+				{
+					//fix jittering
+					//position = pos;
+				}
+			}
+		}
+	};
+
+	Camera demoCamera;
+
+	// What the shader's Camera struct reads: one column-major mat4x4f.
+	struct CameraUniforms
+	{
+		glm::mat4 viewProj;
+	};
+	static_assert(sizeof(CameraUniforms) == 64, "uniform layout must match the WGSL Camera struct");
+
+	// gl2d's per-corner CPU transform (renderRectangleAbsRotation), collapsed
+	// into one matrix:
+	//   1. subtract the camera position          (v.x -= cam.x; v.y += cam.y on the flipped y)
+	//   2. scale about the screen center by zoom  (scaleAroundPoint with center (w/2, -h/2))
+	//   3. pixels to clip space                   (x: 2x/w - 1;  y: 2y/h + 1 on the flipped y)
+	// For a world point (x, y) with y down that works out to
+	//   ndc.x =  (2 zoom / w) x  - 2 zoom cam.x / w - zoom
+	//   ndc.y = -(2 zoom / h) y  + 2 zoom cam.y / h + zoom
+	// Checks: the camera's top-left corner maps to (-1, 1) at zoom 1, and
+	// the screen center stays fixed under zoom.
+	glm::mat4 buildViewProj(const Camera &cam, float w, float h)
+	{
+		const float z = cam.zoom;
+		glm::mat4 m(1.0f);                     // glm is column-major: m[col][row]
+		m[0][0] = 2.0f * z / w;
+		m[1][1] = -2.0f * z / h;
+		m[3][0] = -2.0f * z * cam.position.x / w - z;
+		m[3][1] = 2.0f * z * cam.position.y / h + z;
+		return m;
+	}
 
 	// One vertex as the GPU reads it: position, color, texture coordinate,
 	// back to back. The pipeline's vertex layout below must describe exactly this.
@@ -245,6 +340,8 @@ namespace
 		g.surfaceWidth = w;
 		g.surfaceHeight = h;
 		g.surfaceConfigured = true;
+		std::cout << "WebGPU surface configured at " << w << "x" << h << "\n";
+		std::cout.flush();
 	}
 
 	bool readTextFile(const char *path, std::string &out)
@@ -348,15 +445,76 @@ namespace
 			return false;
 		}
 
+		// Bind group layout 1: the camera uniform, read by the vertex stage.
+		BindGroupLayoutEntry cameraEntry = Default;
+		cameraEntry.binding = 0;
+		cameraEntry.visibility = ShaderStage::Vertex;
+		cameraEntry.buffer.type = BufferBindingType::Uniform;
+		cameraEntry.buffer.hasDynamicOffset = false;   // milestone 6b turns this on
+		cameraEntry.buffer.minBindingSize = sizeof(CameraUniforms);
+		cameraEntry.sampler.type = SamplerBindingType::BindingNotUsed;
+		cameraEntry.texture.sampleType = TextureSampleType::BindingNotUsed;
+		cameraEntry.storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		BindGroupLayoutDescriptor cameraLayoutDesc = Default;
+		cameraLayoutDesc.label = StringView("camera bind group layout");
+		cameraLayoutDesc.entryCount = 1;
+		cameraLayoutDesc.entries = &cameraEntry;
+		g.cameraBindGroupLayout = g.device.createBindGroupLayout(cameraLayoutDesc);
+		if (!g.cameraBindGroupLayout)
+		{
+			std::cerr << "WebGPU: createBindGroupLayout (camera) returned null\n";
+			return false;
+		}
+
+		// The pipeline layout lists the group layouts by group index.
 		PipelineLayoutDescriptor pipelineLayoutDesc = Default;
 		pipelineLayoutDesc.label = StringView("quad pipeline layout");
-		pipelineLayoutDesc.bindGroupLayoutCount = 1;
-		WGPUBindGroupLayout layouts[1] = { g.textureBindGroupLayout };
+		pipelineLayoutDesc.bindGroupLayoutCount = 2;
+		WGPUBindGroupLayout layouts[2] = { g.textureBindGroupLayout, g.cameraBindGroupLayout };
 		pipelineLayoutDesc.bindGroupLayouts = layouts;
 		g.pipelineLayout = g.device.createPipelineLayout(pipelineLayoutDesc);
 		if (!g.pipelineLayout)
 		{
 			std::cerr << "WebGPU: createPipelineLayout returned null\n";
+			return false;
+		}
+		return true;
+	}
+
+	// The uniform buffer and the bind group that hands it to the shader.
+	// Created once; the contents are rewritten every frame.
+	bool createCameraUniform()
+	{
+		BufferDescriptor desc = Default;
+		desc.label = StringView("camera uniforms");
+		desc.usage = BufferUsage::Uniform | BufferUsage::CopyDst;
+		desc.size = sizeof(CameraUniforms);
+		desc.mappedAtCreation = false;
+		g.uniformBuffer = g.device.createBuffer(desc);
+		if (!g.uniformBuffer)
+		{
+			std::cerr << "WebGPU: createBuffer (uniform) returned null\n";
+			return false;
+		}
+
+		BindGroupEntry entry = Default;
+		entry.binding = 0;
+		entry.buffer = g.uniformBuffer;
+		entry.offset = 0;
+		entry.size = sizeof(CameraUniforms);
+		entry.sampler = nullptr;
+		entry.textureView = nullptr;
+
+		BindGroupDescriptor groupDesc = Default;
+		groupDesc.label = StringView("camera bind group");
+		groupDesc.layout = g.cameraBindGroupLayout;
+		groupDesc.entryCount = 1;
+		groupDesc.entries = &entry;
+		g.cameraBindGroup = g.device.createBindGroup(groupDesc);
+		if (!g.cameraBindGroup)
+		{
+			std::cerr << "WebGPU: createBindGroup (camera) returned null\n";
 			return false;
 		}
 		return true;
@@ -569,19 +727,20 @@ namespace
 	// One quad as two triangles, six vertices, no index buffer, in the corner
 	// order gl2d emits (v1 v2 v4, v2 v3 v4 with v1 top-left, v2 bottom-left,
 	// v3 bottom-right, v4 top-right) so milestone 6a is a straight port.
-	// Positions are clip space, sized to the texture's aspect ratio. Color is
-	// white so the texture shows unmodified. Texture coordinates follow the
-	// top-left-origin convention: (0,0) at the top-left corner, v down.
+	// Positions are world pixels, y down: the sprite sheet at its native size
+	// with its top-left corner at (100, 100), the same rect the game would
+	// pass to renderRectangle. Color is white so the texture shows
+	// unmodified. Texture coordinates follow the top-left-origin convention.
 	bool createQuadVertexBuffer()
 	{
-		const float aspect = (float)g.textureWidth / (float)g.textureHeight;
-		const float halfW = aspect >= 1.0f ? 0.75f : 0.75f * aspect;
-		const float halfH = aspect >= 1.0f ? 0.75f / aspect : 0.75f;
+		const float x0 = 100.0f, y0 = 100.0f;
+		const float x1 = x0 + (float)g.textureWidth;
+		const float y1 = y0 + (float)g.textureHeight;
 
-		const Vertex topLeft     = {-halfW,  halfH,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 0.0f};
-		const Vertex bottomLeft  = {-halfW, -halfH,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 1.0f};
-		const Vertex bottomRight = { halfW, -halfH,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f};
-		const Vertex topRight    = { halfW,  halfH,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 0.0f};
+		const Vertex topLeft     = {x0, y0,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 0.0f};
+		const Vertex bottomLeft  = {x0, y1,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 1.0f};
+		const Vertex bottomRight = {x1, y1,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f};
+		const Vertex topRight    = {x1, y0,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 0.0f};
 
 		const Vertex vertices[6] = {
 			topLeft, bottomLeft, topRight,
@@ -824,8 +983,6 @@ bool wgpuInit(GLFWwindow *window)
 			<< g.surfaceWidth << "x" << g.surfaceHeight << ")\n";
 		return false;
 	}
-	std::cout << "WebGPU surface configured at " << g.surfaceWidth << "x" << g.surfaceHeight << "\n";
-
 	// 8. Sampler and layouts (milestone 4). The pipeline needs the layout.
 	if (!createSampler() || !createLayouts())
 	{
@@ -849,23 +1006,40 @@ bool wgpuInit(GLFWwindow *window)
 	std::cout << "WebGPU texture uploaded: " << g.textureWidth << "x" << g.textureHeight
 		<< ", bind group created\n";
 
-	// 11. The vertex buffer (milestone 3), sized to the texture's aspect.
+	// 11. The vertex buffer (milestone 3), now in world pixels (milestone 5).
 	if (!createQuadVertexBuffer())
 	{
 		return false;
 	}
 	std::cout << "WebGPU vertex buffer created: " << g.vertexCount << " vertices, "
 		<< g.vertexBufferSize << " bytes\n";
+
+	// 12. The camera uniform (milestone 5).
+	if (!createCameraUniform())
+	{
+		return false;
+	}
+	std::cout << "WebGPU camera uniform buffer created: " << sizeof(CameraUniforms) << " bytes\n";
+	g.lastFrameTime = std::chrono::steady_clock::now();
 	std::cout.flush();
 	return true;
 }
 
 void wgpuRenderFrame()
 {
-	if (!g.surfaceConfigured)
+	// Resize detection. On Metal, wgpu-native keeps presenting a drawable of
+	// the configured size and the layer stretches it to the window; the
+	// surface never reports itself Outdated. So compare the framebuffer size
+	// every frame and reconfigure when it changed. The Outdated/Lost path
+	// below stays as a backstop for backends that do report it.
 	{
-		configureSurface();
-		if (!g.surfaceConfigured) { return; }
+		int w = 0, h = 0;
+		glfwGetFramebufferSize(g.window, &w, &h);
+		if (!g.surfaceConfigured || w != g.surfaceWidth || h != g.surfaceHeight)
+		{
+			configureSurface();
+			if (!g.surfaceConfigured) { return; } // minimized: nothing to draw
+		}
 	}
 
 	// 1. Acquire: the texture that will next go on screen.
@@ -894,6 +1068,29 @@ void wgpuRenderFrame()
 			if (texture) { texture.release(); }
 			return;
 	}
+
+	// Demo camera (milestone 5): follow a point circling the sprite with the
+	// game's own follow parameters, and breathe the zoom, so both the follow
+	// math and zoom-about-center are exercised. Milestone 7 replaces this
+	// with the game's camera calls.
+	{
+		auto now = std::chrono::steady_clock::now();
+		float deltaTime = std::chrono::duration<float>(now - g.lastFrameTime).count();
+		g.lastFrameTime = now;
+		if (deltaTime > 0.1f) { deltaTime = 0.1f; }
+		g.demoTime += deltaTime;
+
+		const glm::vec2 spriteCenter(100.0f + g.textureWidth / 2.0f, 100.0f + g.textureHeight / 2.0f);
+		const glm::vec2 target = spriteCenter + 150.0f * glm::vec2(std::cos(g.demoTime * 0.7f), std::sin(g.demoTime * 0.7f));
+		demoCamera.follow(target, deltaTime * 550.0f, 1.0f, 150.0f, (float)g.surfaceWidth, (float)g.surfaceHeight);
+		demoCamera.zoom = 0.75f + 0.25f * std::sin(g.demoTime * 0.5f);
+	}
+
+	// Camera matrix from the current framebuffer size. This and the surface
+	// configuration must agree on the size, or sprites stretch on resize.
+	CameraUniforms uniforms;
+	uniforms.viewProj = buildViewProj(demoCamera, (float)g.surfaceWidth, (float)g.surfaceHeight);
+	g.queue.writeBuffer(g.uniformBuffer, 0, &uniforms, sizeof(uniforms));
 
 	// 2. View: render passes attach to a view of a texture, never the texture.
 	TextureViewDescriptor viewDesc = Default;
@@ -937,6 +1134,7 @@ void wgpuRenderFrame()
 	RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
 	pass.setPipeline(g.quadPipeline);
 	pass.setBindGroup(0, g.textureBindGroup, 0, nullptr); // group 0 = texture + sampler, no dynamic offsets
+	pass.setBindGroup(1, g.cameraBindGroup, 0, nullptr);  // group 1 = camera uniform
 	pass.setVertexBuffer(0, g.vertexBuffer, 0, g.vertexBufferSize); // slot 0 = the layout's buffer
 	pass.draw(g.vertexCount, 1, 0, 0); // vertices, instances, first vertex, first instance
 	pass.end();
@@ -970,12 +1168,15 @@ void wgpuRenderFrame()
 
 void wgpuShutdown()
 {
+	if (g.cameraBindGroup) { g.cameraBindGroup.release(); g.cameraBindGroup = nullptr; }
+	if (g.uniformBuffer) { g.uniformBuffer.release(); g.uniformBuffer = nullptr; }
 	if (g.vertexBuffer) { g.vertexBuffer.release(); g.vertexBuffer = nullptr; }
 	if (g.textureBindGroup) { g.textureBindGroup.release(); g.textureBindGroup = nullptr; }
 	if (g.textureView) { g.textureView.release(); g.textureView = nullptr; }
 	if (g.texture) { g.texture.release(); g.texture = nullptr; }
 	if (g.quadPipeline) { g.quadPipeline.release(); g.quadPipeline = nullptr; }
 	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
+	if (g.cameraBindGroupLayout) { g.cameraBindGroupLayout.release(); g.cameraBindGroupLayout = nullptr; }
 	if (g.textureBindGroupLayout) { g.textureBindGroupLayout.release(); g.textureBindGroupLayout = nullptr; }
 	if (g.sampler) { g.sampler.release(); g.sampler = nullptr; }
 	if (g.surface && g.surfaceConfigured) { g.surface.unconfigure(); g.surfaceConfigured = false; }
