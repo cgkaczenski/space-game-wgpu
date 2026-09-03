@@ -13,11 +13,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>   // offsetof
+#include <cstdlib>   // rand, for the demo
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 // File scope only, never in a header: wgpu:: names would otherwise leak into
 // every includer. Inside this file, Device, Texture, Default, StringView, and
@@ -50,22 +52,15 @@ namespace
 		// 2: created once at init, selected every frame
 		RenderPipeline quadPipeline = nullptr;
 
-		// 3: one static vertex buffer holding six interleaved vertices
+		// 6a: the vertex buffer is rewritten every frame from the CPU batch
+		// and grows (never shrinks) when a frame needs more than it holds.
 		Buffer vertexBuffer = nullptr;
-		uint64_t vertexBufferSize = 0;
-		uint32_t vertexCount = 0;
+		uint64_t vertexBufferCapacityBytes = 0;
 
 		// 4: created once at init, shared by every texture
 		Sampler sampler = nullptr;
 		BindGroupLayout textureBindGroupLayout = nullptr; // group 0: texture + sampler
 		PipelineLayout pipelineLayout = nullptr;
-
-		// 4: per texture (one texture for now)
-		Texture texture = nullptr;
-		TextureView textureView = nullptr;
-		BindGroup textureBindGroup = nullptr;
-		int textureWidth = 0;
-		int textureHeight = 0;
 
 		// 5: the camera uniform, one 64-byte matrix rewritten every frame
 		BindGroupLayout cameraBindGroupLayout = nullptr; // group 1: uniform buffer
@@ -170,6 +165,142 @@ namespace
 		float u, v;
 	};
 	static_assert(sizeof(Vertex) == 32, "vertex layout stride assumes tightly packed floats");
+
+	// ---- gl2d-shaped public types (milestone 6a) ----
+	// Mirrors gl2d's signatures so the game files change only by namespace
+	// in milestone 7. The implementation underneath is not gl2d's.
+	using Rect = glm::vec4;    // x, y, width, height in world pixels, y down
+	using Color4f = glm::vec4;
+	const glm::vec4 DefaultTextureCoords = {0, 1, 1, 0}; // gl2d's convention, see renderRectangleAbsRotation
+
+	// A copyable handle, like gl2d's Texture { GLuint id }. 0 means invalid.
+	// The GPU objects live in the registry below, indexed by id - 1.
+	struct Texture
+	{
+		uint32_t id = 0;
+	};
+
+	struct TextureEntry
+	{
+		wgpu::Texture texture = nullptr;
+		TextureView view = nullptr;
+		BindGroup bindGroup = nullptr; // group 0 for this texture + the shared sampler
+		int width = 0;
+		int height = 0;
+	};
+
+	std::vector<TextureEntry> textures;
+
+	// The CPU batch: gl2d's spritePositions / spriteColors / texturePositions
+	// / spriteTextures, collapsed into one interleaved vertex vector plus the
+	// texture of each quad (6b uses that for draw ranges).
+	std::vector<Vertex> batchVertices;
+	std::vector<Texture> batchQuadTextures;
+
+	// gl2d's rotateAroundPoint, verbatim. It works in gl2d's y-flipped space
+	// (callers pass corners with y negated) and negates the pivot's y to
+	// match. Ported as-is so positive degrees turn the same way they do today.
+	glm::vec2 rotateAroundPoint(glm::vec2 vec, glm::vec2 point, const float degrees)
+	{
+		point.y = -point.y;
+		float a = glm::radians(degrees);
+		float s = sinf(a);
+		float c = cosf(a);
+		vec.x -= point.x;
+		vec.y -= point.y;
+		float newx = vec.x * c - vec.y * s;
+		float newy = vec.x * s + vec.y * c;
+		// translate point back:
+		vec.x = newx + point.x;
+		vec.y = newy + point.y;
+		return vec;
+	}
+
+	// gl2d's renderRectangleAbsRotation up to (not including) its camera
+	// steps, which are now the matrix. Corners are built and rotated in
+	// gl2d's flipped space, then flipped back into world pixels for the
+	// vertex buffer. Texture coordinates arrive in gl2d's convention
+	// ({u0, v0, u1, v1} with v measured from the bottom, default {0,1,1,0})
+	// and are converted to WebGPU's top-left origin here: v = 1 - v.
+	void renderRectangleAbsRotation(const Rect transforms, const Texture texture,
+		const Color4f colors[4], const glm::vec2 origin, const float rotation, const glm::vec4 textureCoords)
+	{
+		if (texture.id == 0 || texture.id > textures.size())
+		{
+			std::cerr << "render: renderRectangle with an invalid texture (id " << texture.id << ")\n";
+			return;
+		}
+
+		//We need to flip texture_transforms.y
+		const float transformsY = transforms.y * -1;
+
+		glm::vec2 v1 = { transforms.x,				  transformsY };
+		glm::vec2 v2 = { transforms.x,				  transformsY - transforms.w };
+		glm::vec2 v3 = { transforms.x + transforms.z, transformsY - transforms.w };
+		glm::vec2 v4 = { transforms.x + transforms.z, transformsY };
+
+		//Apply rotations
+		if (rotation != 0)
+		{
+			v1 = rotateAroundPoint(v1, origin, rotation);
+			v2 = rotateAroundPoint(v2, origin, rotation);
+			v3 = rotateAroundPoint(v3, origin, rotation);
+			v4 = rotateAroundPoint(v4, origin, rotation);
+		}
+
+		// Back to world pixels (y down). gl2d continued with camera offset,
+		// zoom, and NDC here; the vertex shader does that now.
+		v1.y = -v1.y; v2.y = -v2.y; v3.y = -v3.y; v4.y = -v4.y;
+
+		const float u0 = textureCoords.x, v0 = 1.0f - textureCoords.y;
+		const float u1 = textureCoords.z, v1t = 1.0f - textureCoords.w;
+
+		auto push = [&](glm::vec2 p, const Color4f &c, float u, float v)
+		{
+			batchVertices.push_back(Vertex{ p.x, p.y, c.r, c.g, c.b, c.a, u, v });
+		};
+
+		// gl2d's corner order: v1 v2 v4, v2 v3 v4, with gl2d's uv assignment.
+		push(v1, colors[0], u0, v0);
+		push(v2, colors[1], u0, v1t);
+		push(v4, colors[3], u1, v0);
+		push(v2, colors[1], u0, v1t);
+		push(v3, colors[2], u1, v1t);
+		push(v4, colors[3], u1, v0);
+
+		batchQuadTextures.push_back(texture);
+	}
+
+	// gl2d's renderRectangle: the rotation origin is relative to the
+	// rectangle's center.
+	void renderRectangle(const Rect transforms, const Texture texture, const Color4f colors[4],
+		const glm::vec2 origin = {}, const float rotationDegrees = 0.f, const glm::vec4 textureCoords = DefaultTextureCoords)
+	{
+		glm::vec2 newOrigin;
+		newOrigin.x = origin.x + transforms.x + (transforms.z / 2);
+		newOrigin.y = origin.y + transforms.y + (transforms.w / 2);
+		renderRectangleAbsRotation(transforms, texture, colors, newOrigin, rotationDegrees, textureCoords);
+	}
+
+	void renderRectangle(const Rect transforms, const Texture texture, const Color4f colors = {1, 1, 1, 1},
+		const glm::vec2 origin = {}, const float rotationDegrees = 0.f, const glm::vec4 textureCoords = DefaultTextureCoords)
+	{
+		Color4f c[4] = { colors, colors, colors, colors };
+		renderRectangle(transforms, texture, c, origin, rotationDegrees, textureCoords);
+	}
+
+	// ---- demo content (milestone 6a) ----
+	struct DemoSprite
+	{
+		glm::vec2 position;
+		float size;
+		float rotation;
+		float spin;
+		Color4f color;
+		int cellX, cellY; // cell in the 5x2 ship sheet
+	};
+	std::vector<DemoSprite> demoSprites;
+	Texture demoSheet;
 
 	Context g;
 
@@ -526,8 +657,9 @@ namespace
 	// Loads a PNG with stb_image, uploads it as an RGBA8 texture with one
 	// mip level, creates its view, and builds the bind group that hands the
 	// view plus the shared sampler to the shader. Rows are uploaded top-first,
-	// exactly as stb_image returns them: no flip.
-	bool createTextureFromFile(const char *path)
+	// exactly as stb_image returns them: no flip. Returns a handle (id 0 on
+	// failure) into the registry.
+	Texture createTextureFromFile(const char *path)
 	{
 		int width = 0, height = 0, channels = 0;
 		stbi_set_flip_vertically_on_load(0);
@@ -535,10 +667,11 @@ namespace
 		if (!pixels)
 		{
 			std::cerr << "WebGPU: cannot load image " << path << ": " << stbi_failure_reason() << "\n";
-			return false;
+			return Texture{};
 		}
-		g.textureWidth = width;
-		g.textureHeight = height;
+		TextureEntry entry;
+		entry.width = width;
+		entry.height = height;
 
 		// The texture: GPU pixel storage with a fixed format and usage.
 		// TextureBinding: a shader may sample it. CopyDst: the queue may write it.
@@ -554,18 +687,18 @@ namespace
 		texDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
 		texDesc.viewFormatCount = 0;
 		texDesc.viewFormats = nullptr;
-		g.texture = g.device.createTexture(texDesc);
-		if (!g.texture)
+		entry.texture = g.device.createTexture(texDesc);
+		if (!entry.texture)
 		{
 			std::cerr << "WebGPU: createTexture returned null\n";
 			stbi_image_free(pixels);
-			return false;
+			return Texture{};
 		}
 
 		// Upload: destination is mip 0 at origin; the source layout says how
 		// the CPU rows are laid out. This is glTexImage2D.
 		TexelCopyTextureInfo destination = Default;
-		destination.texture = g.texture;
+		destination.texture = entry.texture;
 		destination.mipLevel = 0;
 		destination.origin.x = 0;
 		destination.origin.y = 0;
@@ -592,11 +725,12 @@ namespace
 		viewDesc.arrayLayerCount = 1;
 		viewDesc.aspect = TextureAspect::All;
 		viewDesc.usage = TextureUsage::TextureBinding;
-		g.textureView = g.texture.createView(viewDesc);
-		if (!g.textureView)
+		entry.view = entry.texture.createView(viewDesc);
+		if (!entry.view)
 		{
 			std::cerr << "WebGPU: createView returned null\n";
-			return false;
+			entry.texture.release();
+			return Texture{};
 		}
 
 		// The bind group: this view and the shared sampler, in the slots the
@@ -604,7 +738,7 @@ namespace
 		BindGroupEntry bindEntries[2];
 		bindEntries[0] = Default;
 		bindEntries[0].binding = 0;
-		bindEntries[0].textureView = g.textureView;
+		bindEntries[0].textureView = entry.view;
 		bindEntries[0].buffer = nullptr;
 		bindEntries[0].sampler = nullptr;
 		bindEntries[1] = Default;
@@ -618,13 +752,17 @@ namespace
 		groupDesc.layout = g.textureBindGroupLayout;
 		groupDesc.entryCount = 2;
 		groupDesc.entries = bindEntries;
-		g.textureBindGroup = g.device.createBindGroup(groupDesc);
-		if (!g.textureBindGroup)
+		entry.bindGroup = g.device.createBindGroup(groupDesc);
+		if (!entry.bindGroup)
 		{
 			std::cerr << "WebGPU: createBindGroup returned null\n";
-			return false;
+			entry.view.release();
+			entry.texture.release();
+			return Texture{};
 		}
-		return true;
+
+		textures.push_back(entry);
+		return Texture{ (uint32_t)textures.size() };
 	}
 
 	// The render pipeline: every configurable stage of the GPU's fixed
@@ -727,51 +865,121 @@ namespace
 		return true;
 	}
 
-	// One quad as two triangles, six vertices, no index buffer, in the corner
-	// order gl2d emits (v1 v2 v4, v2 v3 v4 with v1 top-left, v2 bottom-left,
-	// v3 bottom-right, v4 top-right) so milestone 6a is a straight port.
-	// Positions are world pixels, y down: the sprite sheet at its native size
-	// with its top-left corner at (100, 100), the same rect the game would
-	// pass to renderRectangle. Color is white so the texture shows
-	// unmodified. Texture coordinates follow the top-left-origin convention.
-	bool createQuadVertexBuffer()
+	// Makes sure the vertex buffer can hold `bytes`. A GPU buffer cannot be
+	// resized, so growth means creating a bigger one (doubling) and releasing
+	// the old one; WebGPU keeps the old buffer alive until submitted work
+	// that reads it has finished. Never shrinks. Starts small on purpose so
+	// the growth path runs early and visibly.
+	bool ensureVertexBufferCapacity(uint64_t bytes)
 	{
-		const float x0 = 100.0f, y0 = 100.0f;
-		const float x1 = x0 + (float)g.textureWidth;
-		const float y1 = y0 + (float)g.textureHeight;
+		if (g.vertexBuffer && bytes <= g.vertexBufferCapacityBytes) { return true; }
 
-		const Vertex topLeft     = {x0, y0,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 0.0f};
-		const Vertex bottomLeft  = {x0, y1,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 1.0f};
-		const Vertex bottomRight = {x1, y1,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f};
-		const Vertex topRight    = {x1, y0,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 0.0f};
-
-		const Vertex vertices[6] = {
-			topLeft, bottomLeft, topRight,
-			bottomLeft, bottomRight, topRight,
-		};
-
-		g.vertexCount = 6;
-		g.vertexBufferSize = sizeof(vertices);
-		static_assert(sizeof(vertices) % 4 == 0, "writeBuffer size must be a multiple of 4");
+		uint64_t capacity = g.vertexBufferCapacityBytes ? g.vertexBufferCapacityBytes : 64 * sizeof(Vertex);
+		while (capacity < bytes) { capacity *= 2; }
 
 		// A buffer is GPU memory with a fixed purpose. Vertex: a pipeline may
 		// read it as vertex input. CopyDst: the queue may write into it.
 		BufferDescriptor desc = Default;
-		desc.label = StringView("quad vertices");
+		desc.label = StringView("batch vertices");
 		desc.usage = BufferUsage::Vertex | BufferUsage::CopyDst;
-		desc.size = g.vertexBufferSize;
+		desc.size = capacity;
 		desc.mappedAtCreation = false;
-		g.vertexBuffer = g.device.createBuffer(desc);
-		if (!g.vertexBuffer)
+		Buffer newBuffer = g.device.createBuffer(desc);
+		if (!newBuffer)
 		{
-			std::cerr << "WebGPU: createBuffer returned null\n";
+			std::cerr << "WebGPU: createBuffer (" << capacity << " bytes) returned null\n";
 			return false;
 		}
 
-		// Upload through the queue. Ordered with the other queue work, so a
-		// later submit that draws from this buffer sees the data.
-		g.queue.writeBuffer(g.vertexBuffer, 0, vertices, g.vertexBufferSize);
+		if (g.vertexBuffer) { g.vertexBuffer.release(); }
+		g.vertexBuffer = newBuffer;
+		g.vertexBufferCapacityBytes = capacity;
+		std::cout << "WebGPU vertex buffer capacity: " << capacity / sizeof(Vertex) << " vertices ("
+			<< capacity << " bytes)\n";
+		std::cout.flush();
 		return true;
+	}
+
+	// gl2d's flush: upload the accumulated batch and draw it. One texture per
+	// frame in 6a, so one draw; 6b splits the batch into runs per texture.
+	void flushBatch(RenderPassEncoder pass)
+	{
+		if (batchVertices.empty()) { return; }
+
+		const uint64_t bytes = batchVertices.size() * sizeof(Vertex);
+		static_assert(sizeof(Vertex) % 4 == 0, "writeBuffer size must be a multiple of 4");
+		if (!ensureVertexBufferCapacity(bytes)) { return; }
+
+		// Queue-ordered: the copy lands after last frame's draw has finished
+		// reading this buffer, so one buffer is enough without double buffering.
+		g.queue.writeBuffer(g.vertexBuffer, 0, batchVertices.data(), bytes);
+
+		const Texture first = batchQuadTextures.front();
+		for (const Texture &t : batchQuadTextures)
+		{
+			if (t.id != first.id)
+			{
+				std::cerr << "render: mixed textures in one batch are not supported until milestone 6b\n";
+				break;
+			}
+		}
+
+		pass.setPipeline(g.quadPipeline);
+		pass.setBindGroup(0, textures[first.id - 1].bindGroup, 0, nullptr); // group 0 = texture + sampler
+		pass.setBindGroup(1, g.cameraBindGroup, 0, nullptr);               // group 1 = camera uniform
+		pass.setVertexBuffer(0, g.vertexBuffer, 0, bytes);
+		pass.draw((uint32_t)batchVertices.size(), 1, 0, 0);
+	}
+
+	void clearBatch()
+	{
+		batchVertices.clear();
+		batchQuadTextures.clear();
+	}
+
+	// Milestone 6a demo: the whole sheet at native size as an orientation
+	// reference, plus a few hundred spinning tinted ships picked from its
+	// 5x2 cells. Cell coordinates are given in gl2d's bottom-origin
+	// convention so the boundary conversion in renderRectangle is exercised.
+	void buildDemoSprites()
+	{
+		srand(7);
+		auto rnd = [](float lo, float hi) { return lo + (hi - lo) * (rand() / (float)RAND_MAX); };
+		demoSprites.clear();
+		for (int i = 0; i < 400; i++)
+		{
+			DemoSprite d;
+			d.position = { rnd(-1200, 1800), rnd(-800, 1300) };
+			d.size = rnd(40, 140);
+			d.rotation = rnd(0, 360);
+			d.spin = rnd(-90, 90);
+			d.color = { rnd(0.5f, 1), rnd(0.5f, 1), rnd(0.5f, 1), rnd(0.6f, 1) };
+			d.cellX = rand() % 5;
+			d.cellY = rand() % 2;
+			demoSprites.push_back(d);
+		}
+	}
+
+	glm::vec4 demoCellUV(int cellX, int cellY)
+	{
+		// Top-left-origin cell rect, then expressed in gl2d's convention
+		// (v measured from the bottom) since that is what renderRectangle takes.
+		const float u0 = cellX / 5.0f, u1 = (cellX + 1) / 5.0f;
+		const float vTop = cellY / 2.0f, vBottom = (cellY + 1) / 2.0f;
+		return { u0, 1.0f - vTop, u1, 1.0f - vBottom };
+	}
+
+	void drawDemo(float deltaTime)
+	{
+		const TextureEntry &sheet = textures[demoSheet.id - 1];
+		renderRectangle({100, 100, (float)sheet.width, (float)sheet.height}, demoSheet);
+
+		for (DemoSprite &d : demoSprites)
+		{
+			d.rotation += d.spin * deltaTime;
+			renderRectangle({ d.position.x, d.position.y, d.size, d.size }, demoSheet,
+				d.color, {}, d.rotation, demoCellUV(d.cellX, d.cellY));
+		}
 	}
 
 	void printAdapter(Adapter adapter)
@@ -1014,21 +1222,19 @@ bool wgpuInit(GLFWwindow *window)
 	}
 	std::cout << "WebGPU quad pipeline created\n";
 
-	// 10. The test texture and its bind group (milestone 4).
-	if (!createTextureFromFile(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png"))
+	// 10. The test texture and its bind group (milestone 4), now a registry
+	//     entry behind a handle (milestone 6a).
+	demoSheet = createTextureFromFile(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png");
+	if (demoSheet.id == 0)
 	{
 		return false;
 	}
-	std::cout << "WebGPU texture uploaded: " << g.textureWidth << "x" << g.textureHeight
-		<< ", bind group created\n";
+	std::cout << "WebGPU texture uploaded: " << textures[demoSheet.id - 1].width << "x"
+		<< textures[demoSheet.id - 1].height << ", bind group created, handle id " << demoSheet.id << "\n";
 
-	// 11. The vertex buffer (milestone 3), now in world pixels (milestone 5).
-	if (!createQuadVertexBuffer())
-	{
-		return false;
-	}
-	std::cout << "WebGPU vertex buffer created: " << g.vertexCount << " vertices, "
-		<< g.vertexBufferSize << " bytes\n";
+	// 11. The vertex buffer is created on first flush (milestone 6a) and
+	//     grows as needed. Nothing to do here.
+	buildDemoSprites();
 
 	// 12. The camera uniform (milestone 5).
 	if (!createCameraUniform())
@@ -1061,7 +1267,7 @@ void wgpuRenderFrame()
 	// 1. Acquire: the texture that will next go on screen.
 	SurfaceTexture surfaceTexture = Default;
 	g.surface.getCurrentTexture(&surfaceTexture);
-	Texture texture = surfaceTexture.texture;
+	wgpu::Texture texture = surfaceTexture.texture;
 
 	switch (surfaceTexture.status)
 	{
@@ -1096,10 +1302,16 @@ void wgpuRenderFrame()
 		if (deltaTime > 0.1f) { deltaTime = 0.1f; }
 		g.demoTime += deltaTime;
 
-		const glm::vec2 spriteCenter(100.0f + g.textureWidth / 2.0f, 100.0f + g.textureHeight / 2.0f);
+		const TextureEntry &sheet = textures[demoSheet.id - 1];
+		const glm::vec2 spriteCenter(100.0f + sheet.width / 2.0f, 100.0f + sheet.height / 2.0f);
 		const glm::vec2 target = spriteCenter + 150.0f * glm::vec2(std::cos(g.demoTime * 0.7f), std::sin(g.demoTime * 0.7f));
 		demoCamera.follow(target, deltaTime * 550.0f, 1.0f, 150.0f, (float)g.surfaceWidth, (float)g.surfaceHeight);
 		demoCamera.zoom = 0.75f + 0.25f * std::sin(g.demoTime * 0.5f);
+
+		// Accumulate this frame's quads (milestone 6a). Nothing touches the
+		// GPU until flushBatch below.
+		clearBatch();
+		drawDemo(deltaTime);
 	}
 
 	// Camera matrix from the current framebuffer size. This and the surface
@@ -1148,11 +1360,7 @@ void wgpuRenderFrame()
 	passDesc.timestampWrites = nullptr;
 
 	RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
-	pass.setPipeline(g.quadPipeline);
-	pass.setBindGroup(0, g.textureBindGroup, 0, nullptr); // group 0 = texture + sampler, no dynamic offsets
-	pass.setBindGroup(1, g.cameraBindGroup, 0, nullptr);  // group 1 = camera uniform
-	pass.setVertexBuffer(0, g.vertexBuffer, 0, g.vertexBufferSize); // slot 0 = the layout's buffer
-	pass.draw(g.vertexCount, 1, 0, 0); // vertices, instances, first vertex, first instance
+	flushBatch(pass);
 	pass.end();
 	pass.release();
 
@@ -1186,10 +1394,14 @@ void wgpuShutdown()
 {
 	if (g.cameraBindGroup) { g.cameraBindGroup.release(); g.cameraBindGroup = nullptr; }
 	if (g.uniformBuffer) { g.uniformBuffer.release(); g.uniformBuffer = nullptr; }
-	if (g.vertexBuffer) { g.vertexBuffer.release(); g.vertexBuffer = nullptr; }
-	if (g.textureBindGroup) { g.textureBindGroup.release(); g.textureBindGroup = nullptr; }
-	if (g.textureView) { g.textureView.release(); g.textureView = nullptr; }
-	if (g.texture) { g.texture.release(); g.texture = nullptr; }
+	if (g.vertexBuffer) { g.vertexBuffer.release(); g.vertexBuffer = nullptr; g.vertexBufferCapacityBytes = 0; }
+	for (TextureEntry &t : textures)
+	{
+		if (t.bindGroup) { t.bindGroup.release(); }
+		if (t.view) { t.view.release(); }
+		if (t.texture) { t.texture.release(); }
+	}
+	textures.clear();
 	if (g.quadPipeline) { g.quadPipeline.release(); g.quadPipeline = nullptr; }
 	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
 	if (g.cameraBindGroupLayout) { g.cameraBindGroupLayout.release(); g.cameraBindGroupLayout = nullptr; }
