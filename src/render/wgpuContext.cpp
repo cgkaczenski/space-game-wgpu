@@ -4,6 +4,7 @@
 
 #include <webgpu/webgpu.hpp> // WebGPU-Cpp wrapper over webgpu.h (+ wgpu.h extensions)
 #include <glfw3webgpu.h>     // glfwCreateWindowWGPUSurface
+#include <stb_image/stb_image.h>
 
 #include <chrono>
 #include <cstddef>   // offsetof
@@ -48,16 +49,29 @@ namespace
 		Buffer vertexBuffer = nullptr;
 		uint64_t vertexBufferSize = 0;
 		uint32_t vertexCount = 0;
+
+		// 4: created once at init, shared by every texture
+		Sampler sampler = nullptr;
+		BindGroupLayout textureBindGroupLayout = nullptr; // group 0: texture + sampler
+		PipelineLayout pipelineLayout = nullptr;
+
+		// 4: per texture (one texture for now)
+		Texture texture = nullptr;
+		TextureView textureView = nullptr;
+		BindGroup textureBindGroup = nullptr;
+		int textureWidth = 0;
+		int textureHeight = 0;
 	};
 
-	// One vertex as the GPU reads it: position then color, back to back.
-	// The pipeline's vertex layout below must describe exactly this.
+	// One vertex as the GPU reads it: position, color, texture coordinate,
+	// back to back. The pipeline's vertex layout below must describe exactly this.
 	struct Vertex
 	{
 		float x, y;
 		float r, g, b, a;
+		float u, v;
 	};
-	static_assert(sizeof(Vertex) == 24, "vertex layout stride assumes tightly packed floats");
+	static_assert(sizeof(Vertex) == 32, "vertex layout stride assumes tightly packed floats");
 
 	Context g;
 
@@ -266,6 +280,192 @@ namespace
 		return g.device.createShaderModule(desc);
 	}
 
+	// The sampler: how a shader reads a texture. Separate from the texture
+	// (unlike OpenGL), so one serves every sprite. Clamp to edge and nearest
+	// filtering match what the game passes to gl2d (pixelated = true). No
+	// mipmaps yet; milestone 7 adds them and switches mipmapFilter.
+	bool createSampler()
+	{
+		SamplerDescriptor desc = Default;
+		desc.label = StringView("sprite sampler");
+		desc.addressModeU = AddressMode::ClampToEdge;
+		desc.addressModeV = AddressMode::ClampToEdge;
+		desc.addressModeW = AddressMode::ClampToEdge;
+		desc.magFilter = FilterMode::Nearest;
+		desc.minFilter = FilterMode::Nearest;
+		desc.mipmapFilter = MipmapFilterMode::Nearest;
+		desc.lodMinClamp = 0.0f;
+		desc.lodMaxClamp = 32.0f;
+		desc.compare = CompareFunction::Undefined;
+		desc.maxAnisotropy = 1;
+		g.sampler = g.device.createSampler(desc);
+		if (!g.sampler)
+		{
+			std::cerr << "WebGPU: createSampler returned null\n";
+			return false;
+		}
+		return true;
+	}
+
+	// Bind group layout 0: the contract between the shader's
+	// @group(0) @binding(n) declarations and the resources a bind group
+	// supplies. Binding 0 is a sampled 2D float texture, binding 1 a
+	// filtering sampler, both visible to the fragment stage only.
+	// The pipeline layout lists the bind group layouts by group index.
+	bool createLayouts()
+	{
+		BindGroupLayoutEntry entries[2];
+
+		// Each entry describes exactly one kind of binding. Default leaves the
+		// four sub-layouts at Undefined, which is ambiguous; the three unused
+		// ones must say BindingNotUsed explicitly.
+		entries[0] = Default;
+		entries[0].binding = 0;
+		entries[0].visibility = ShaderStage::Fragment;
+		entries[0].texture.sampleType = TextureSampleType::Float;
+		entries[0].texture.viewDimension = TextureViewDimension::_2D;
+		entries[0].texture.multisampled = false;
+		entries[0].buffer.type = BufferBindingType::BindingNotUsed;
+		entries[0].sampler.type = SamplerBindingType::BindingNotUsed;
+		entries[0].storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		entries[1] = Default;
+		entries[1].binding = 1;
+		entries[1].visibility = ShaderStage::Fragment;
+		entries[1].sampler.type = SamplerBindingType::Filtering;
+		entries[1].buffer.type = BufferBindingType::BindingNotUsed;
+		entries[1].texture.sampleType = TextureSampleType::BindingNotUsed;
+		entries[1].storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		BindGroupLayoutDescriptor layoutDesc = Default;
+		layoutDesc.label = StringView("texture bind group layout");
+		layoutDesc.entryCount = 2;
+		layoutDesc.entries = entries;
+		g.textureBindGroupLayout = g.device.createBindGroupLayout(layoutDesc);
+		if (!g.textureBindGroupLayout)
+		{
+			std::cerr << "WebGPU: createBindGroupLayout returned null\n";
+			return false;
+		}
+
+		PipelineLayoutDescriptor pipelineLayoutDesc = Default;
+		pipelineLayoutDesc.label = StringView("quad pipeline layout");
+		pipelineLayoutDesc.bindGroupLayoutCount = 1;
+		WGPUBindGroupLayout layouts[1] = { g.textureBindGroupLayout };
+		pipelineLayoutDesc.bindGroupLayouts = layouts;
+		g.pipelineLayout = g.device.createPipelineLayout(pipelineLayoutDesc);
+		if (!g.pipelineLayout)
+		{
+			std::cerr << "WebGPU: createPipelineLayout returned null\n";
+			return false;
+		}
+		return true;
+	}
+
+	// Loads a PNG with stb_image, uploads it as an RGBA8 texture with one
+	// mip level, creates its view, and builds the bind group that hands the
+	// view plus the shared sampler to the shader. Rows are uploaded top-first,
+	// exactly as stb_image returns them: no flip.
+	bool createTextureFromFile(const char *path)
+	{
+		int width = 0, height = 0, channels = 0;
+		stbi_set_flip_vertically_on_load(0);
+		unsigned char *pixels = stbi_load(path, &width, &height, &channels, 4);
+		if (!pixels)
+		{
+			std::cerr << "WebGPU: cannot load image " << path << ": " << stbi_failure_reason() << "\n";
+			return false;
+		}
+		g.textureWidth = width;
+		g.textureHeight = height;
+
+		// The texture: GPU pixel storage with a fixed format and usage.
+		// TextureBinding: a shader may sample it. CopyDst: the queue may write it.
+		TextureDescriptor texDesc = Default;
+		texDesc.label = StringView(path);
+		texDesc.dimension = TextureDimension::_2D;
+		texDesc.size.width = (uint32_t)width;
+		texDesc.size.height = (uint32_t)height;
+		texDesc.size.depthOrArrayLayers = 1;
+		texDesc.format = TextureFormat::RGBA8Unorm;
+		texDesc.mipLevelCount = 1;
+		texDesc.sampleCount = 1;
+		texDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
+		texDesc.viewFormatCount = 0;
+		texDesc.viewFormats = nullptr;
+		g.texture = g.device.createTexture(texDesc);
+		if (!g.texture)
+		{
+			std::cerr << "WebGPU: createTexture returned null\n";
+			stbi_image_free(pixels);
+			return false;
+		}
+
+		// Upload: destination is mip 0 at origin; the source layout says how
+		// the CPU rows are laid out. This is glTexImage2D.
+		TexelCopyTextureInfo destination = Default;
+		destination.texture = g.texture;
+		destination.mipLevel = 0;
+		destination.origin.x = 0;
+		destination.origin.y = 0;
+		destination.origin.z = 0;
+		destination.aspect = TextureAspect::All;
+
+		TexelCopyBufferLayout sourceLayout = Default;
+		sourceLayout.offset = 0;
+		sourceLayout.bytesPerRow = 4 * (uint32_t)width;
+		sourceLayout.rowsPerImage = (uint32_t)height;
+
+		const size_t byteCount = (size_t)4 * width * height;
+		g.queue.writeTexture(destination, pixels, byteCount, sourceLayout, texDesc.size);
+		stbi_image_free(pixels);
+
+		// The view the shader samples through.
+		TextureViewDescriptor viewDesc = Default;
+		viewDesc.label = StringView("sprite view");
+		viewDesc.format = TextureFormat::RGBA8Unorm;
+		viewDesc.dimension = TextureViewDimension::_2D;
+		viewDesc.baseMipLevel = 0;
+		viewDesc.mipLevelCount = 1;
+		viewDesc.baseArrayLayer = 0;
+		viewDesc.arrayLayerCount = 1;
+		viewDesc.aspect = TextureAspect::All;
+		viewDesc.usage = TextureUsage::TextureBinding;
+		g.textureView = g.texture.createView(viewDesc);
+		if (!g.textureView)
+		{
+			std::cerr << "WebGPU: createView returned null\n";
+			return false;
+		}
+
+		// The bind group: this view and the shared sampler, in the slots the
+		// layout declared. Milestone 7 builds one of these per loaded texture.
+		BindGroupEntry bindEntries[2];
+		bindEntries[0] = Default;
+		bindEntries[0].binding = 0;
+		bindEntries[0].textureView = g.textureView;
+		bindEntries[0].buffer = nullptr;
+		bindEntries[0].sampler = nullptr;
+		bindEntries[1] = Default;
+		bindEntries[1].binding = 1;
+		bindEntries[1].sampler = g.sampler;
+		bindEntries[1].buffer = nullptr;
+		bindEntries[1].textureView = nullptr;
+
+		BindGroupDescriptor groupDesc = Default;
+		groupDesc.label = StringView("sprite bind group");
+		groupDesc.layout = g.textureBindGroupLayout;
+		groupDesc.entryCount = 2;
+		groupDesc.entries = bindEntries;
+		g.textureBindGroup = g.device.createBindGroup(groupDesc);
+		if (!g.textureBindGroup)
+		{
+			std::cerr << "WebGPU: createBindGroup returned null\n";
+			return false;
+		}
+		return true;
+	}
+
 	// The render pipeline: every configurable stage of the GPU's fixed
 	// triangle pipeline, baked into one immutable object. Selected per pass
 	// with setPipeline; never mutated.
@@ -278,9 +478,9 @@ namespace
 		desc.label = StringView("quad pipeline");
 
 		// Vertex layout: how the pipeline reads bytes out of the vertex buffer.
-		// One buffer, interleaved, 24 bytes per vertex. Each attribute names
+		// One buffer, interleaved, 32 bytes per vertex. Each attribute names
 		// the @location it feeds in the shader.
-		VertexAttribute attributes[2];
+		VertexAttribute attributes[3];
 		attributes[0] = Default;
 		attributes[0].shaderLocation = 0;                // @location(0) position
 		attributes[0].format = VertexFormat::Float32x2;
@@ -289,11 +489,15 @@ namespace
 		attributes[1].shaderLocation = 1;                // @location(1) color
 		attributes[1].format = VertexFormat::Float32x4;
 		attributes[1].offset = offsetof(Vertex, r);
+		attributes[2] = Default;
+		attributes[2].shaderLocation = 2;                // @location(2) uv
+		attributes[2].format = VertexFormat::Float32x2;
+		attributes[2].offset = offsetof(Vertex, u);
 
 		VertexBufferLayout vertexLayout = Default;
 		vertexLayout.arrayStride = sizeof(Vertex);
 		vertexLayout.stepMode = VertexStepMode::Vertex; // advance once per vertex, not per instance
-		vertexLayout.attributeCount = 2;
+		vertexLayout.attributeCount = 3;
 		vertexLayout.attributes = attributes;
 
 		// Vertex stage: one vertex buffer in slot 0.
@@ -345,9 +549,8 @@ namespace
 		desc.multisample.mask = 0xFFFFFFFFu;
 		desc.multisample.alphaToCoverageEnabled = false;
 
-		// No bind groups yet, so no layout: the pipeline infers an empty one.
-		// Milestone 4 replaces this with an explicit layout.
-		desc.layout = nullptr;
+		// The explicit layout: group 0 is the texture + sampler group.
+		desc.layout = g.pipelineLayout;
 
 		g.quadPipeline = g.device.createRenderPipeline(desc);
 
@@ -366,14 +569,19 @@ namespace
 	// One quad as two triangles, six vertices, no index buffer, in the corner
 	// order gl2d emits (v1 v2 v4, v2 v3 v4 with v1 top-left, v2 bottom-left,
 	// v3 bottom-right, v4 top-right) so milestone 6a is a straight port.
-	// Positions are clip space; each corner gets its own color so the
-	// interpolation is visible.
+	// Positions are clip space, sized to the texture's aspect ratio. Color is
+	// white so the texture shows unmodified. Texture coordinates follow the
+	// top-left-origin convention: (0,0) at the top-left corner, v down.
 	bool createQuadVertexBuffer()
 	{
-		const Vertex topLeft     = {-0.5f,  0.5f,  1.0f, 0.2f, 0.2f, 1.0f}; // red
-		const Vertex bottomLeft  = {-0.5f, -0.5f,  0.2f, 1.0f, 0.2f, 1.0f}; // green
-		const Vertex bottomRight = { 0.5f, -0.5f,  0.2f, 0.4f, 1.0f, 1.0f}; // blue
-		const Vertex topRight    = { 0.5f,  0.5f,  1.0f, 0.9f, 0.2f, 1.0f}; // yellow
+		const float aspect = (float)g.textureWidth / (float)g.textureHeight;
+		const float halfW = aspect >= 1.0f ? 0.75f : 0.75f * aspect;
+		const float halfH = aspect >= 1.0f ? 0.75f / aspect : 0.75f;
+
+		const Vertex topLeft     = {-halfW,  halfH,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 0.0f};
+		const Vertex bottomLeft  = {-halfW, -halfH,  1.0f, 1.0f, 1.0f, 1.0f,  0.0f, 1.0f};
+		const Vertex bottomRight = { halfW, -halfH,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f};
+		const Vertex topRight    = { halfW,  halfH,  1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 0.0f};
 
 		const Vertex vertices[6] = {
 			topLeft, bottomLeft, topRight,
@@ -618,14 +826,30 @@ bool wgpuInit(GLFWwindow *window)
 	}
 	std::cout << "WebGPU surface configured at " << g.surfaceWidth << "x" << g.surfaceHeight << "\n";
 
-	// 8. The quad pipeline (milestones 2, 3). Depends on the surface format.
+	// 8. Sampler and layouts (milestone 4). The pipeline needs the layout.
+	if (!createSampler() || !createLayouts())
+	{
+		return false;
+	}
+	std::cout << "WebGPU sampler and bind group layout created\n";
+
+	// 9. The quad pipeline (milestones 2, 3, 4). Depends on the surface
+	//    format and the pipeline layout.
 	if (!createQuadPipeline())
 	{
 		return false;
 	}
 	std::cout << "WebGPU quad pipeline created\n";
 
-	// 9. The vertex buffer (milestone 3).
+	// 10. The test texture and its bind group (milestone 4).
+	if (!createTextureFromFile(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png"))
+	{
+		return false;
+	}
+	std::cout << "WebGPU texture uploaded: " << g.textureWidth << "x" << g.textureHeight
+		<< ", bind group created\n";
+
+	// 11. The vertex buffer (milestone 3), sized to the texture's aspect.
 	if (!createQuadVertexBuffer())
 	{
 		return false;
@@ -712,6 +936,7 @@ void wgpuRenderFrame()
 
 	RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
 	pass.setPipeline(g.quadPipeline);
+	pass.setBindGroup(0, g.textureBindGroup, 0, nullptr); // group 0 = texture + sampler, no dynamic offsets
 	pass.setVertexBuffer(0, g.vertexBuffer, 0, g.vertexBufferSize); // slot 0 = the layout's buffer
 	pass.draw(g.vertexCount, 1, 0, 0); // vertices, instances, first vertex, first instance
 	pass.end();
@@ -746,7 +971,13 @@ void wgpuRenderFrame()
 void wgpuShutdown()
 {
 	if (g.vertexBuffer) { g.vertexBuffer.release(); g.vertexBuffer = nullptr; }
+	if (g.textureBindGroup) { g.textureBindGroup.release(); g.textureBindGroup = nullptr; }
+	if (g.textureView) { g.textureView.release(); g.textureView = nullptr; }
+	if (g.texture) { g.texture.release(); g.texture = nullptr; }
 	if (g.quadPipeline) { g.quadPipeline.release(); g.quadPipeline = nullptr; }
+	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
+	if (g.textureBindGroupLayout) { g.textureBindGroupLayout.release(); g.textureBindGroupLayout = nullptr; }
+	if (g.sampler) { g.sampler.release(); g.sampler = nullptr; }
 	if (g.surface && g.surfaceConfigured) { g.surface.unconfigure(); g.surfaceConfigured = false; }
 	if (g.queue) { g.queue.release(); g.queue = nullptr; }
 	if (g.device) { g.device.release(); g.device = nullptr; }
