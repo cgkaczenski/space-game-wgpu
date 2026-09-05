@@ -62,13 +62,23 @@ namespace
 		BindGroupLayout textureBindGroupLayout = nullptr; // group 0: texture + sampler
 		PipelineLayout pipelineLayout = nullptr;
 
-		// 5: the camera uniform, one 64-byte matrix rewritten every frame
-		BindGroupLayout cameraBindGroupLayout = nullptr; // group 1: uniform buffer
+		// 5/6b: the camera uniform. One 64-byte matrix per camera used in a
+		// frame, each in its own slot of cameraSlotStride bytes (the device's
+		// minUniformBufferOffsetAlignment), selected per draw with a dynamic
+		// offset. Buffer and bind group are recreated together when the slot
+		// count grows.
+		BindGroupLayout cameraBindGroupLayout = nullptr; // group 1: uniform buffer, dynamic offset
 		Buffer uniformBuffer = nullptr;
 		BindGroup cameraBindGroup = nullptr;
+		uint32_t cameraSlotStride = 256;
+		uint32_t cameraSlotCapacity = 0;
+		uint32_t minUniformBufferOffsetAlignment = 256;
+		bool runStatsPrinted = false;
 		std::chrono::steady_clock::time_point lastFrameTime = {};
 		float demoTime = 0.0f;
 	};
+
+	Context g;
 
 	// gl2d's camera, fields and follow() copied verbatim so milestone 7 can
 	// call it under the same name with the same numbers. Rotation is omitted:
@@ -126,7 +136,33 @@ namespace
 		}
 	};
 
-	Camera demoCamera;
+	// gl2d's camera stack. The game edits currentCamera's fields directly
+	// and calls follow() on it, so changes are detected at each quad by
+	// comparing with the last camera recorded this frame, not intercepted.
+	Camera currentCamera;
+	std::vector<Camera> cameraPushPop;
+
+	void pushCamera(Camera c = {})
+	{
+		cameraPushPop.push_back(currentCamera);
+		currentCamera = c;
+	}
+
+	void popCamera()
+	{
+		if (cameraPushPop.empty())
+		{
+			std::cerr << "render: popCamera on an empty stack\n";
+			return;
+		}
+		currentCamera = cameraPushPop.back();
+		cameraPushPop.pop_back();
+	}
+
+	bool sameCamera(const Camera &a, const Camera &b)
+	{
+		return a.position == b.position && a.zoom == b.zoom;
+	}
 
 	// What the shader's Camera struct reads: one column-major mat4x4f.
 	struct CameraUniforms
@@ -196,6 +232,9 @@ namespace
 	// texture of each quad (6b uses that for draw ranges).
 	std::vector<Vertex> batchVertices;
 	std::vector<Texture> batchQuadTextures;
+	std::vector<uint32_t> batchQuadCameras; // index into frameCameras
+	std::vector<Camera> frameCameras;       // every distinct camera used this frame, in order
+	Texture white1pxSquareTexture;          // gl2d's untextured path samples this
 
 	// gl2d's rotateAroundPoint, verbatim. It works in gl2d's y-flipped space
 	// (callers pass corners with y negated) and negates the pivot's y to
@@ -269,6 +308,14 @@ namespace
 		push(v4, colors[3], u1, v0);
 
 		batchQuadTextures.push_back(texture);
+
+		// Record which camera this quad was drawn under (6b). A new slot only
+		// when the camera changed since the last recorded one.
+		if (frameCameras.empty() || !sameCamera(frameCameras.back(), currentCamera))
+		{
+			frameCameras.push_back(currentCamera);
+		}
+		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
 	}
 
 	// gl2d's renderRectangle: the rotation origin is relative to the
@@ -289,7 +336,94 @@ namespace
 		renderRectangle(transforms, texture, c, origin, rotationDegrees, textureCoords);
 	}
 
-	// ---- demo content (milestone 6a) ----
+	// gl2d's untextured rectangles: the 1px white texture makes the fragment
+	// shader's color * texel equal the vertex color.
+	void renderRectangle(const Rect transforms, const Color4f colors[4], const glm::vec2 origin = { 0,0 }, const float rotation = 0)
+	{
+		renderRectangle(transforms, white1pxSquareTexture, colors, origin, rotation);
+	}
+
+	void renderRectangle(const Rect transforms, const Color4f colors, const glm::vec2 origin = { 0,0 }, const float rotation = 0)
+	{
+		Color4f c[4] = { colors, colors, colors, colors };
+		renderRectangle(transforms, c, origin, rotation);
+	}
+
+	// gl2d's renderLine, both forms, verbatim.
+	void renderLine(const glm::vec2 position, const float angleDegrees, const float length, const Color4f color, const float width = 2.f)
+	{
+		renderRectangle({position - glm::vec2(0,width / 2.f), length, width},
+			color, {-length/2, 0}, angleDegrees);
+	}
+
+	void renderLine(const glm::vec2 start, const glm::vec2 end, const Color4f color, const float width = 2.f)
+	{
+		glm::vec2 vector = end - start;
+		float length = glm::length(vector);
+		float angle = std::atan2(vector.y, vector.x);
+		renderLine(start, -glm::degrees(angle), length, color, width);
+	}
+
+	// gl2d's renderCircleOutline, verbatim: a polygon of lines.
+	void renderCircleOutline(const glm::vec2 position, const Color4f color, const float size, const float width = 2.f, const unsigned int segments = 16)
+	{
+		auto calcPos = [&](int p)
+		{
+			glm::vec2 circle = {size,0};
+
+			float a = 3.1415926 * 2 * ((float)p / segments);
+
+			float c = std::cos(a);
+			float s = std::sin(a);
+
+			circle = {c * circle.x - s * circle.y, s * circle.x + c * circle.y};
+
+			return circle + position;
+		};
+
+		glm::vec2 lastPos = calcPos(1);
+		renderLine(calcPos(0), lastPos, color, width);
+		for (int i = 1; i < segments; i++)
+		{
+			glm::vec2 pos1 = lastPos;
+			glm::vec2 pos2 = calcPos(i + 1);
+
+			renderLine(pos1, pos2, color, width);
+
+			lastPos = pos2;
+		}
+	}
+
+	// gl2d's getViewRect, verbatim, against the surface size. The camera's
+	// visible world rectangle, ignoring rotation. tiledRenderer uses it.
+	glm::vec4 getViewRect()
+	{
+		auto rect = glm::vec4{0, 0, g.surfaceWidth, g.surfaceHeight};
+
+		glm::mat3 mat =
+		{1.f, 0, currentCamera.position.x ,
+		 0, 1.f, currentCamera.position.y,
+		 0, 0, 1.f};
+		mat = glm::transpose(mat);
+
+		glm::vec3 pos1 = {rect.x, rect.y, 1.f};
+		glm::vec3 pos2 = {rect.z + rect.x, rect.w + rect.y, 1.f};
+
+		pos1 = mat * pos1;
+		pos2 = mat * pos2;
+
+		glm::vec2 point((pos1.x + pos2.x) / 2.f, (pos1.y + pos2.y) / 2.f);
+
+		auto scaleAroundPoint = [](glm::vec2 vec, glm::vec2 point, float scale) { return (vec - point) * scale + point; };
+		pos1 = glm::vec3(scaleAroundPoint(pos1, point, 1.f/currentCamera.zoom), 1.f);
+		pos2 = glm::vec3(scaleAroundPoint(pos2, point, 1.f/currentCamera.zoom), 1.f);
+
+		rect = {pos1.x, pos1.y, pos2.x - pos1.x, pos2.y - pos1.y};
+
+		return rect;
+	}
+
+	// ---- demo content (milestones 6a, 6b) ----
 	struct DemoSprite
 	{
 		glm::vec2 position;
@@ -301,8 +435,8 @@ namespace
 	};
 	std::vector<DemoSprite> demoSprites;
 	Texture demoSheet;
+	Texture demoProjectiles;
 
-	Context g;
 
 	const char *backendName(WGPUBackendType t)
 	{
@@ -584,7 +718,7 @@ namespace
 		cameraEntry.binding = 0;
 		cameraEntry.visibility = ShaderStage::Vertex;
 		cameraEntry.buffer.type = BufferBindingType::Uniform;
-		cameraEntry.buffer.hasDynamicOffset = false;   // milestone 6b turns this on
+		cameraEntry.buffer.hasDynamicOffset = true;    // one buffer, one slot per camera, offset per draw
 		cameraEntry.buffer.minBindingSize = sizeof(CameraUniforms);
 		cameraEntry.sampler.type = SamplerBindingType::BindingNotUsed;
 		cameraEntry.texture.sampleType = TextureSampleType::BindingNotUsed;
@@ -616,27 +750,43 @@ namespace
 		return true;
 	}
 
-	// The uniform buffer and the bind group that hands it to the shader.
-	// Created once; the contents are rewritten every frame.
-	bool createCameraUniform()
+	uint32_t ceilToNextMultiple(uint32_t value, uint32_t step)
 	{
+		uint32_t divide_and_ceil = value / step + (value % step == 0 ? 0 : 1);
+		return step * divide_and_ceil;
+	}
+
+	// The uniform buffer holds one CameraUniforms per slot, slots spaced by
+	// the device's minimum dynamic-offset alignment (256 here). The bind
+	// group binds one struct's worth at offset 0; setBindGroup's dynamic
+	// offset moves that window to the slot for each draw. Growing the slot
+	// count means a new buffer and, because the group references the buffer,
+	// a new bind group.
+	bool ensureCameraSlotCapacity(uint32_t slots)
+	{
+		if (g.uniformBuffer && slots <= g.cameraSlotCapacity) { return true; }
+
+		g.cameraSlotStride = ceilToNextMultiple((uint32_t)sizeof(CameraUniforms), g.minUniformBufferOffsetAlignment);
+		uint32_t capacity = g.cameraSlotCapacity ? g.cameraSlotCapacity : 16;
+		while (capacity < slots) { capacity *= 2; }
+
 		BufferDescriptor desc = Default;
 		desc.label = StringView("camera uniforms");
 		desc.usage = BufferUsage::Uniform | BufferUsage::CopyDst;
-		desc.size = sizeof(CameraUniforms);
+		desc.size = (uint64_t)g.cameraSlotStride * capacity;
 		desc.mappedAtCreation = false;
-		g.uniformBuffer = g.device.createBuffer(desc);
-		if (!g.uniformBuffer)
+		Buffer newBuffer = g.device.createBuffer(desc);
+		if (!newBuffer)
 		{
-			std::cerr << "WebGPU: createBuffer (uniform) returned null\n";
+			std::cerr << "WebGPU: createBuffer (uniform, " << desc.size << " bytes) returned null\n";
 			return false;
 		}
 
 		BindGroupEntry entry = Default;
 		entry.binding = 0;
-		entry.buffer = g.uniformBuffer;
+		entry.buffer = newBuffer;
 		entry.offset = 0;
-		entry.size = sizeof(CameraUniforms);
+		entry.size = sizeof(CameraUniforms); // one struct, not the whole buffer
 		entry.sampler = nullptr;
 		entry.textureView = nullptr;
 
@@ -645,30 +795,31 @@ namespace
 		groupDesc.layout = g.cameraBindGroupLayout;
 		groupDesc.entryCount = 1;
 		groupDesc.entries = &entry;
-		g.cameraBindGroup = g.device.createBindGroup(groupDesc);
-		if (!g.cameraBindGroup)
+		BindGroup newGroup = g.device.createBindGroup(groupDesc);
+		if (!newGroup)
 		{
 			std::cerr << "WebGPU: createBindGroup (camera) returned null\n";
+			newBuffer.release();
 			return false;
 		}
+
+		if (g.cameraBindGroup) { g.cameraBindGroup.release(); }
+		if (g.uniformBuffer) { g.uniformBuffer.release(); }
+		g.cameraBindGroup = newGroup;
+		g.uniformBuffer = newBuffer;
+		g.cameraSlotCapacity = capacity;
+		std::cout << "WebGPU camera slots: " << capacity << " x " << g.cameraSlotStride << " bytes\n";
+		std::cout.flush();
 		return true;
 	}
 
-	// Loads a PNG with stb_image, uploads it as an RGBA8 texture with one
-	// mip level, creates its view, and builds the bind group that hands the
-	// view plus the shared sampler to the shader. Rows are uploaded top-first,
-	// exactly as stb_image returns them: no flip. Returns a handle (id 0 on
-	// failure) into the registry.
-	Texture createTextureFromFile(const char *path)
+	// Uploads RGBA8 pixels (rows top-first, tightly packed) as a texture with
+	// one mip level, creates its view, and builds the bind group that hands
+	// the view plus the shared sampler to the shader. Returns a handle (id 0
+	// on failure) into the registry. Shared by the file loader, the 1px
+	// white texture, and milestone 7's padded loader.
+	Texture createTextureFromPixels(const unsigned char *pixels, int width, int height, const char *label)
 	{
-		int width = 0, height = 0, channels = 0;
-		stbi_set_flip_vertically_on_load(0);
-		unsigned char *pixels = stbi_load(path, &width, &height, &channels, 4);
-		if (!pixels)
-		{
-			std::cerr << "WebGPU: cannot load image " << path << ": " << stbi_failure_reason() << "\n";
-			return Texture{};
-		}
 		TextureEntry entry;
 		entry.width = width;
 		entry.height = height;
@@ -676,7 +827,7 @@ namespace
 		// The texture: GPU pixel storage with a fixed format and usage.
 		// TextureBinding: a shader may sample it. CopyDst: the queue may write it.
 		TextureDescriptor texDesc = Default;
-		texDesc.label = StringView(path);
+		texDesc.label = StringView(label);
 		texDesc.dimension = TextureDimension::_2D;
 		texDesc.size.width = (uint32_t)width;
 		texDesc.size.height = (uint32_t)height;
@@ -691,7 +842,6 @@ namespace
 		if (!entry.texture)
 		{
 			std::cerr << "WebGPU: createTexture returned null\n";
-			stbi_image_free(pixels);
 			return Texture{};
 		}
 
@@ -712,7 +862,6 @@ namespace
 
 		const size_t byteCount = (size_t)4 * width * height;
 		g.queue.writeTexture(destination, pixels, byteCount, sourceLayout, texDesc.size);
-		stbi_image_free(pixels);
 
 		// The view the shader samples through.
 		TextureViewDescriptor viewDesc = Default;
@@ -763,6 +912,30 @@ namespace
 
 		textures.push_back(entry);
 		return Texture{ (uint32_t)textures.size() };
+	}
+
+	// Loads a PNG with stb_image. Rows come back top-first and are uploaded
+	// as-is: no flip (see the milestone 4 orientation decision).
+	Texture createTextureFromFile(const char *path)
+	{
+		int width = 0, height = 0, channels = 0;
+		stbi_set_flip_vertically_on_load(0);
+		unsigned char *pixels = stbi_load(path, &width, &height, &channels, 4);
+		if (!pixels)
+		{
+			std::cerr << "WebGPU: cannot load image " << path << ": " << stbi_failure_reason() << "\n";
+			return Texture{};
+		}
+		Texture t = createTextureFromPixels(pixels, width, height, path);
+		stbi_image_free(pixels);
+		return t;
+	}
+
+	// gl2d's create1PxSquare: the texture behind every untextured draw.
+	Texture createWhite1pxTexture()
+	{
+		const unsigned char white[4] = { 0xff, 0xff, 0xff, 0xff };
+		return createTextureFromPixels(white, 1, 1, "1px white");
 	}
 
 	// The render pipeline: every configurable stage of the GPU's fixed
@@ -914,27 +1087,54 @@ namespace
 		// reading this buffer, so one buffer is enough without double buffering.
 		g.queue.writeBuffer(g.vertexBuffer, 0, batchVertices.data(), bytes);
 
-		const Texture first = batchQuadTextures.front();
-		for (const Texture &t : batchQuadTextures)
+		// One matrix per camera used this frame, each in its own slot.
+		if (!ensureCameraSlotCapacity((uint32_t)frameCameras.size())) { return; }
+		for (size_t i = 0; i < frameCameras.size(); i++)
 		{
-			if (t.id != first.id)
-			{
-				std::cerr << "render: mixed textures in one batch are not supported until milestone 6b\n";
-				break;
-			}
+			CameraUniforms uniforms;
+			uniforms.viewProj = buildViewProj(frameCameras[i], (float)g.surfaceWidth, (float)g.surfaceHeight);
+			g.queue.writeBuffer(g.uniformBuffer, (uint64_t)i * g.cameraSlotStride, &uniforms, sizeof(uniforms));
 		}
 
+		// gl2d's flush loop: one draw per run of consecutive quads that share
+		// a texture, extended to also break when the camera changes. Order is
+		// preserved, so overlap and transparency come out as they do today.
 		pass.setPipeline(g.quadPipeline);
-		pass.setBindGroup(0, textures[first.id - 1].bindGroup, 0, nullptr); // group 0 = texture + sampler
-		pass.setBindGroup(1, g.cameraBindGroup, 0, nullptr);               // group 1 = camera uniform
 		pass.setVertexBuffer(0, g.vertexBuffer, 0, bytes);
-		pass.draw((uint32_t)batchVertices.size(), 1, 0, 0);
+
+		const size_t quadCount = batchQuadTextures.size();
+		size_t runStart = 0;
+		uint32_t runs = 0;
+		for (size_t i = 1; i <= quadCount; i++)
+		{
+			const bool boundary = (i == quadCount)
+				|| batchQuadTextures[i].id != batchQuadTextures[runStart].id
+				|| batchQuadCameras[i] != batchQuadCameras[runStart];
+			if (!boundary) { continue; }
+
+			const uint32_t dynamicOffset = batchQuadCameras[runStart] * g.cameraSlotStride;
+			pass.setBindGroup(0, textures[batchQuadTextures[runStart].id - 1].bindGroup, 0, nullptr); // texture + sampler
+			pass.setBindGroup(1, g.cameraBindGroup, 1, &dynamicOffset);                             // camera slot
+			pass.draw((uint32_t)((i - runStart) * 6), 1, (uint32_t)(runStart * 6), 0);
+			runs++;
+			runStart = i;
+		}
+
+		if (!g.runStatsPrinted)
+		{
+			g.runStatsPrinted = true;
+			std::cout << "WebGPU first flush: " << quadCount << " quads, " << frameCameras.size()
+				<< " cameras, " << runs << " draw runs\n";
+			std::cout.flush();
+		}
 	}
 
 	void clearBatch()
 	{
 		batchVertices.clear();
 		batchQuadTextures.clear();
+		batchQuadCameras.clear();
+		frameCameras.clear();
 	}
 
 	// Milestone 6a demo: the whole sheet at native size as an orientation
@@ -969,17 +1169,53 @@ namespace
 		return { u0, 1.0f - vTop, u1, 1.0f - vBottom };
 	}
 
+	glm::vec4 demoProjectileUV(int cellX, int cellY)
+	{
+		// projectiles.png is a 3x2 sheet.
+		const float u0 = cellX / 3.0f, u1 = (cellX + 1) / 3.0f;
+		const float vTop = cellY / 2.0f, vBottom = (cellY + 1) / 2.0f;
+		return { u0, 1.0f - vTop, u1, 1.0f - vBottom };
+	}
+
 	void drawDemo(float deltaTime)
 	{
 		const TextureEntry &sheet = textures[demoSheet.id - 1];
 		renderRectangle({100, 100, (float)sheet.width, (float)sheet.height}, demoSheet);
 
+		// Ships and projectiles interleaved in submission order so the flush
+		// has to break runs often. Every third sprite is a projectile.
+		int i = 0;
 		for (DemoSprite &d : demoSprites)
 		{
 			d.rotation += d.spin * deltaTime;
-			renderRectangle({ d.position.x, d.position.y, d.size, d.size }, demoSheet,
-				d.color, {}, d.rotation, demoCellUV(d.cellX, d.cellY));
+			if (i++ % 3 == 2)
+			{
+				renderRectangle({ d.position.x, d.position.y, d.size, d.size }, demoProjectiles,
+					d.color, {}, d.rotation, demoProjectileUV(d.cellX % 3, d.cellY));
+			}
+			else
+			{
+				renderRectangle({ d.position.x, d.position.y, d.size, d.size }, demoSheet,
+					d.color, {}, d.rotation, demoCellUV(d.cellX, d.cellY));
+			}
 		}
+
+		// Untextured draws through the white texture: hitbox-style circles
+		// around the sheet and a line across it, gl2d's own helpers.
+		const glm::vec2 sheetCenter(100.0f + sheet.width / 2.0f, 100.0f + sheet.height / 2.0f);
+		renderCircleOutline(sheetCenter, {0, 1, 0, 1}, 200.0f, 8.0f, 32);
+		renderCircleOutline(sheetCenter, {1, 0, 0, 1}, 60.0f, 6.0f, 16);
+		renderLine({100, 100}, {100.0f + sheet.width, 100.0f + sheet.height}, {1, 1, 0, 1}, 4.0f);
+
+		// Screen-space UI, gl2d style: push the default camera, draw, pop.
+		// This bar must stay put while the world camera circles and zooms.
+		pushCamera();
+		{
+			const float w = (float)g.surfaceWidth, h = (float)g.surfaceHeight;
+			renderRectangle({ w * 0.65f, h * 0.1f, w * 0.3f, w * 0.3f / 8.0f }, {0.15f, 0.15f, 0.15f, 0.9f});
+			renderRectangle({ w * 0.65f, h * 0.1f, w * 0.3f * 0.7f, w * 0.3f / 8.0f }, {0.2f, 0.9f, 0.3f, 1});
+		}
+		popCamera();
 	}
 
 	void printAdapter(Adapter adapter)
@@ -1006,6 +1242,7 @@ namespace
 		Limits limits = Default;
 		if (adapter.getLimits(&limits) == Status::Success)
 		{
+			g.minUniformBufferOffsetAlignment = limits.minUniformBufferOffsetAlignment;
 			std::cout << "  limits:\n"
 				<< "    maxTextureDimension2D:          " << limits.maxTextureDimension2D << "\n"
 				<< "    maxBindGroups:                  " << limits.maxBindGroups << "\n"
@@ -1222,26 +1459,29 @@ bool wgpuInit(GLFWwindow *window)
 	}
 	std::cout << "WebGPU quad pipeline created\n";
 
-	// 10. The test texture and its bind group (milestone 4), now a registry
-	//     entry behind a handle (milestone 6a).
+	// 10. Textures: gl2d's 1px white first (untextured draws), then the two
+	//     demo sheets. Each is a registry entry behind a handle.
+	white1pxSquareTexture = createWhite1pxTexture();
 	demoSheet = createTextureFromFile(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png");
-	if (demoSheet.id == 0)
+	demoProjectiles = createTextureFromFile(RESOURCES_PATH "spaceShip/stitchedFiles/projectiles.png");
+	if (white1pxSquareTexture.id == 0 || demoSheet.id == 0 || demoProjectiles.id == 0)
 	{
 		return false;
 	}
-	std::cout << "WebGPU texture uploaded: " << textures[demoSheet.id - 1].width << "x"
-		<< textures[demoSheet.id - 1].height << ", bind group created, handle id " << demoSheet.id << "\n";
+	for (size_t i = 0; i < textures.size(); i++)
+	{
+		std::cout << "WebGPU texture " << (i + 1) << ": " << textures[i].width << "x" << textures[i].height << "\n";
+	}
 
 	// 11. The vertex buffer is created on first flush (milestone 6a) and
 	//     grows as needed. Nothing to do here.
 	buildDemoSprites();
 
-	// 12. The camera uniform (milestone 5).
-	if (!createCameraUniform())
+	// 12. The camera uniform slots (milestones 5, 6b). Grow on demand.
+	if (!ensureCameraSlotCapacity(1))
 	{
 		return false;
 	}
-	std::cout << "WebGPU camera uniform buffer created: " << sizeof(CameraUniforms) << " bytes\n";
 	g.lastFrameTime = std::chrono::steady_clock::now();
 	std::cout.flush();
 	return true;
@@ -1305,8 +1545,8 @@ void wgpuRenderFrame()
 		const TextureEntry &sheet = textures[demoSheet.id - 1];
 		const glm::vec2 spriteCenter(100.0f + sheet.width / 2.0f, 100.0f + sheet.height / 2.0f);
 		const glm::vec2 target = spriteCenter + 150.0f * glm::vec2(std::cos(g.demoTime * 0.7f), std::sin(g.demoTime * 0.7f));
-		demoCamera.follow(target, deltaTime * 550.0f, 1.0f, 150.0f, (float)g.surfaceWidth, (float)g.surfaceHeight);
-		demoCamera.zoom = 0.75f + 0.25f * std::sin(g.demoTime * 0.5f);
+		currentCamera.follow(target, deltaTime * 550.0f, 1.0f, 150.0f, (float)g.surfaceWidth, (float)g.surfaceHeight);
+		currentCamera.zoom = 0.75f + 0.25f * std::sin(g.demoTime * 0.5f);
 
 		// Accumulate this frame's quads (milestone 6a). Nothing touches the
 		// GPU until flushBatch below.
@@ -1314,11 +1554,9 @@ void wgpuRenderFrame()
 		drawDemo(deltaTime);
 	}
 
-	// Camera matrix from the current framebuffer size. This and the surface
-	// configuration must agree on the size, or sprites stretch on resize.
-	CameraUniforms uniforms;
-	uniforms.viewProj = buildViewProj(demoCamera, (float)g.surfaceWidth, (float)g.surfaceHeight);
-	g.queue.writeBuffer(g.uniformBuffer, 0, &uniforms, sizeof(uniforms));
+	// Camera matrices are written per slot inside flushBatch, from the
+	// current framebuffer size. That size and the surface configuration must
+	// agree, or sprites stretch on resize.
 
 	// 2. View: render passes attach to a view of a texture, never the texture.
 	TextureViewDescriptor viewDesc = Default;
