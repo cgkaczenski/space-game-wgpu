@@ -6,6 +6,7 @@
 
 #include <render/wgpuContext.h>
 #include <render/wgpu2d.h>
+#include <render/wgpuFrame.h>
 #ifdef __APPLE__
 #include <render/wgpuMetalLayer.h>
 #endif
@@ -1567,6 +1568,40 @@ void wgpuShutdown()
 	if (g.adapter) { g.adapter.release(); g.adapter = nullptr; }
 	if (g.surface) { g.surface.release(); g.surface = nullptr; }
 	if (g.instance) { g.instance.release(); g.instance = nullptr; }
+}
+
+// -------------------------------------------------------------------------
+// Accessors for the rest of the render layer (render/wgpuFrame.h). The
+// context stays private to this file; these hand out exactly what another
+// render translation unit needs to record into the frame.
+// -------------------------------------------------------------------------
+
+Device wgpuDevice() { return g.device; }
+Queue wgpuQueue() { return g.queue; }
+TextureFormat wgpuSurfaceFormat() { return g.surfaceFormat; }
+BindGroupLayout wgpuTextureBindGroupLayout() { return g.textureBindGroupLayout; }
+
+BindGroup wgpuTextureBindGroup(uint32_t textureId)
+{
+	if (textureId == 0 || textureId > textures.size()) { return nullptr; }
+	return textures[textureId - 1].bindGroup;
+}
+
+void wgpuSurfaceSize(int &width, int &height)
+{
+	width = g.surfaceWidth;
+	height = g.surfaceHeight;
+}
+
+ShaderModule wgpuCreateShaderModuleFromFile(const char *path)
+{
+	return createShaderModuleFromFile(path);
+}
+
+RenderPassEncoder wgpuCurrentRenderPass()
+{
+	if (!ensurePassBegun()) { return nullptr; }
+	return g.framePass;
 }
 
 } // namespace render

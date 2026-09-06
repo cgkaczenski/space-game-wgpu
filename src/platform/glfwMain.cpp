@@ -25,7 +25,9 @@
 #if REMOVE_IMGUI == 0
 	#include "imgui.h"
 	#include "backends/imgui_impl_glfw.h"
-	#if !RENDERER_WEBGPU
+	#if RENDERER_WEBGPU
+	#include <render/wgpuImgui.h>
+	#else
 	#include "backends/imgui_impl_opengl3.h"
 	#endif
 	#include "imguiThemes.h"
@@ -373,13 +375,22 @@ int main()
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		//io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 	#if RENDERER_WEBGPU
-		// Milestone 7: no ImGui renderer backend yet (that is milestone 8).
-		// The GLFW platform backend still feeds input and display size, the
-		// font atlas is built on the CPU so ImGui::NewFrame is satisfied, and
-		// the draw data produced each frame is discarded. No docking or
-		// multi-viewport on this path.
+		// Milestone 8: the GLFW platform backend feeds input and display
+		// size, render::wgpuImgui* draws the result. Docking is core ImGui
+		// and works with any renderer, so it matches the OpenGL path;
+		// multi-viewport does not, because every torn-off window would need
+		// its own WebGPU surface, so it stays off here.
+		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+		// Transparent window background, like the OpenGL path (which zeroes
+		// it because multi-viewport windows get their background from the
+		// platform). The theme's 0.94 alpha becomes 0, so the game shows
+		// through the debug window and only its title bar, text, and widgets
+		// draw. Nothing else about the theme changes.
+		ImGui::GetStyle().Colors[ImGuiCol_WindowBg].w = 0.f;
+
 		ImGui_ImplGlfw_InitForOther(wind, true);
-		io.Fonts->Build();
+		permaAssertComment(render::wgpuImguiInit(), "err initializing the WebGPU ImGui backend");
 	#else
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
 		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;         // Enable Multi-Viewport / Platform Windows
@@ -458,8 +469,15 @@ int main()
 	#pragma region imgui
 		#if REMOVE_IMGUI == 0
 			#if RENDERER_WEBGPU
+				render::wgpuImguiNewFrame();
 				ImGui_ImplGlfw_NewFrame();
 				ImGui::NewFrame();
+				// PassthruCentralNode: the host window and the empty middle
+				// of the dockspace draw nothing, so the game stays visible
+				// underneath. The OpenGL path gets the same effect from the
+				// zeroed WindowBg/DockingEmptyBg alphas it needs for
+				// multi-viewport.
+				ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 			#else
 				ImGui_ImplOpenGL3_NewFrame();
 				ImGui_ImplGlfw_NewFrame();
@@ -534,7 +552,8 @@ int main()
 
 	#if RENDERER_WEBGPU
 		#if REMOVE_IMGUI == 0
-			ImGui::Render(); // draw data is discarded until milestone 8
+			ImGui::Render();
+			render::wgpuImguiRenderDrawData(); // on top of the game, same pass
 		#endif
 		render::wgpuEndFrame(); // end pass, submit, present
 		glfwPollEvents();
@@ -571,6 +590,12 @@ int main()
 	closeGame();
 
 #if RENDERER_WEBGPU
+	#if REMOVE_IMGUI == 0
+		// Before the device goes away: the backend owns GPU objects.
+		render::wgpuImguiShutdown();
+		ImGui_ImplGlfw_Shutdown();
+		ImGui::DestroyContext();
+	#endif
 	render::wgpuShutdown();
 	glfwDestroyWindow(wind);
 	glfwTerminate();
