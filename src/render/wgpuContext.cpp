@@ -1,6 +1,11 @@
 #if RENDERER_WEBGPU
 
+// The WebGPU render context (render::wgpu*) and the gl2d-shaped API on top
+// of it (wgpu2d::*). One translation unit on purpose: the API's methods
+// need the context's internals and there is one renderer.
+
 #include <render/wgpuContext.h>
+#include <render/wgpu2d.h>
 #ifdef __APPLE__
 #include <render/wgpuMetalLayer.h>
 #endif
@@ -10,10 +15,11 @@
 #include <stb_image/stb_image.h>
 #include <glm/glm.hpp>       // column-major like WGSL's mat4x4f
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>   // offsetof
-#include <cstdlib>   // rand, for the demo
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -22,8 +28,9 @@
 #include <vector>
 
 // File scope only, never in a header: wgpu:: names would otherwise leak into
-// every includer. Inside this file, Device, Texture, Default, StringView, and
-// the scoped enums all come from the wrapper.
+// every includer. Inside this file, Device, Default, StringView, and the
+// scoped enums all come from the wrapper. wgpu::Texture is always qualified
+// because wgpu2d::Texture is the game-facing handle.
 using namespace wgpu;
 
 namespace render
@@ -31,6 +38,9 @@ namespace render
 
 namespace
 {
+	// ---------------------------------------------------------------------
+	// Context: everything created once, plus the state of the current frame.
+	// ---------------------------------------------------------------------
 	struct Context
 	{
 		GLFWwindow *window = nullptr;
@@ -49,16 +59,18 @@ namespace
 		bool surfaceConfigured = false;
 		bool firstFramePresented = false;
 
-		// 2: created once at init, selected every frame
+		// 2: created once at init, selected every flush
 		RenderPipeline quadPipeline = nullptr;
 
-		// 6a: the vertex buffer is rewritten every frame from the CPU batch
-		// and grows (never shrinks) when a frame needs more than it holds.
+		// 6a: the vertex buffer is rewritten every flush from the CPU batch
+		// and grows (never shrinks) when a flush needs more than it holds.
 		Buffer vertexBuffer = nullptr;
 		uint64_t vertexBufferCapacityBytes = 0;
 
-		// 4: created once at init, shared by every texture
-		Sampler sampler = nullptr;
+		// 4: created once at init, shared by every texture. Two samplers:
+		// gl2d's "pixelated" (nearest) and its default (linear) filtering.
+		Sampler samplerPixelated = nullptr;
+		Sampler samplerLinear = nullptr;
 		BindGroupLayout textureBindGroupLayout = nullptr; // group 0: texture + sampler
 		PipelineLayout pipelineLayout = nullptr;
 
@@ -74,123 +86,17 @@ namespace
 		uint32_t cameraSlotCapacity = 0;
 		uint32_t minUniformBufferOffsetAlignment = 256;
 		bool runStatsPrinted = false;
-		std::chrono::steady_clock::time_point lastFrameTime = {};
-		float demoTime = 0.0f;
+
+		// 7: the frame in progress, between wgpuBeginFrame and wgpuEndFrame.
+		bool frameOpen = false;          // begin succeeded; end must submit
+		wgpu::Texture frameTexture = nullptr;
+		TextureView frameView = nullptr;
+		CommandEncoder frameEncoder = nullptr;
+		RenderPassEncoder framePass = nullptr; // begun lazily by the first flush
+		glm::vec4 clearColor = {0, 0, 0, 1};   // recorded by Renderer2D::clearScreen
 	};
 
 	Context g;
-
-	// gl2d's camera, fields and follow() copied verbatim so milestone 7 can
-	// call it under the same name with the same numbers. Rotation is omitted:
-	// the game never sets it.
-	struct Camera
-	{
-		glm::vec2 position = {};
-		float zoom = 1.0f;
-
-		void follow(glm::vec2 pos, float speed, float min, float max, float w, float h)
-		{
-			pos.x -= w / 2.f;
-			pos.y -= h / 2.f;
-
-			glm::vec2 delta = pos - position;
-			bool signX = delta.x >= 0;
-			bool signY = delta.y >= 0;
-
-			float len = glm::length(delta);
-
-			delta = glm::normalize(delta);
-
-			if (len < min * 2)
-			{
-				speed /= 4.f;
-			}
-			else if (len < min * 4)
-			{
-				speed /= 2.f;
-			}
-
-			if (len > min)
-			{
-				if (len > max)
-				{
-					len = max;
-					position = pos - (max * delta);
-					//fix jittering
-					//position += delta * speed;
-				}
-				else
-				{
-					position += delta * speed;
-				}
-
-				glm::vec2 delta2 = pos - position;
-				bool signX2 = delta.x >= 0;
-				bool signY2 = delta.y >= 0;
-				if (signX2 != signX || signY2 != signY || glm::length(delta2) > len)
-				{
-					//fix jittering
-					//position = pos;
-				}
-			}
-		}
-	};
-
-	// gl2d's camera stack. The game edits currentCamera's fields directly
-	// and calls follow() on it, so changes are detected at each quad by
-	// comparing with the last camera recorded this frame, not intercepted.
-	Camera currentCamera;
-	std::vector<Camera> cameraPushPop;
-
-	void pushCamera(Camera c = {})
-	{
-		cameraPushPop.push_back(currentCamera);
-		currentCamera = c;
-	}
-
-	void popCamera()
-	{
-		if (cameraPushPop.empty())
-		{
-			std::cerr << "render: popCamera on an empty stack\n";
-			return;
-		}
-		currentCamera = cameraPushPop.back();
-		cameraPushPop.pop_back();
-	}
-
-	bool sameCamera(const Camera &a, const Camera &b)
-	{
-		return a.position == b.position && a.zoom == b.zoom;
-	}
-
-	// What the shader's Camera struct reads: one column-major mat4x4f.
-	struct CameraUniforms
-	{
-		glm::mat4 viewProj;
-	};
-	static_assert(sizeof(CameraUniforms) == 64, "uniform layout must match the WGSL Camera struct");
-
-	// gl2d's per-corner CPU transform (renderRectangleAbsRotation), collapsed
-	// into one matrix:
-	//   1. subtract the camera position          (v.x -= cam.x; v.y += cam.y on the flipped y)
-	//   2. scale about the screen center by zoom  (scaleAroundPoint with center (w/2, -h/2))
-	//   3. pixels to clip space                   (x: 2x/w - 1;  y: 2y/h + 1 on the flipped y)
-	// For a world point (x, y) with y down that works out to
-	//   ndc.x =  (2 zoom / w) x  - 2 zoom cam.x / w - zoom
-	//   ndc.y = -(2 zoom / h) y  + 2 zoom cam.y / h + zoom
-	// Checks: the camera's top-left corner maps to (-1, 1) at zoom 1, and
-	// the screen center stays fixed under zoom.
-	glm::mat4 buildViewProj(const Camera &cam, float w, float h)
-	{
-		const float z = cam.zoom;
-		glm::mat4 m(1.0f);                     // glm is column-major: m[col][row]
-		m[0][0] = 2.0f * z / w;
-		m[1][1] = -2.0f * z / h;
-		m[3][0] = -2.0f * z * cam.position.x / w - z;
-		m[3][1] = 2.0f * z * cam.position.y / h + z;
-		return m;
-	}
 
 	// One vertex as the GPU reads it: position, color, texture coordinate,
 	// back to back. The pipeline's vertex layout below must describe exactly this.
@@ -202,25 +108,19 @@ namespace
 	};
 	static_assert(sizeof(Vertex) == 32, "vertex layout stride assumes tightly packed floats");
 
-	// ---- gl2d-shaped public types (milestone 6a) ----
-	// Mirrors gl2d's signatures so the game files change only by namespace
-	// in milestone 7. The implementation underneath is not gl2d's.
-	using Rect = glm::vec4;    // x, y, width, height in world pixels, y down
-	using Color4f = glm::vec4;
-	const glm::vec4 DefaultTextureCoords = {0, 1, 1, 0}; // gl2d's convention, see renderRectangleAbsRotation
-
-	// A copyable handle, like gl2d's Texture { GLuint id }. 0 means invalid.
-	// The GPU objects live in the registry below, indexed by id - 1.
-	struct Texture
+	// What the shader's Camera struct reads: one column-major mat4x4f.
+	struct CameraUniforms
 	{
-		uint32_t id = 0;
+		glm::mat4 viewProj;
 	};
+	static_assert(sizeof(CameraUniforms) == 64, "uniform layout must match the WGSL Camera struct");
 
+	// The registry behind wgpu2d::Texture handles, indexed by id - 1.
 	struct TextureEntry
 	{
 		wgpu::Texture texture = nullptr;
 		TextureView view = nullptr;
-		BindGroup bindGroup = nullptr; // group 0 for this texture + the shared sampler
+		BindGroup bindGroup = nullptr; // group 0 for this texture + its sampler
 		int width = 0;
 		int height = 0;
 	};
@@ -228,216 +128,17 @@ namespace
 	std::vector<TextureEntry> textures;
 
 	// The CPU batch: gl2d's spritePositions / spriteColors / texturePositions
-	// / spriteTextures, collapsed into one interleaved vertex vector plus the
-	// texture of each quad (6b uses that for draw ranges).
+	// / spriteTextures, collapsed into one interleaved vertex vector plus,
+	// per quad, its texture and the camera it was drawn under.
 	std::vector<Vertex> batchVertices;
-	std::vector<Texture> batchQuadTextures;
-	std::vector<uint32_t> batchQuadCameras; // index into frameCameras
-	std::vector<Camera> frameCameras;       // every distinct camera used this frame, in order
-	Texture white1pxSquareTexture;          // gl2d's untextured path samples this
+	std::vector<uint32_t> batchQuadTextures;
+	std::vector<uint32_t> batchQuadCameras;   // index into frameCameras
+	std::vector<wgpu2d::Camera> frameCameras; // every distinct camera used this frame, in order
+	wgpu2d::Texture white1pxSquareTexture;    // gl2d's untextured path samples this
 
-	// gl2d's rotateAroundPoint, verbatim. It works in gl2d's y-flipped space
-	// (callers pass corners with y negated) and negates the pivot's y to
-	// match. Ported as-is so positive degrees turn the same way they do today.
-	glm::vec2 rotateAroundPoint(glm::vec2 vec, glm::vec2 point, const float degrees)
-	{
-		point.y = -point.y;
-		float a = glm::radians(degrees);
-		float s = sinf(a);
-		float c = cosf(a);
-		vec.x -= point.x;
-		vec.y -= point.y;
-		float newx = vec.x * c - vec.y * s;
-		float newy = vec.x * s + vec.y * c;
-		// translate point back:
-		vec.x = newx + point.x;
-		vec.y = newy + point.y;
-		return vec;
-	}
-
-	// gl2d's renderRectangleAbsRotation up to (not including) its camera
-	// steps, which are now the matrix. Corners are built and rotated in
-	// gl2d's flipped space, then flipped back into world pixels for the
-	// vertex buffer. Texture coordinates arrive in gl2d's convention
-	// ({u0, v0, u1, v1} with v measured from the bottom, default {0,1,1,0})
-	// and are converted to WebGPU's top-left origin here: v = 1 - v.
-	void renderRectangleAbsRotation(const Rect transforms, const Texture texture,
-		const Color4f colors[4], const glm::vec2 origin, const float rotation, const glm::vec4 textureCoords)
-	{
-		if (texture.id == 0 || texture.id > textures.size())
-		{
-			std::cerr << "render: renderRectangle with an invalid texture (id " << texture.id << ")\n";
-			return;
-		}
-
-		//We need to flip texture_transforms.y
-		const float transformsY = transforms.y * -1;
-
-		glm::vec2 v1 = { transforms.x,				  transformsY };
-		glm::vec2 v2 = { transforms.x,				  transformsY - transforms.w };
-		glm::vec2 v3 = { transforms.x + transforms.z, transformsY - transforms.w };
-		glm::vec2 v4 = { transforms.x + transforms.z, transformsY };
-
-		//Apply rotations
-		if (rotation != 0)
-		{
-			v1 = rotateAroundPoint(v1, origin, rotation);
-			v2 = rotateAroundPoint(v2, origin, rotation);
-			v3 = rotateAroundPoint(v3, origin, rotation);
-			v4 = rotateAroundPoint(v4, origin, rotation);
-		}
-
-		// Back to world pixels (y down). gl2d continued with camera offset,
-		// zoom, and NDC here; the vertex shader does that now.
-		v1.y = -v1.y; v2.y = -v2.y; v3.y = -v3.y; v4.y = -v4.y;
-
-		const float u0 = textureCoords.x, v0 = 1.0f - textureCoords.y;
-		const float u1 = textureCoords.z, v1t = 1.0f - textureCoords.w;
-
-		auto push = [&](glm::vec2 p, const Color4f &c, float u, float v)
-		{
-			batchVertices.push_back(Vertex{ p.x, p.y, c.r, c.g, c.b, c.a, u, v });
-		};
-
-		// gl2d's corner order: v1 v2 v4, v2 v3 v4, with gl2d's uv assignment.
-		push(v1, colors[0], u0, v0);
-		push(v2, colors[1], u0, v1t);
-		push(v4, colors[3], u1, v0);
-		push(v2, colors[1], u0, v1t);
-		push(v3, colors[2], u1, v1t);
-		push(v4, colors[3], u1, v0);
-
-		batchQuadTextures.push_back(texture);
-
-		// Record which camera this quad was drawn under (6b). A new slot only
-		// when the camera changed since the last recorded one.
-		if (frameCameras.empty() || !sameCamera(frameCameras.back(), currentCamera))
-		{
-			frameCameras.push_back(currentCamera);
-		}
-		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
-	}
-
-	// gl2d's renderRectangle: the rotation origin is relative to the
-	// rectangle's center.
-	void renderRectangle(const Rect transforms, const Texture texture, const Color4f colors[4],
-		const glm::vec2 origin = {}, const float rotationDegrees = 0.f, const glm::vec4 textureCoords = DefaultTextureCoords)
-	{
-		glm::vec2 newOrigin;
-		newOrigin.x = origin.x + transforms.x + (transforms.z / 2);
-		newOrigin.y = origin.y + transforms.y + (transforms.w / 2);
-		renderRectangleAbsRotation(transforms, texture, colors, newOrigin, rotationDegrees, textureCoords);
-	}
-
-	void renderRectangle(const Rect transforms, const Texture texture, const Color4f colors = {1, 1, 1, 1},
-		const glm::vec2 origin = {}, const float rotationDegrees = 0.f, const glm::vec4 textureCoords = DefaultTextureCoords)
-	{
-		Color4f c[4] = { colors, colors, colors, colors };
-		renderRectangle(transforms, texture, c, origin, rotationDegrees, textureCoords);
-	}
-
-	// gl2d's untextured rectangles: the 1px white texture makes the fragment
-	// shader's color * texel equal the vertex color.
-	void renderRectangle(const Rect transforms, const Color4f colors[4], const glm::vec2 origin = { 0,0 }, const float rotation = 0)
-	{
-		renderRectangle(transforms, white1pxSquareTexture, colors, origin, rotation);
-	}
-
-	void renderRectangle(const Rect transforms, const Color4f colors, const glm::vec2 origin = { 0,0 }, const float rotation = 0)
-	{
-		Color4f c[4] = { colors, colors, colors, colors };
-		renderRectangle(transforms, c, origin, rotation);
-	}
-
-	// gl2d's renderLine, both forms, verbatim.
-	void renderLine(const glm::vec2 position, const float angleDegrees, const float length, const Color4f color, const float width = 2.f)
-	{
-		renderRectangle({position - glm::vec2(0,width / 2.f), length, width},
-			color, {-length/2, 0}, angleDegrees);
-	}
-
-	void renderLine(const glm::vec2 start, const glm::vec2 end, const Color4f color, const float width = 2.f)
-	{
-		glm::vec2 vector = end - start;
-		float length = glm::length(vector);
-		float angle = std::atan2(vector.y, vector.x);
-		renderLine(start, -glm::degrees(angle), length, color, width);
-	}
-
-	// gl2d's renderCircleOutline, verbatim: a polygon of lines.
-	void renderCircleOutline(const glm::vec2 position, const Color4f color, const float size, const float width = 2.f, const unsigned int segments = 16)
-	{
-		auto calcPos = [&](int p)
-		{
-			glm::vec2 circle = {size,0};
-
-			float a = 3.1415926 * 2 * ((float)p / segments);
-
-			float c = std::cos(a);
-			float s = std::sin(a);
-
-			circle = {c * circle.x - s * circle.y, s * circle.x + c * circle.y};
-
-			return circle + position;
-		};
-
-		glm::vec2 lastPos = calcPos(1);
-		renderLine(calcPos(0), lastPos, color, width);
-		for (int i = 1; i < segments; i++)
-		{
-			glm::vec2 pos1 = lastPos;
-			glm::vec2 pos2 = calcPos(i + 1);
-
-			renderLine(pos1, pos2, color, width);
-
-			lastPos = pos2;
-		}
-	}
-
-	// gl2d's getViewRect, verbatim, against the surface size. The camera's
-	// visible world rectangle, ignoring rotation. tiledRenderer uses it.
-	glm::vec4 getViewRect()
-	{
-		auto rect = glm::vec4{0, 0, g.surfaceWidth, g.surfaceHeight};
-
-		glm::mat3 mat =
-		{1.f, 0, currentCamera.position.x ,
-		 0, 1.f, currentCamera.position.y,
-		 0, 0, 1.f};
-		mat = glm::transpose(mat);
-
-		glm::vec3 pos1 = {rect.x, rect.y, 1.f};
-		glm::vec3 pos2 = {rect.z + rect.x, rect.w + rect.y, 1.f};
-
-		pos1 = mat * pos1;
-		pos2 = mat * pos2;
-
-		glm::vec2 point((pos1.x + pos2.x) / 2.f, (pos1.y + pos2.y) / 2.f);
-
-		auto scaleAroundPoint = [](glm::vec2 vec, glm::vec2 point, float scale) { return (vec - point) * scale + point; };
-		pos1 = glm::vec3(scaleAroundPoint(pos1, point, 1.f/currentCamera.zoom), 1.f);
-		pos2 = glm::vec3(scaleAroundPoint(pos2, point, 1.f/currentCamera.zoom), 1.f);
-
-		rect = {pos1.x, pos1.y, pos2.x - pos1.x, pos2.y - pos1.y};
-
-		return rect;
-	}
-
-	// ---- demo content (milestones 6a, 6b) ----
-	struct DemoSprite
-	{
-		glm::vec2 position;
-		float size;
-		float rotation;
-		float spin;
-		Color4f color;
-		int cellX, cellY; // cell in the 5x2 ship sheet
-	};
-	std::vector<DemoSprite> demoSprites;
-	Texture demoSheet;
-	Texture demoProjectiles;
-
-
+	// ---------------------------------------------------------------------
+	// Small helpers
+	// ---------------------------------------------------------------------
 	const char *backendName(WGPUBackendType t)
 	{
 		switch (t)
@@ -465,30 +166,6 @@ namespace
 		}
 	}
 
-	const char *featureName(WGPUFeatureName f)
-	{
-		switch (f)
-		{
-			case FeatureName::DepthClipControl: return "DepthClipControl";
-			case FeatureName::Depth32FloatStencil8: return "Depth32FloatStencil8";
-			case FeatureName::TimestampQuery: return "TimestampQuery";
-			case FeatureName::TextureCompressionBC: return "TextureCompressionBC";
-			case FeatureName::TextureCompressionBCSliced3D: return "TextureCompressionBCSliced3D";
-			case FeatureName::TextureCompressionETC2: return "TextureCompressionETC2";
-			case FeatureName::TextureCompressionASTC: return "TextureCompressionASTC";
-			case FeatureName::TextureCompressionASTCSliced3D: return "TextureCompressionASTCSliced3D";
-			case FeatureName::IndirectFirstInstance: return "IndirectFirstInstance";
-			case FeatureName::ShaderF16: return "ShaderF16";
-			case FeatureName::RG11B10UfloatRenderable: return "RG11B10UfloatRenderable";
-			case FeatureName::BGRA8UnormStorage: return "BGRA8UnormStorage";
-			case FeatureName::Float32Filterable: return "Float32Filterable";
-			case FeatureName::Float32Blendable: return "Float32Blendable";
-			case FeatureName::ClipDistances: return "ClipDistances";
-			case FeatureName::DualSourceBlending: return "DualSourceBlending";
-			default: return "native extension"; // wgpu-native adds its own ids above the standard ones
-		}
-	}
-
 	const char *formatName(WGPUTextureFormat f)
 	{
 		switch (f)
@@ -499,6 +176,12 @@ namespace
 			case TextureFormat::RGBA8UnormSrgb: return "RGBA8UnormSrgb";
 			default: return "other";
 		}
+	}
+
+	uint32_t ceilToNextMultiple(uint32_t value, uint32_t step)
+	{
+		uint32_t divide_and_ceil = value / step + (value % step == 0 ? 0 : 1);
+		return step * divide_and_ceil;
 	}
 
 	// wgpu-native's own diagnostics (wgpu.h extension, C API: the wrapper does
@@ -570,8 +253,8 @@ namespace
 	}
 
 	// Fires on every validation error the API catches. This is the main
-	// debugging channel from here on: a bad descriptor field, a wrong usage
-	// flag, a mismatched format all show up here as text.
+	// debugging channel: a bad descriptor field, a wrong usage flag, a
+	// mismatched format all show up here as text.
 	void onUncapturedError(WGPUDevice const *, WGPUErrorType type,
 		WGPUStringView message, void *, void *)
 	{
@@ -580,6 +263,10 @@ namespace
 			: type == ErrorType::Internal ? "internal" : "unknown";
 		std::cerr << "WebGPU " << kind << " error: " << StringView(message) << "\n";
 	}
+
+	// ---------------------------------------------------------------------
+	// Surface
+	// ---------------------------------------------------------------------
 
 	// Configures (or reconfigures) the surface at the window's current
 	// framebuffer size. Framebuffer size, not window size: on a Retina
@@ -612,6 +299,9 @@ namespace
 		std::cout.flush();
 	}
 
+	// ---------------------------------------------------------------------
+	// Shaders, samplers, layouts, pipeline
+	// ---------------------------------------------------------------------
 	bool readTextFile(const char *path, std::string &out)
 	{
 		std::ifstream file(path, std::ios::binary);
@@ -645,26 +335,32 @@ namespace
 		return g.device.createShaderModule(desc);
 	}
 
-	// The sampler: how a shader reads a texture. Separate from the texture
-	// (unlike OpenGL), so one serves every sprite. Clamp to edge and nearest
-	// filtering match what the game passes to gl2d (pixelated = true). No
-	// mipmaps yet; milestone 7 adds them and switches mipmapFilter.
-	bool createSampler()
+	// Samplers: how a shader reads a texture. Separate from the texture
+	// (unlike OpenGL), so two serve every sprite. Both clamp to edge like
+	// gl2d. Pixelated = gl2d's GL_NEAREST / GL_NEAREST_MIPMAP_NEAREST;
+	// linear = GL_LINEAR / GL_LINEAR_MIPMAP_LINEAR.
+	Sampler createSampler(const char *label, FilterMode filter, MipmapFilterMode mipFilter)
 	{
 		SamplerDescriptor desc = Default;
-		desc.label = StringView("sprite sampler");
+		desc.label = StringView(label);
 		desc.addressModeU = AddressMode::ClampToEdge;
 		desc.addressModeV = AddressMode::ClampToEdge;
 		desc.addressModeW = AddressMode::ClampToEdge;
-		desc.magFilter = FilterMode::Nearest;
-		desc.minFilter = FilterMode::Nearest;
-		desc.mipmapFilter = MipmapFilterMode::Nearest;
+		desc.magFilter = filter;
+		desc.minFilter = filter;
+		desc.mipmapFilter = mipFilter;
 		desc.lodMinClamp = 0.0f;
 		desc.lodMaxClamp = 32.0f;
 		desc.compare = CompareFunction::Undefined;
 		desc.maxAnisotropy = 1;
-		g.sampler = g.device.createSampler(desc);
-		if (!g.sampler)
+		return g.device.createSampler(desc);
+	}
+
+	bool createSamplers()
+	{
+		g.samplerPixelated = createSampler("sampler pixelated", FilterMode::Nearest, MipmapFilterMode::Nearest);
+		g.samplerLinear = createSampler("sampler linear", FilterMode::Linear, MipmapFilterMode::Linear);
+		if (!g.samplerPixelated || !g.samplerLinear)
 		{
 			std::cerr << "WebGPU: createSampler returned null\n";
 			return false;
@@ -672,11 +368,12 @@ namespace
 		return true;
 	}
 
-	// Bind group layout 0: the contract between the shader's
-	// @group(0) @binding(n) declarations and the resources a bind group
-	// supplies. Binding 0 is a sampled 2D float texture, binding 1 a
-	// filtering sampler, both visible to the fragment stage only.
-	// The pipeline layout lists the bind group layouts by group index.
+	// Bind group layouts: the contract between the shader's
+	// @group(n) @binding(m) declarations and the resources a bind group
+	// supplies. Group 0: a sampled 2D float texture (binding 0) and a
+	// filtering sampler (binding 1), fragment stage. Group 1: the camera
+	// uniform with a dynamic offset, vertex stage. The pipeline layout
+	// lists them by group index.
 	bool createLayouts()
 	{
 		BindGroupLayoutEntry entries[2];
@@ -713,7 +410,6 @@ namespace
 			return false;
 		}
 
-		// Bind group layout 1: the camera uniform, read by the vertex stage.
 		BindGroupLayoutEntry cameraEntry = Default;
 		cameraEntry.binding = 0;
 		cameraEntry.visibility = ShaderStage::Vertex;
@@ -735,7 +431,6 @@ namespace
 			return false;
 		}
 
-		// The pipeline layout lists the group layouts by group index.
 		PipelineLayoutDescriptor pipelineLayoutDesc = Default;
 		pipelineLayoutDesc.label = StringView("quad pipeline layout");
 		pipelineLayoutDesc.bindGroupLayoutCount = 2;
@@ -748,12 +443,6 @@ namespace
 			return false;
 		}
 		return true;
-	}
-
-	uint32_t ceilToNextMultiple(uint32_t value, uint32_t step)
-	{
-		uint32_t divide_and_ceil = value / step + (value % step == 0 ? 0 : 1);
-		return step * divide_and_ceil;
 	}
 
 	// The uniform buffer holds one CameraUniforms per slot, slots spaced by
@@ -813,131 +502,6 @@ namespace
 		return true;
 	}
 
-	// Uploads RGBA8 pixels (rows top-first, tightly packed) as a texture with
-	// one mip level, creates its view, and builds the bind group that hands
-	// the view plus the shared sampler to the shader. Returns a handle (id 0
-	// on failure) into the registry. Shared by the file loader, the 1px
-	// white texture, and milestone 7's padded loader.
-	Texture createTextureFromPixels(const unsigned char *pixels, int width, int height, const char *label)
-	{
-		TextureEntry entry;
-		entry.width = width;
-		entry.height = height;
-
-		// The texture: GPU pixel storage with a fixed format and usage.
-		// TextureBinding: a shader may sample it. CopyDst: the queue may write it.
-		TextureDescriptor texDesc = Default;
-		texDesc.label = StringView(label);
-		texDesc.dimension = TextureDimension::_2D;
-		texDesc.size.width = (uint32_t)width;
-		texDesc.size.height = (uint32_t)height;
-		texDesc.size.depthOrArrayLayers = 1;
-		texDesc.format = TextureFormat::RGBA8Unorm;
-		texDesc.mipLevelCount = 1;
-		texDesc.sampleCount = 1;
-		texDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
-		texDesc.viewFormatCount = 0;
-		texDesc.viewFormats = nullptr;
-		entry.texture = g.device.createTexture(texDesc);
-		if (!entry.texture)
-		{
-			std::cerr << "WebGPU: createTexture returned null\n";
-			return Texture{};
-		}
-
-		// Upload: destination is mip 0 at origin; the source layout says how
-		// the CPU rows are laid out. This is glTexImage2D.
-		TexelCopyTextureInfo destination = Default;
-		destination.texture = entry.texture;
-		destination.mipLevel = 0;
-		destination.origin.x = 0;
-		destination.origin.y = 0;
-		destination.origin.z = 0;
-		destination.aspect = TextureAspect::All;
-
-		TexelCopyBufferLayout sourceLayout = Default;
-		sourceLayout.offset = 0;
-		sourceLayout.bytesPerRow = 4 * (uint32_t)width;
-		sourceLayout.rowsPerImage = (uint32_t)height;
-
-		const size_t byteCount = (size_t)4 * width * height;
-		g.queue.writeTexture(destination, pixels, byteCount, sourceLayout, texDesc.size);
-
-		// The view the shader samples through.
-		TextureViewDescriptor viewDesc = Default;
-		viewDesc.label = StringView("sprite view");
-		viewDesc.format = TextureFormat::RGBA8Unorm;
-		viewDesc.dimension = TextureViewDimension::_2D;
-		viewDesc.baseMipLevel = 0;
-		viewDesc.mipLevelCount = 1;
-		viewDesc.baseArrayLayer = 0;
-		viewDesc.arrayLayerCount = 1;
-		viewDesc.aspect = TextureAspect::All;
-		viewDesc.usage = TextureUsage::TextureBinding;
-		entry.view = entry.texture.createView(viewDesc);
-		if (!entry.view)
-		{
-			std::cerr << "WebGPU: createView returned null\n";
-			entry.texture.release();
-			return Texture{};
-		}
-
-		// The bind group: this view and the shared sampler, in the slots the
-		// layout declared. Milestone 7 builds one of these per loaded texture.
-		BindGroupEntry bindEntries[2];
-		bindEntries[0] = Default;
-		bindEntries[0].binding = 0;
-		bindEntries[0].textureView = entry.view;
-		bindEntries[0].buffer = nullptr;
-		bindEntries[0].sampler = nullptr;
-		bindEntries[1] = Default;
-		bindEntries[1].binding = 1;
-		bindEntries[1].sampler = g.sampler;
-		bindEntries[1].buffer = nullptr;
-		bindEntries[1].textureView = nullptr;
-
-		BindGroupDescriptor groupDesc = Default;
-		groupDesc.label = StringView("sprite bind group");
-		groupDesc.layout = g.textureBindGroupLayout;
-		groupDesc.entryCount = 2;
-		groupDesc.entries = bindEntries;
-		entry.bindGroup = g.device.createBindGroup(groupDesc);
-		if (!entry.bindGroup)
-		{
-			std::cerr << "WebGPU: createBindGroup returned null\n";
-			entry.view.release();
-			entry.texture.release();
-			return Texture{};
-		}
-
-		textures.push_back(entry);
-		return Texture{ (uint32_t)textures.size() };
-	}
-
-	// Loads a PNG with stb_image. Rows come back top-first and are uploaded
-	// as-is: no flip (see the milestone 4 orientation decision).
-	Texture createTextureFromFile(const char *path)
-	{
-		int width = 0, height = 0, channels = 0;
-		stbi_set_flip_vertically_on_load(0);
-		unsigned char *pixels = stbi_load(path, &width, &height, &channels, 4);
-		if (!pixels)
-		{
-			std::cerr << "WebGPU: cannot load image " << path << ": " << stbi_failure_reason() << "\n";
-			return Texture{};
-		}
-		Texture t = createTextureFromPixels(pixels, width, height, path);
-		stbi_image_free(pixels);
-		return t;
-	}
-
-	// gl2d's create1PxSquare: the texture behind every untextured draw.
-	Texture createWhite1pxTexture()
-	{
-		const unsigned char white[4] = { 0xff, 0xff, 0xff, 0xff };
-		return createTextureFromPixels(white, 1, 1, "1px white");
-	}
-
 	// The render pipeline: every configurable stage of the GPU's fixed
 	// triangle pipeline, baked into one immutable object. Selected per pass
 	// with setPipeline; never mutated.
@@ -972,7 +536,6 @@ namespace
 		vertexLayout.attributeCount = 3;
 		vertexLayout.attributes = attributes;
 
-		// Vertex stage: one vertex buffer in slot 0.
 		desc.vertex.module = module;
 		desc.vertex.entryPoint = StringView("vs_main");
 		desc.vertex.constantCount = 0;
@@ -1005,7 +568,6 @@ namespace
 		colorTarget.blend = &blend;
 		colorTarget.writeMask = ColorWriteMask::All;
 
-		// Fragment stage: one output, to color attachment 0.
 		FragmentState fragment = Default;
 		fragment.module = module;
 		fragment.entryPoint = StringView("fs_main");
@@ -1021,7 +583,7 @@ namespace
 		desc.multisample.mask = 0xFFFFFFFFu;
 		desc.multisample.alphaToCoverageEnabled = false;
 
-		// The explicit layout: group 0 is the texture + sampler group.
+		// The explicit layout: group 0 texture + sampler, group 1 camera.
 		desc.layout = g.pipelineLayout;
 
 		g.quadPipeline = g.device.createRenderPipeline(desc);
@@ -1038,11 +600,384 @@ namespace
 		return true;
 	}
 
+	// ---------------------------------------------------------------------
+	// Textures
+	// ---------------------------------------------------------------------
+
+	// One mip level down: each output texel is the average of a 2x2 block of
+	// the input (clamped at odd edges). WebGPU has no glGenerateMipmap; this
+	// is the CPU replacement for gl2d's mips.
+	std::vector<unsigned char> downsampleRGBA8(const std::vector<unsigned char> &src, int w, int h, int &outW, int &outH)
+	{
+		outW = std::max(1, w / 2);
+		outH = std::max(1, h / 2);
+		std::vector<unsigned char> dst((size_t)outW * outH * 4);
+		for (int y = 0; y < outH; y++)
+		{
+			const int y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
+			for (int x = 0; x < outW; x++)
+			{
+				const int x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
+				for (int c = 0; c < 4; c++)
+				{
+					const int sum = src[4 * (x0 + y0 * w) + c] + src[4 * (x1 + y0 * w) + c]
+						+ src[4 * (x0 + y1 * w) + c] + src[4 * (x1 + y1 * w) + c];
+					dst[4 * (x + y * outW) + c] = (unsigned char)((sum + 2) / 4);
+				}
+			}
+		}
+		return dst;
+	}
+
+	// Uploads RGBA8 pixels (rows top-first, tightly packed) as a texture,
+	// with CPU-generated mip levels when requested, creates its view, and
+	// builds the bind group that hands the view plus the right sampler to
+	// the shader. Returns a handle (id 0 on failure) into the registry.
+	wgpu2d::Texture createTextureFromPixels(const unsigned char *pixels, int width, int height,
+		const char *label, bool pixelated, bool useMipMaps)
+	{
+		if (!g.device || width <= 0 || height <= 0 || !pixels)
+		{
+			std::cerr << "WebGPU: createTextureFromPixels called with no device or empty image (" << label << ")\n";
+			return wgpu2d::Texture{};
+		}
+
+		// All levels, level 0 first.
+		std::vector<std::vector<unsigned char>> levels;
+		std::vector<int> levelW, levelH;
+		levels.emplace_back(pixels, pixels + (size_t)4 * width * height);
+		levelW.push_back(width);
+		levelH.push_back(height);
+		if (useMipMaps)
+		{
+			while (levelW.back() > 1 || levelH.back() > 1)
+			{
+				int w = 0, h = 0;
+				levels.push_back(downsampleRGBA8(levels.back(), levelW.back(), levelH.back(), w, h));
+				levelW.push_back(w);
+				levelH.push_back(h);
+			}
+		}
+
+		TextureEntry entry;
+		entry.width = width;
+		entry.height = height;
+
+		// The texture: GPU pixel storage with a fixed format and usage.
+		// TextureBinding: a shader may sample it. CopyDst: the queue may write it.
+		TextureDescriptor texDesc = Default;
+		texDesc.label = StringView(label);
+		texDesc.dimension = TextureDimension::_2D;
+		texDesc.size.width = (uint32_t)width;
+		texDesc.size.height = (uint32_t)height;
+		texDesc.size.depthOrArrayLayers = 1;
+		texDesc.format = TextureFormat::RGBA8Unorm;
+		texDesc.mipLevelCount = (uint32_t)levels.size();
+		texDesc.sampleCount = 1;
+		texDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
+		texDesc.viewFormatCount = 0;
+		texDesc.viewFormats = nullptr;
+		entry.texture = g.device.createTexture(texDesc);
+		if (!entry.texture)
+		{
+			std::cerr << "WebGPU: createTexture returned null (" << label << ")\n";
+			return wgpu2d::Texture{};
+		}
+
+		// Upload every level. This is glTexImage2D + glGenerateMipmap.
+		for (size_t i = 0; i < levels.size(); i++)
+		{
+			TexelCopyTextureInfo destination = Default;
+			destination.texture = entry.texture;
+			destination.mipLevel = (uint32_t)i;
+			destination.origin.x = 0;
+			destination.origin.y = 0;
+			destination.origin.z = 0;
+			destination.aspect = TextureAspect::All;
+
+			TexelCopyBufferLayout sourceLayout = Default;
+			sourceLayout.offset = 0;
+			sourceLayout.bytesPerRow = 4 * (uint32_t)levelW[i];
+			sourceLayout.rowsPerImage = (uint32_t)levelH[i];
+
+			Extent3D extent = Default;
+			extent.width = (uint32_t)levelW[i];
+			extent.height = (uint32_t)levelH[i];
+			extent.depthOrArrayLayers = 1;
+
+			g.queue.writeTexture(destination, levels[i].data(), levels[i].size(), sourceLayout, extent);
+		}
+
+		// The view the shader samples through: all mip levels.
+		TextureViewDescriptor viewDesc = Default;
+		viewDesc.label = StringView(label);
+		viewDesc.format = TextureFormat::RGBA8Unorm;
+		viewDesc.dimension = TextureViewDimension::_2D;
+		viewDesc.baseMipLevel = 0;
+		viewDesc.mipLevelCount = (uint32_t)levels.size();
+		viewDesc.baseArrayLayer = 0;
+		viewDesc.arrayLayerCount = 1;
+		viewDesc.aspect = TextureAspect::All;
+		viewDesc.usage = TextureUsage::TextureBinding;
+		entry.view = entry.texture.createView(viewDesc);
+		if (!entry.view)
+		{
+			std::cerr << "WebGPU: createView returned null (" << label << ")\n";
+			entry.texture.release();
+			return wgpu2d::Texture{};
+		}
+
+		// The bind group: this view and the sampler for its filtering mode,
+		// in the slots the layout declared.
+		BindGroupEntry bindEntries[2];
+		bindEntries[0] = Default;
+		bindEntries[0].binding = 0;
+		bindEntries[0].textureView = entry.view;
+		bindEntries[0].buffer = nullptr;
+		bindEntries[0].sampler = nullptr;
+		bindEntries[1] = Default;
+		bindEntries[1].binding = 1;
+		bindEntries[1].sampler = pixelated ? g.samplerPixelated : g.samplerLinear;
+		bindEntries[1].buffer = nullptr;
+		bindEntries[1].textureView = nullptr;
+
+		BindGroupDescriptor groupDesc = Default;
+		groupDesc.label = StringView(label);
+		groupDesc.layout = g.textureBindGroupLayout;
+		groupDesc.entryCount = 2;
+		groupDesc.entries = bindEntries;
+		entry.bindGroup = g.device.createBindGroup(groupDesc);
+		if (!entry.bindGroup)
+		{
+			std::cerr << "WebGPU: createBindGroup returned null (" << label << ")\n";
+			entry.view.release();
+			entry.texture.release();
+			return wgpu2d::Texture{};
+		}
+
+		textures.push_back(entry);
+		std::cout << "WebGPU texture " << textures.size() << ": " << width << "x" << height
+			<< ", " << levels.size() << " mip level" << (levels.size() == 1 ? "" : "s")
+			<< (pixelated ? ", nearest" : ", linear") << " (" << label << ")\n";
+		wgpu2d::Texture handle;
+		handle.id = (uint32_t)textures.size();
+		return handle;
+	}
+
+	// Reads a whole file, like gl2d's loaders do before decoding.
+	bool readBinaryFile(const char *path, std::vector<unsigned char> &out)
+	{
+		std::ifstream file(path, std::ios::binary);
+		if (!file.is_open()) { return false; }
+		file.seekg(0, std::ios::end);
+		const std::streamoff size = file.tellg();
+		file.seekg(0, std::ios::beg);
+		out.resize((size_t)size);
+		if (size > 0) { file.read((char *)out.data(), size); }
+		return true;
+	}
+
+	// gl2d's createFromFileDataWithPixelPadding, verbatim apart from the
+	// missing load-time flip (see the milestone 4 orientation decision;
+	// the padding is orientation-independent). Re-lays the image out with a
+	// 2-pixel gutter around every blockSize x blockSize cell and duplicates
+	// each cell's edge pixels into its gutter, so filtering never bleeds a
+	// neighbor in.
+	wgpu2d::Texture createPaddedTextureFromFileData(const unsigned char *image_file_data, size_t image_file_size,
+		int blockSize, bool pixelated, bool useMipMaps, const char *label)
+	{
+		stbi_set_flip_vertically_on_load(0);
+
+		int width = 0;
+		int height = 0;
+		int channels = 0;
+
+		const unsigned char *decodedImage = stbi_load_from_memory(image_file_data, (int)image_file_size, &width, &height, &channels, 4);
+		if (!decodedImage)
+		{
+			std::cerr << "WebGPU: cannot decode image " << label << ": " << stbi_failure_reason() << "\n";
+			return wgpu2d::Texture{};
+		}
+
+		int newW = width + ((width * 2) / blockSize);
+		int newH = height + ((height * 2) / blockSize);
+
+		unsigned char *newData = new unsigned char[newW * newH * 4]{};
+
+		auto getNew = [newData, newW](int x, int y, int c)
+		{
+			return &newData[4 * (x + (y * newW)) + c];
+		};
+
+		int newDataCursor = 0;
+		int dataCursor = 0;
+
+		//first copy data
+		for (int y = 0; y < newH; y++)
+		{
+			int yNo = 0;
+			if ((y == 0 || y == newH - 1
+				|| ((y) % (blockSize + 2)) == 0 ||
+				((y + 1) % (blockSize + 2)) == 0
+				))
+			{
+				yNo = 1;
+			}
+
+			for (int x = 0; x < newW; x++)
+			{
+				if (
+					yNo ||
+
+					((
+						x == 0 || x == newW - 1
+						|| (x % (blockSize + 2)) == 0 ||
+						((x + 1) % (blockSize + 2)) == 0
+						)
+						)
+
+					)
+				{
+					newData[newDataCursor++] = 0;
+					newData[newDataCursor++] = 0;
+					newData[newDataCursor++] = 0;
+					newData[newDataCursor++] = 0;
+				}
+				else
+				{
+					newData[newDataCursor++] = decodedImage[dataCursor++];
+					newData[newDataCursor++] = decodedImage[dataCursor++];
+					newData[newDataCursor++] = decodedImage[dataCursor++];
+					newData[newDataCursor++] = decodedImage[dataCursor++];
+				}
+
+			}
+
+		}
+
+		//then add margins
+
+
+		for (int x = 1; x < newW - 1; x++)
+		{
+			//copy on left
+			if (x == 1 ||
+				(x % (blockSize + 2)) == 1
+				)
+			{
+				for (int y = 0; y < newH; y++)
+				{
+					*getNew(x - 1, y, 0) = *getNew(x, y, 0);
+					*getNew(x - 1, y, 1) = *getNew(x, y, 1);
+					*getNew(x - 1, y, 2) = *getNew(x, y, 2);
+					*getNew(x - 1, y, 3) = *getNew(x, y, 3);
+				}
+
+			}
+			else //copy on rigght
+				if (x == newW - 2 ||
+					(x % (blockSize + 2)) == blockSize
+					)
+				{
+					for (int y = 0; y < newH; y++)
+					{
+						*getNew(x + 1, y, 0) = *getNew(x, y, 0);
+						*getNew(x + 1, y, 1) = *getNew(x, y, 1);
+						*getNew(x + 1, y, 2) = *getNew(x, y, 2);
+						*getNew(x + 1, y, 3) = *getNew(x, y, 3);
+					}
+				}
+		}
+
+		for (int y = 1; y < newH - 1; y++)
+		{
+			if (y == 1 ||
+				(y % (blockSize + 2)) == 1
+				)
+			{
+				for (int x = 0; x < newW; x++)
+				{
+					*getNew(x, y - 1, 0) = *getNew(x, y, 0);
+					*getNew(x, y - 1, 1) = *getNew(x, y, 1);
+					*getNew(x, y - 1, 2) = *getNew(x, y, 2);
+					*getNew(x, y - 1, 3) = *getNew(x, y, 3);
+				}
+			}
+			else
+				if (y == newH - 2 ||
+					(y % (blockSize + 2)) == blockSize
+					)
+				{
+					for (int x = 0; x < newW; x++)
+					{
+						*getNew(x, y + 1, 0) = *getNew(x, y, 0);
+						*getNew(x, y + 1, 1) = *getNew(x, y, 1);
+						*getNew(x, y + 1, 2) = *getNew(x, y, 2);
+						*getNew(x, y + 1, 3) = *getNew(x, y, 3);
+					}
+				}
+
+		}
+
+		wgpu2d::Texture t = createTextureFromPixels(newData, newW, newH, label, pixelated, useMipMaps);
+
+		stbi_image_free((void *)decodedImage);
+		delete[] newData;
+		return t;
+	}
+
+	// ---------------------------------------------------------------------
+	// Batch: accumulate on the CPU, upload and draw at flush
+	// ---------------------------------------------------------------------
+
+	// gl2d's per-corner CPU transform (renderRectangleAbsRotation), collapsed
+	// into one matrix:
+	//   1. subtract the camera position          (v.x -= cam.x; v.y += cam.y on the flipped y)
+	//   2. scale about the screen center by zoom  (scaleAroundPoint with center (w/2, -h/2))
+	//   3. pixels to clip space                   (x: 2x/w - 1;  y: 2y/h + 1 on the flipped y)
+	// For a world point (x, y) with y down that works out to
+	//   ndc.x =  (2 zoom / w) x  - 2 zoom cam.x / w - zoom
+	//   ndc.y = -(2 zoom / h) y  + 2 zoom cam.y / h + zoom
+	// Checked against gl2d's own functions over 100k random inputs (milestone 5).
+	glm::mat4 buildViewProj(const wgpu2d::Camera &cam, float w, float h)
+	{
+		const float z = cam.zoom;
+		glm::mat4 m(1.0f);                     // glm is column-major: m[col][row]
+		m[0][0] = 2.0f * z / w;
+		m[1][1] = -2.0f * z / h;
+		m[3][0] = -2.0f * z * cam.position.x / w - z;
+		m[3][1] = 2.0f * z * cam.position.y / h + z;
+		return m;
+	}
+
+	bool sameCamera(const wgpu2d::Camera &a, const wgpu2d::Camera &b)
+	{
+		return a.position == b.position && a.zoom == b.zoom;
+	}
+
+	// gl2d's rotateAroundPoint, verbatim. It works in gl2d's y-flipped space
+	// (callers pass corners with y negated) and negates the pivot's y to
+	// match. Ported as-is so positive degrees turn the same way they do today.
+	glm::vec2 rotateAroundPoint(glm::vec2 vec, glm::vec2 point, const float degrees)
+	{
+		point.y = -point.y;
+		float a = glm::radians(degrees);
+		float s = sinf(a);
+		float c = cosf(a);
+		vec.x -= point.x;
+		vec.y -= point.y;
+		float newx = vec.x * c - vec.y * s;
+		float newy = vec.x * s + vec.y * c;
+		// translate point back:
+		vec.x = newx + point.x;
+		vec.y = newy + point.y;
+		return vec;
+	}
+
 	// Makes sure the vertex buffer can hold `bytes`. A GPU buffer cannot be
 	// resized, so growth means creating a bigger one (doubling) and releasing
 	// the old one; WebGPU keeps the old buffer alive until submitted work
-	// that reads it has finished. Never shrinks. Starts small on purpose so
-	// the growth path runs early and visibly.
+	// that reads it has finished. Never shrinks.
 	bool ensureVertexBufferCapacity(uint64_t bytes)
 	{
 		if (g.vertexBuffer && bytes <= g.vertexBufferCapacityBytes) { return true; }
@@ -1050,8 +985,6 @@ namespace
 		uint64_t capacity = g.vertexBufferCapacityBytes ? g.vertexBufferCapacityBytes : 64 * sizeof(Vertex);
 		while (capacity < bytes) { capacity *= 2; }
 
-		// A buffer is GPU memory with a fixed purpose. Vertex: a pipeline may
-		// read it as vertex input. CopyDst: the queue may write into it.
 		BufferDescriptor desc = Default;
 		desc.label = StringView("batch vertices");
 		desc.usage = BufferUsage::Vertex | BufferUsage::CopyDst;
@@ -1073,11 +1006,52 @@ namespace
 		return true;
 	}
 
-	// gl2d's flush: upload the accumulated batch and draw it. One texture per
-	// frame in 6a, so one draw; 6b splits the batch into runs per texture.
-	void flushBatch(RenderPassEncoder pass)
+	// Begins the frame's single render pass on first use, clearing to the
+	// recorded color. gl2d's glClear at frame start is this load operation.
+	bool ensurePassBegun()
+	{
+		if (!g.frameOpen) { return false; }
+		if (g.framePass) { return true; }
+
+		RenderPassColorAttachment colorAttachment = Default;
+		colorAttachment.view = g.frameView;
+		colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED; // required for a 2D target
+		colorAttachment.resolveTarget = nullptr;
+		colorAttachment.loadOp = LoadOp::Clear;
+		colorAttachment.storeOp = StoreOp::Store;
+		colorAttachment.clearValue.r = g.clearColor.r;
+		colorAttachment.clearValue.g = g.clearColor.g;
+		colorAttachment.clearValue.b = g.clearColor.b;
+		colorAttachment.clearValue.a = g.clearColor.a;
+
+		RenderPassDescriptor passDesc = Default;
+		passDesc.label = StringView("frame pass");
+		passDesc.colorAttachmentCount = 1;
+		passDesc.colorAttachments = &colorAttachment;
+		passDesc.depthStencilAttachment = nullptr;
+		passDesc.occlusionQuerySet = nullptr;
+		passDesc.timestampWrites = nullptr;
+
+		g.framePass = g.frameEncoder.beginRenderPass(passDesc);
+		return (bool)g.framePass;
+	}
+
+	void clearBatch()
+	{
+		batchVertices.clear();
+		batchQuadTextures.clear();
+		batchQuadCameras.clear();
+		frameCameras.clear();
+	}
+
+	// gl2d's internalFlush: upload the batch, then one draw per run of
+	// consecutive quads that share a texture, extended to also break when
+	// the camera changes. Order is preserved, so overlap and transparency
+	// come out as they do today.
+	void flushBatch()
 	{
 		if (batchVertices.empty()) { return; }
+		if (!ensurePassBegun()) { return; }
 
 		const uint64_t bytes = batchVertices.size() * sizeof(Vertex);
 		static_assert(sizeof(Vertex) % 4 == 0, "writeBuffer size must be a multiple of 4");
@@ -1096,9 +1070,7 @@ namespace
 			g.queue.writeBuffer(g.uniformBuffer, (uint64_t)i * g.cameraSlotStride, &uniforms, sizeof(uniforms));
 		}
 
-		// gl2d's flush loop: one draw per run of consecutive quads that share
-		// a texture, extended to also break when the camera changes. Order is
-		// preserved, so overlap and transparency come out as they do today.
+		RenderPassEncoder pass = g.framePass;
 		pass.setPipeline(g.quadPipeline);
 		pass.setVertexBuffer(0, g.vertexBuffer, 0, bytes);
 
@@ -1108,13 +1080,13 @@ namespace
 		for (size_t i = 1; i <= quadCount; i++)
 		{
 			const bool boundary = (i == quadCount)
-				|| batchQuadTextures[i].id != batchQuadTextures[runStart].id
+				|| batchQuadTextures[i] != batchQuadTextures[runStart]
 				|| batchQuadCameras[i] != batchQuadCameras[runStart];
 			if (!boundary) { continue; }
 
 			const uint32_t dynamicOffset = batchQuadCameras[runStart] * g.cameraSlotStride;
-			pass.setBindGroup(0, textures[batchQuadTextures[runStart].id - 1].bindGroup, 0, nullptr); // texture + sampler
-			pass.setBindGroup(1, g.cameraBindGroup, 1, &dynamicOffset);                             // camera slot
+			pass.setBindGroup(0, textures[batchQuadTextures[runStart] - 1].bindGroup, 0, nullptr); // texture + sampler
+			pass.setBindGroup(1, g.cameraBindGroup, 1, &dynamicOffset);                          // camera slot
 			pass.draw((uint32_t)((i - runStart) * 6), 1, (uint32_t)(runStart * 6), 0);
 			runs++;
 			runStart = i;
@@ -1129,93 +1101,69 @@ namespace
 		}
 	}
 
-	void clearBatch()
+	// gl2d's renderRectangleAbsRotation up to (not including) its camera
+	// steps, which are now the matrix. Corners are built and rotated in
+	// gl2d's flipped space, then flipped back into world pixels for the
+	// vertex buffer. Texture coordinates arrive in gl2d's convention
+	// ({u0, v0, u1, v1} with v measured from the bottom, default {0,1,1,0})
+	// and are converted to WebGPU's top-left origin here: v = 1 - v.
+	void pushQuad(const wgpu2d::Camera &camera, const glm::vec4 transforms, const wgpu2d::Texture texture,
+		const glm::vec4 colors[4], const glm::vec2 origin, const float rotation, const glm::vec4 textureCoords)
 	{
-		batchVertices.clear();
-		batchQuadTextures.clear();
-		batchQuadCameras.clear();
-		frameCameras.clear();
-	}
-
-	// Milestone 6a demo: the whole sheet at native size as an orientation
-	// reference, plus a few hundred spinning tinted ships picked from its
-	// 5x2 cells. Cell coordinates are given in gl2d's bottom-origin
-	// convention so the boundary conversion in renderRectangle is exercised.
-	void buildDemoSprites()
-	{
-		srand(7);
-		auto rnd = [](float lo, float hi) { return lo + (hi - lo) * (rand() / (float)RAND_MAX); };
-		demoSprites.clear();
-		for (int i = 0; i < 400; i++)
+		wgpu2d::Texture textureCopy = texture;
+		if (textureCopy.id == 0 || textureCopy.id > textures.size() || !textures[textureCopy.id - 1].bindGroup)
 		{
-			DemoSprite d;
-			d.position = { rnd(-1200, 1800), rnd(-800, 1300) };
-			d.size = rnd(40, 140);
-			d.rotation = rnd(0, 360);
-			d.spin = rnd(-90, 90);
-			d.color = { rnd(0.5f, 1), rnd(0.5f, 1), rnd(0.5f, 1), rnd(0.6f, 1) };
-			d.cellX = rand() % 5;
-			d.cellY = rand() % 2;
-			demoSprites.push_back(d);
-		}
-	}
-
-	glm::vec4 demoCellUV(int cellX, int cellY)
-	{
-		// Top-left-origin cell rect, then expressed in gl2d's convention
-		// (v measured from the bottom) since that is what renderRectangle takes.
-		const float u0 = cellX / 5.0f, u1 = (cellX + 1) / 5.0f;
-		const float vTop = cellY / 2.0f, vBottom = (cellY + 1) / 2.0f;
-		return { u0, 1.0f - vTop, u1, 1.0f - vBottom };
-	}
-
-	glm::vec4 demoProjectileUV(int cellX, int cellY)
-	{
-		// projectiles.png is a 3x2 sheet.
-		const float u0 = cellX / 3.0f, u1 = (cellX + 1) / 3.0f;
-		const float vTop = cellY / 2.0f, vBottom = (cellY + 1) / 2.0f;
-		return { u0, 1.0f - vTop, u1, 1.0f - vBottom };
-	}
-
-	void drawDemo(float deltaTime)
-	{
-		const TextureEntry &sheet = textures[demoSheet.id - 1];
-		renderRectangle({100, 100, (float)sheet.width, (float)sheet.height}, demoSheet);
-
-		// Ships and projectiles interleaved in submission order so the flush
-		// has to break runs often. Every third sprite is a projectile.
-		int i = 0;
-		for (DemoSprite &d : demoSprites)
-		{
-			d.rotation += d.spin * deltaTime;
-			if (i++ % 3 == 2)
-			{
-				renderRectangle({ d.position.x, d.position.y, d.size, d.size }, demoProjectiles,
-					d.color, {}, d.rotation, demoProjectileUV(d.cellX % 3, d.cellY));
-			}
-			else
-			{
-				renderRectangle({ d.position.x, d.position.y, d.size, d.size }, demoSheet,
-					d.color, {}, d.rotation, demoCellUV(d.cellX, d.cellY));
-			}
+			std::cerr << "wgpu2d: Invalid texture (id " << textureCopy.id << ")\n";
+			textureCopy = white1pxSquareTexture;
+			if (textureCopy.id == 0) { return; }
 		}
 
-		// Untextured draws through the white texture: hitbox-style circles
-		// around the sheet and a line across it, gl2d's own helpers.
-		const glm::vec2 sheetCenter(100.0f + sheet.width / 2.0f, 100.0f + sheet.height / 2.0f);
-		renderCircleOutline(sheetCenter, {0, 1, 0, 1}, 200.0f, 8.0f, 32);
-		renderCircleOutline(sheetCenter, {1, 0, 0, 1}, 60.0f, 6.0f, 16);
-		renderLine({100, 100}, {100.0f + sheet.width, 100.0f + sheet.height}, {1, 1, 0, 1}, 4.0f);
+		//We need to flip texture_transforms.y
+		const float transformsY = transforms.y * -1;
 
-		// Screen-space UI, gl2d style: push the default camera, draw, pop.
-		// This bar must stay put while the world camera circles and zooms.
-		pushCamera();
+		glm::vec2 v1 = { transforms.x,				  transformsY };
+		glm::vec2 v2 = { transforms.x,				  transformsY - transforms.w };
+		glm::vec2 v3 = { transforms.x + transforms.z, transformsY - transforms.w };
+		glm::vec2 v4 = { transforms.x + transforms.z, transformsY };
+
+		//Apply rotations
+		if (rotation != 0)
 		{
-			const float w = (float)g.surfaceWidth, h = (float)g.surfaceHeight;
-			renderRectangle({ w * 0.65f, h * 0.1f, w * 0.3f, w * 0.3f / 8.0f }, {0.15f, 0.15f, 0.15f, 0.9f});
-			renderRectangle({ w * 0.65f, h * 0.1f, w * 0.3f * 0.7f, w * 0.3f / 8.0f }, {0.2f, 0.9f, 0.3f, 1});
+			v1 = rotateAroundPoint(v1, origin, rotation);
+			v2 = rotateAroundPoint(v2, origin, rotation);
+			v3 = rotateAroundPoint(v3, origin, rotation);
+			v4 = rotateAroundPoint(v4, origin, rotation);
 		}
-		popCamera();
+
+		// Back to world pixels (y down). gl2d continued with camera offset,
+		// zoom, and NDC here; the vertex shader does that now.
+		v1.y = -v1.y; v2.y = -v2.y; v3.y = -v3.y; v4.y = -v4.y;
+
+		const float u0 = textureCoords.x, v0 = 1.0f - textureCoords.y;
+		const float u1 = textureCoords.z, v1t = 1.0f - textureCoords.w;
+
+		auto push = [&](glm::vec2 p, const glm::vec4 &c, float u, float v)
+		{
+			batchVertices.push_back(Vertex{ p.x, p.y, c.r, c.g, c.b, c.a, u, v });
+		};
+
+		// gl2d's corner order: v1 v2 v4, v2 v3 v4, with gl2d's uv assignment.
+		push(v1, colors[0], u0, v0);
+		push(v2, colors[1], u0, v1t);
+		push(v4, colors[3], u1, v0);
+		push(v2, colors[1], u0, v1t);
+		push(v3, colors[2], u1, v1t);
+		push(v4, colors[3], u1, v0);
+
+		batchQuadTextures.push_back(textureCopy.id);
+
+		// Record which camera this quad was drawn under. A new slot only when
+		// the camera changed since the last recorded one.
+		if (frameCameras.empty() || !sameCamera(frameCameras.back(), camera))
+		{
+			frameCameras.push_back(camera);
+		}
+		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
 	}
 
 	void printAdapter(Adapter adapter)
@@ -1238,7 +1186,7 @@ namespace
 		}
 
 		// The limits that matter for a 2D sprite batcher. minUniformBufferOffsetAlignment
-		// decides the stride of the per-camera uniform slots in milestone 6b.
+		// decides the stride of the per-camera uniform slots.
 		Limits limits = Default;
 		if (adapter.getLimits(&limits) == Status::Success)
 		{
@@ -1259,12 +1207,7 @@ namespace
 
 		SupportedFeatures features = Default;
 		adapter.getFeatures(&features);
-		std::cout << "  features (" << features.featureCount << "):";
-		for (size_t i = 0; i < features.featureCount; i++)
-		{
-			std::cout << " " << featureName(features.features[i]);
-		}
-		std::cout << "\n";
+		std::cout << "  features: " << features.featureCount << "\n";
 		features.freeMembers();
 
 		// Flush so the report survives even if the process is killed while the
@@ -1272,6 +1215,10 @@ namespace
 		std::cout.flush();
 	}
 }
+
+// -------------------------------------------------------------------------
+// Context lifecycle, called from the platform loop
+// -------------------------------------------------------------------------
 
 bool wgpuInit(GLFWwindow *window)
 {
@@ -1299,7 +1246,7 @@ bool wgpuInit(GLFWwindow *window)
 
 #ifdef __APPLE__
 	// Pin the layer's color space so windowed and fullscreen presentation
-	// agree (otherwise fullscreen shows slightly lighter colors on macOS).
+	// agree where macOS honors it (see wgpuMetalLayer.h).
 	if (pinMetalLayerColorSpaceToSRGB(window))
 	{
 		std::cout << "WebGPU Metal layer color space pinned to sRGB\n";
@@ -1408,8 +1355,7 @@ bool wgpuInit(GLFWwindow *window)
 	// 6. Surface format. The first listed format is the surface's preferred
 	//    one and on Metal it is normally an sRGB variant. gl2d never gamma
 	//    corrected, so prefer the plain (non-sRGB) 8-bit format when offered
-	//    and only fall back to the preferred one otherwise. See the plan's
-	//    "surface format" risk.
+	//    and only fall back to the preferred one otherwise.
 	SurfaceCapabilities caps = Default;
 	if (g.surface.getCapabilities(g.adapter, &caps) != Status::Success || caps.formatCount == 0)
 	{
@@ -1444,51 +1390,41 @@ bool wgpuInit(GLFWwindow *window)
 			<< g.surfaceWidth << "x" << g.surfaceHeight << ")\n";
 		return false;
 	}
-	// 8. Sampler and layouts (milestone 4). The pipeline needs the layout.
-	if (!createSampler() || !createLayouts())
+
+	// 8. Samplers and layouts. The pipeline needs the layout.
+	if (!createSamplers() || !createLayouts())
 	{
 		return false;
 	}
-	std::cout << "WebGPU sampler and bind group layout created\n";
 
-	// 9. The quad pipeline (milestones 2, 3, 4). Depends on the surface
-	//    format and the pipeline layout.
+	// 9. The sprite pipeline. Depends on the surface format and the layout.
 	if (!createQuadPipeline())
 	{
 		return false;
 	}
 	std::cout << "WebGPU quad pipeline created\n";
 
-	// 10. Textures: gl2d's 1px white first (untextured draws), then the two
-	//     demo sheets. Each is a registry entry behind a handle.
-	white1pxSquareTexture = createWhite1pxTexture();
-	demoSheet = createTextureFromFile(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png");
-	demoProjectiles = createTextureFromFile(RESOURCES_PATH "spaceShip/stitchedFiles/projectiles.png");
-	if (white1pxSquareTexture.id == 0 || demoSheet.id == 0 || demoProjectiles.id == 0)
+	// 10. gl2d's 1px white texture: what every untextured draw samples.
+	white1pxSquareTexture.create1PxSquare();
+	if (white1pxSquareTexture.id == 0)
 	{
 		return false;
 	}
-	for (size_t i = 0; i < textures.size(); i++)
-	{
-		std::cout << "WebGPU texture " << (i + 1) << ": " << textures[i].width << "x" << textures[i].height << "\n";
-	}
 
-	// 11. The vertex buffer is created on first flush (milestone 6a) and
-	//     grows as needed. Nothing to do here.
-	buildDemoSprites();
-
-	// 12. The camera uniform slots (milestones 5, 6b). Grow on demand.
+	// 11. The camera uniform slots. Grow on demand.
 	if (!ensureCameraSlotCapacity(1))
 	{
 		return false;
 	}
-	g.lastFrameTime = std::chrono::steady_clock::now();
+
 	std::cout.flush();
 	return true;
 }
 
-void wgpuRenderFrame()
+void wgpuBeginFrame()
 {
+	g.frameOpen = false;
+
 	// Resize detection. On Metal, wgpu-native keeps presenting a drawable of
 	// the configured size and the layer stretches it to the window; the
 	// surface never reports itself Outdated. So compare the framebuffer size
@@ -1500,11 +1436,11 @@ void wgpuRenderFrame()
 		if (!g.surfaceConfigured || w != g.surfaceWidth || h != g.surfaceHeight)
 		{
 			configureSurface();
-			if (!g.surfaceConfigured) { return; } // minimized: nothing to draw
+			if (!g.surfaceConfigured) { return; } // minimized: nothing to draw this frame
 		}
 	}
 
-	// 1. Acquire: the texture that will next go on screen.
+	// Acquire: the texture that will next go on screen.
 	SurfaceTexture surfaceTexture = Default;
 	g.surface.getCurrentTexture(&surfaceTexture);
 	wgpu::Texture texture = surfaceTexture.texture;
@@ -1518,7 +1454,6 @@ void wgpuRenderFrame()
 		case SurfaceGetCurrentTextureStatus::Timeout:
 		case SurfaceGetCurrentTextureStatus::Outdated:
 		case SurfaceGetCurrentTextureStatus::Lost:
-			// The window was resized or the surface otherwise invalidated.
 			// Reconfigure at the current size and try again next frame.
 			if (texture) { texture.release(); }
 			configureSurface();
@@ -1531,34 +1466,7 @@ void wgpuRenderFrame()
 			return;
 	}
 
-	// Demo camera (milestone 5): follow a point circling the sprite with the
-	// game's own follow parameters, and breathe the zoom, so both the follow
-	// math and zoom-about-center are exercised. Milestone 7 replaces this
-	// with the game's camera calls.
-	{
-		auto now = std::chrono::steady_clock::now();
-		float deltaTime = std::chrono::duration<float>(now - g.lastFrameTime).count();
-		g.lastFrameTime = now;
-		if (deltaTime > 0.1f) { deltaTime = 0.1f; }
-		g.demoTime += deltaTime;
-
-		const TextureEntry &sheet = textures[demoSheet.id - 1];
-		const glm::vec2 spriteCenter(100.0f + sheet.width / 2.0f, 100.0f + sheet.height / 2.0f);
-		const glm::vec2 target = spriteCenter + 150.0f * glm::vec2(std::cos(g.demoTime * 0.7f), std::sin(g.demoTime * 0.7f));
-		currentCamera.follow(target, deltaTime * 550.0f, 1.0f, 150.0f, (float)g.surfaceWidth, (float)g.surfaceHeight);
-		currentCamera.zoom = 0.75f + 0.25f * std::sin(g.demoTime * 0.5f);
-
-		// Accumulate this frame's quads (milestone 6a). Nothing touches the
-		// GPU until flushBatch below.
-		clearBatch();
-		drawDemo(deltaTime);
-	}
-
-	// Camera matrices are written per slot inside flushBatch, from the
-	// current framebuffer size. That size and the surface configuration must
-	// agree, or sprites stretch on resize.
-
-	// 2. View: render passes attach to a view of a texture, never the texture.
+	// View: render passes attach to a view of a texture, never the texture.
 	TextureViewDescriptor viewDesc = Default;
 	viewDesc.label = StringView("surface view");
 	viewDesc.format = g.surfaceFormat;
@@ -1569,53 +1477,49 @@ void wgpuRenderFrame()
 	viewDesc.arrayLayerCount = 1;
 	viewDesc.aspect = TextureAspect::All;
 	viewDesc.usage = TextureUsage::RenderAttachment;
-	TextureView view = texture.createView(viewDesc);
 
-	// 3. Record: a command encoder collects GPU work; nothing runs yet.
+	// Record: a command encoder collects GPU work; nothing runs yet.
 	CommandEncoderDescriptor encoderDesc = Default;
 	encoderDesc.label = StringView("frame encoder");
-	CommandEncoder encoder = g.device.createCommandEncoder(encoderDesc);
 
-	// The render pass: one color attachment, cleared on load, kept on store.
-	// This is gl2d's glClear, expressed as the pass's load operation.
-	RenderPassColorAttachment colorAttachment = Default;
-	colorAttachment.view = view;
-	colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED; // required for a 2D target
-	colorAttachment.resolveTarget = nullptr;
-	colorAttachment.loadOp = LoadOp::Clear;
-	colorAttachment.storeOp = StoreOp::Store;
-	colorAttachment.clearValue.r = 0.25; // deliberately not black
-	colorAttachment.clearValue.g = 0.45;
-	colorAttachment.clearValue.b = 0.75;
-	colorAttachment.clearValue.a = 1.0;
+	g.frameTexture = texture;
+	g.frameView = texture.createView(viewDesc);
+	g.frameEncoder = g.device.createCommandEncoder(encoderDesc);
+	g.framePass = nullptr;
+	g.clearColor = {0, 0, 0, 1}; // gl2d's glClear default until clearScreen says otherwise
+	g.frameOpen = true;
+}
 
-	RenderPassDescriptor passDesc = Default;
-	passDesc.label = StringView("clear pass");
-	passDesc.colorAttachmentCount = 1;
-	passDesc.colorAttachments = &colorAttachment;
-	passDesc.depthStencilAttachment = nullptr;
-	passDesc.occlusionQuerySet = nullptr;
-	passDesc.timestampWrites = nullptr;
+void wgpuEndFrame()
+{
+	if (!g.frameOpen) { return; }
 
-	RenderPassEncoder pass = encoder.beginRenderPass(passDesc);
-	flushBatch(pass);
-	pass.end();
-	pass.release();
+	// A frame with no draws still clears; begin the pass so the load op runs.
+	ensurePassBegun();
+	if (g.framePass)
+	{
+		g.framePass.end();
+		g.framePass.release();
+		g.framePass = nullptr;
+	}
 
-	// 4. Seal the recording into a command buffer and submit it.
+	// Seal the recording into a command buffer, submit, present.
 	CommandBufferDescriptor cmdDesc = Default;
 	cmdDesc.label = StringView("frame commands");
-	CommandBuffer commands = encoder.finish(cmdDesc);
-	encoder.release();
+	CommandBuffer commands = g.frameEncoder.finish(cmdDesc);
+	g.frameEncoder.release();
+	g.frameEncoder = nullptr;
 
 	g.queue.submit(1, &commands);
 	commands.release();
 
-	// 5. Present: hand the texture to the compositor. This is glfwSwapBuffers.
-	g.surface.present();
+	g.surface.present(); // this is glfwSwapBuffers
 
-	view.release();
-	texture.release();
+	g.frameView.release();
+	g.frameView = nullptr;
+	g.frameTexture.release();
+	g.frameTexture = nullptr;
+	g.frameOpen = false;
 
 	// Let pending callbacks (errors, device lost) run once per frame.
 	g.instance.processEvents();
@@ -1630,8 +1534,19 @@ void wgpuRenderFrame()
 
 void wgpuShutdown()
 {
+	if (g.frameOpen)
+	{
+		// Shouldn't happen (the loop always ends the frame), but never leave
+		// an encoder dangling.
+		if (g.framePass) { g.framePass.end(); g.framePass.release(); g.framePass = nullptr; }
+		if (g.frameEncoder) { g.frameEncoder.release(); g.frameEncoder = nullptr; }
+		if (g.frameView) { g.frameView.release(); g.frameView = nullptr; }
+		if (g.frameTexture) { g.frameTexture.release(); g.frameTexture = nullptr; }
+		g.frameOpen = false;
+	}
+	clearBatch();
 	if (g.cameraBindGroup) { g.cameraBindGroup.release(); g.cameraBindGroup = nullptr; }
-	if (g.uniformBuffer) { g.uniformBuffer.release(); g.uniformBuffer = nullptr; }
+	if (g.uniformBuffer) { g.uniformBuffer.release(); g.uniformBuffer = nullptr; g.cameraSlotCapacity = 0; }
 	if (g.vertexBuffer) { g.vertexBuffer.release(); g.vertexBuffer = nullptr; g.vertexBufferCapacityBytes = 0; }
 	for (TextureEntry &t : textures)
 	{
@@ -1644,7 +1559,8 @@ void wgpuShutdown()
 	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
 	if (g.cameraBindGroupLayout) { g.cameraBindGroupLayout.release(); g.cameraBindGroupLayout = nullptr; }
 	if (g.textureBindGroupLayout) { g.textureBindGroupLayout.release(); g.textureBindGroupLayout = nullptr; }
-	if (g.sampler) { g.sampler.release(); g.sampler = nullptr; }
+	if (g.samplerPixelated) { g.samplerPixelated.release(); g.samplerPixelated = nullptr; }
+	if (g.samplerLinear) { g.samplerLinear.release(); g.samplerLinear = nullptr; }
 	if (g.surface && g.surfaceConfigured) { g.surface.unconfigure(); g.surfaceConfigured = false; }
 	if (g.queue) { g.queue.release(); g.queue = nullptr; }
 	if (g.device) { g.device.release(); g.device = nullptr; }
@@ -1653,6 +1569,321 @@ void wgpuShutdown()
 	if (g.instance) { g.instance.release(); g.instance = nullptr; }
 }
 
+} // namespace render
+
+// -------------------------------------------------------------------------
+// wgpu2d: gl2d's API on top of the context above
+// -------------------------------------------------------------------------
+namespace wgpu2d
+{
+	using namespace render;
+
+	void init()
+	{
+		// The context is created by render::wgpuInit in the platform layer.
+	}
+
+	// ---- Texture ----
+	glm::ivec2 Texture::GetSize()
+	{
+		if (id == 0 || id > textures.size()) { return {0, 0}; }
+		return { textures[id - 1].width, textures[id - 1].height };
+	}
+
+	void Texture::createFromBuffer(const char *image_data, const int width, const int height, bool pixelated, bool useMipMaps)
+	{
+		*this = createTextureFromPixels((const unsigned char *)image_data, width, height, "buffer", pixelated, useMipMaps);
+	}
+
+	void Texture::create1PxSquare(const char *b)
+	{
+		if (b == nullptr)
+		{
+			const unsigned char buff[] = { 0xff, 0xff, 0xff, 0xff };
+			*this = createTextureFromPixels(buff, 1, 1, "1px white", false, false);
+		}
+		else
+		{
+			*this = createTextureFromPixels((const unsigned char *)b, 1, 1, "1px", false, false);
+		}
+	}
+
+	// Rows come back from stb_image top-first and are uploaded as-is: no
+	// flip (see the milestone 4 orientation decision).
+	void Texture::loadFromFile(const char *fileName, bool pixelated, bool useMipMaps)
+	{
+		int width = 0, height = 0, channels = 0;
+		stbi_set_flip_vertically_on_load(0);
+		unsigned char *pixels = stbi_load(fileName, &width, &height, &channels, 4);
+		if (!pixels)
+		{
+			std::cerr << "wgpu2d: error openning: " << fileName << " (" << stbi_failure_reason() << ")\n";
+			return;
+		}
+		*this = createTextureFromPixels(pixels, width, height, fileName, pixelated, useMipMaps);
+		stbi_image_free(pixels);
+	}
+
+	void Texture::loadFromFileWithPixelPadding(const char *fileName, int blockSize, bool pixelated, bool useMipMaps)
+	{
+		std::vector<unsigned char> fileData;
+		if (!readBinaryFile(fileName, fileData))
+		{
+			std::cerr << "wgpu2d: error openning: " << fileName << "\n";
+			return;
+		}
+		*this = createPaddedTextureFromFileData(fileData.data(), fileData.size(), blockSize, pixelated, useMipMaps, fileName);
+	}
+
+	void Texture::cleanup()
+	{
+		if (id == 0 || id > textures.size()) { id = 0; return; }
+		TextureEntry &t = textures[id - 1];
+		if (t.bindGroup) { t.bindGroup.release(); t.bindGroup = nullptr; }
+		if (t.view) { t.view.release(); t.view = nullptr; }
+		if (t.texture) { t.texture.release(); t.texture = nullptr; }
+		id = 0;
+	}
+
+	// ---- Atlas math, verbatim from gl2d ----
+	glm::vec4 computeTextureAtlas(int xCount, int yCount, int x, int y, bool flip)
+	{
+		float xSize = 1.f / xCount;
+		float ySize = 1.f / yCount;
+
+		if (flip)
+		{
+			return { (x + 1) * xSize, 1 - (y * ySize), (x)*xSize, 1.f - ((y + 1) * ySize) };
+		}
+		else
+		{
+			return { x * xSize, 1 - (y * ySize), (x + 1) * xSize, 1.f - ((y + 1) * ySize) };
+		}
+	}
+
+	glm::vec4 computeTextureAtlasWithPadding(int mapXsize, int mapYsize,
+		int xCount, int yCount, int x, int y, bool flip)
+	{
+		float xSize = 1.f / xCount;
+		float ySize = 1.f / yCount;
+
+		float Xpadding = 1.f / mapXsize;
+		float Ypadding = 1.f / mapYsize;
+
+		glm::vec4 noFlip = { x * xSize + Xpadding, 1 - (y * ySize) - Ypadding, (x + 1) * xSize - Xpadding, 1.f - ((y + 1) * ySize) + Ypadding };
+
+		if (flip)
+		{
+			glm::vec4 flip = { noFlip.z, noFlip.y, noFlip.x, noFlip.w };
+
+			return flip;
+		}
+		else
+		{
+			return noFlip;
+		}
+	}
+
+	// ---- Camera, verbatim from gl2d ----
+	void Camera::follow(glm::vec2 pos, float speed, float min, float max, float w, float h)
+	{
+		pos.x -= w / 2.f;
+		pos.y -= h / 2.f;
+
+		glm::vec2 delta = pos - position;
+		bool signX = delta.x >= 0;
+		bool signY = delta.y >= 0;
+
+		float len = glm::length(delta);
+
+		delta = glm::normalize(delta);
+
+		if (len < min * 2)
+		{
+			speed /= 4.f;
+		}
+		else if (len < min * 4)
+		{
+			speed /= 2.f;
+		}
+
+		if (len > min)
+		{
+			if (len > max)
+			{
+				len = max;
+				position = pos - (max * delta);
+				//fix jittering
+				//position += delta * speed;
+			}
+			else
+			{
+				position += delta * speed;
+			}
+
+			glm::vec2 delta2 = pos - position;
+			bool signX2 = delta.x >= 0;
+			bool signY2 = delta.y >= 0;
+			if (signX2 != signX || signY2 != signY || glm::length(delta2) > len)
+			{
+				//fix jittering
+				//position = pos;
+			}
+		}
+	}
+
+	// ---- Renderer2D ----
+	void Renderer2D::create(unsigned int, size_t quadCount)
+	{
+		batchVertices.reserve(quadCount * 6);
+		batchQuadTextures.reserve(quadCount);
+		batchQuadCameras.reserve(quadCount);
+		currentCamera = Camera{};
+	}
+
+	void Renderer2D::cleanup()
+	{
+		clearDrawData();
+	}
+
+	void Renderer2D::pushCamera(Camera c)
+	{
+		cameraPushPop.push_back(currentCamera);
+		currentCamera = c;
+	}
+
+	void Renderer2D::popCamera()
+	{
+		if (cameraPushPop.empty())
+		{
+			std::cerr << "wgpu2d: Pop on an empty stack on popCamera\n";
+		}
+		else
+		{
+			currentCamera = cameraPushPop.back();
+			cameraPushPop.pop_back();
+		}
+	}
+
+	// Verbatim from gl2d.
+	glm::vec4 Renderer2D::getViewRect()
+	{
+		auto rect = glm::vec4{0, 0, windowW, windowH};
+
+		glm::mat3 mat =
+		{1.f, 0, currentCamera.position.x ,
+		 0, 1.f, currentCamera.position.y,
+		 0, 0, 1.f};
+		mat = glm::transpose(mat);
+
+		glm::vec3 pos1 = {rect.x, rect.y, 1.f};
+		glm::vec3 pos2 = {rect.z + rect.x, rect.w + rect.y, 1.f};
+
+		pos1 = mat * pos1;
+		pos2 = mat * pos2;
+
+		glm::vec2 point((pos1.x + pos2.x) / 2.f, (pos1.y + pos2.y) / 2.f);
+
+		auto scaleAroundPoint = [](glm::vec2 vec, glm::vec2 point, float scale) { return (vec - point) * scale + point; };
+		pos1 = glm::vec3(scaleAroundPoint(pos1, point, 1.f/currentCamera.zoom), 1.f);
+		pos2 = glm::vec3(scaleAroundPoint(pos2, point, 1.f/currentCamera.zoom), 1.f);
+
+		rect = {pos1.x, pos1.y, pos2.x - pos1.x, pos2.y - pos1.y};
+
+		return rect;
+	}
+
+	void Renderer2D::clearDrawData()
+	{
+		clearBatch();
+	}
+
+	// gl2d's renderRectangle: the rotation origin is relative to the
+	// rectangle's center.
+	void Renderer2D::renderRectangle(const Rect transforms, const Texture texture, const Color4f colors[4],
+		const glm::vec2 origin, const float rotationDegrees, const glm::vec4 textureCoords)
+	{
+		glm::vec2 newOrigin;
+		newOrigin.x = origin.x + transforms.x + (transforms.z / 2);
+		newOrigin.y = origin.y + transforms.y + (transforms.w / 2);
+		renderRectangleAbsRotation(transforms, texture, colors, newOrigin, rotationDegrees, textureCoords);
+	}
+
+	void Renderer2D::renderRectangleAbsRotation(const Rect transforms, const Texture texture, const Color4f colors[4],
+		const glm::vec2 origin, const float rotationDegrees, const glm::vec4 textureCoords)
+	{
+		pushQuad(currentCamera, transforms, texture, colors, origin, rotationDegrees, textureCoords);
+	}
+
+	void Renderer2D::renderRectangle(const Rect transforms, const Color4f colors[4], const glm::vec2 origin, const float rotationDegrees)
+	{
+		renderRectangle(transforms, white1pxSquareTexture, colors, origin, rotationDegrees);
+	}
+
+	// gl2d's renderLine, both forms, verbatim.
+	void Renderer2D::renderLine(const glm::vec2 position, const float angleDegrees, const float length, const Color4f color, const float width)
+	{
+		renderRectangle({position - glm::vec2(0,width / 2.f), length, width},
+			color, {-length/2, 0}, angleDegrees);
+	}
+
+	void Renderer2D::renderLine(const glm::vec2 start, const glm::vec2 end, const Color4f color, const float width)
+	{
+		glm::vec2 vector = end - start;
+		float length = glm::length(vector);
+		float angle = std::atan2(vector.y, vector.x);
+		renderLine(start, -glm::degrees(angle), length, color, width);
+	}
+
+	// gl2d's renderCircleOutline, verbatim: a polygon of lines.
+	void Renderer2D::renderCircleOutline(const glm::vec2 position, const Color4f color, const float size, const float width, const unsigned int segments)
+	{
+		auto calcPos = [&](int p)
+		{
+			glm::vec2 circle = {size,0};
+
+			float a = 3.1415926 * 2 * ((float)p / segments);
+
+			float c = std::cos(a);
+			float s = std::sin(a);
+
+			circle = {c * circle.x - s * circle.y, s * circle.x + c * circle.y};
+
+			return circle + position;
+		};
+
+		glm::vec2 lastPos = calcPos(1);
+		renderLine(calcPos(0), lastPos, color, width);
+		for (int i = 1; i < segments; i++)
+		{
+			glm::vec2 pos1 = lastPos;
+			glm::vec2 pos2 = calcPos(i + 1);
+
+			renderLine(pos1, pos2, color, width);
+
+			lastPos = pos2;
+		}
+	}
+
+	void Renderer2D::clearScreen(const Color4f color)
+	{
+		g.clearColor = color;
+	}
+
+	void Renderer2D::flush(bool clearDrawData)
+	{
+		if (windowW <= 0 || windowH <= 0)
+		{
+			if (windowW < 0 || windowH < 0)
+			{
+				std::cerr << "wgpu2d: Negative windowW or windowH, have you forgotten to call updateWindowMetrics(w, h)?\n";
+			}
+			if (clearDrawData) { clearBatch(); }
+			return;
+		}
+		flushBatch();
+		if (clearDrawData) { clearBatch(); }
+	}
 }
 
 #endif // RENDERER_WEBGPU

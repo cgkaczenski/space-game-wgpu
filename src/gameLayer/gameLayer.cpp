@@ -1,6 +1,8 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "gameLayer.h"
+#if !RENDERER_WEBGPU
 #include <glad/glad.h>
+#endif
 #include <glm/glm.hpp>
 #include <glm/gtx/transform.hpp>
 #include "platformInput.h"
@@ -8,14 +10,14 @@
 #include <iostream>
 #include <sstream>
 #include "imfilebrowser.h"
-#include <gl2d/gl2d.h>
+#include <glui/glui.h>      // layout only (Frame, Box); brings gl2d.h with it, so it comes before the render alias
+#include <render/renderer.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
 #include <vector>
 #include <enemy.h>
 #include <cstdio>
-#include <glui/glui.h>
 #include <raudio.h>
 #include <collisionSystem.h>
 
@@ -37,22 +39,22 @@ GameplayData data;
 
 collision::BasicCollisionSystem collisionSystem;
 
-gl2d::Renderer2D renderer;
+r2d::Renderer2D renderer;
 
 constexpr int BACKGROUNDS = 4;
 
-gl2d::Texture spaceShipsTexture;
-gl2d::TextureAtlasPadding spaceShipsAtlas;
+r2d::Texture spaceShipsTexture;
+r2d::TextureAtlasPadding spaceShipsAtlas;
 
-gl2d::Texture bulletsTexture;
-gl2d::TextureAtlasPadding bulletsAtlas;
+r2d::Texture bulletsTexture;
+r2d::TextureAtlasPadding bulletsAtlas;
 
-gl2d::Texture backgroundTexture[BACKGROUNDS];
+r2d::Texture backgroundTexture[BACKGROUNDS];
 TiledRenderer tiledRenderer[BACKGROUNDS];
 
 
-gl2d::Texture healthBar;
-gl2d::Texture health;
+r2d::Texture healthBar;
+r2d::Texture health;
 
 Sound shootSound;
 bool soundEffectsEnabled = false;
@@ -86,16 +88,16 @@ bool initGame()
 	std::srand(std::time(0));
 
 	//initializing stuff for the renderer
-	gl2d::init();
+	r2d::init();
 	renderer.create();
 
 	spaceShipsTexture.loadFromFileWithPixelPadding
 	(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png", 128, true);
-	spaceShipsAtlas = gl2d::TextureAtlasPadding(5, 2, spaceShipsTexture.GetSize().x, spaceShipsTexture.GetSize().y);
+	spaceShipsAtlas = r2d::TextureAtlasPadding(5, 2, spaceShipsTexture.GetSize().x, spaceShipsTexture.GetSize().y);
 
 	bulletsTexture.loadFromFileWithPixelPadding
 	(RESOURCES_PATH "spaceShip/stitchedFiles/projectiles.png", 500, true);
-	bulletsAtlas = gl2d::TextureAtlasPadding(3, 2, bulletsTexture.GetSize().x, bulletsTexture.GetSize().y);
+	bulletsAtlas = r2d::TextureAtlasPadding(3, 2, bulletsTexture.GetSize().x, bulletsTexture.GetSize().y);
 
 	healthBar.loadFromFile(RESOURCES_PATH "healthBar.png", true);
 	health.loadFromFile(RESOURCES_PATH "health.png", true);
@@ -160,8 +162,12 @@ bool gameLogic(float deltaTime)
 	w = platform::getFrameBufferSizeX(); //window w
 	h = platform::getFrameBufferSizeY(); //window h
 	
+#if RENDERER_WEBGPU
+	renderer.clearScreen({0, 0, 0, 1}); //clear screen (the pass's load op, applied at flush)
+#else
 	glViewport(0, 0, w, h);
 	glClear(GL_COLOR_BUFFER_BIT); //clear screen
+#endif
 
 	renderer.updateWindowMetrics(w, h);
 #pragma endregion

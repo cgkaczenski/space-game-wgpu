@@ -1,8 +1,12 @@
+#if !RENDERER_WEBGPU
 #include <glad/glad.h>
+#endif
 #include <GLFW/glfw3.h>
 #include <stb_image/stb_image.h>
 #include <stb_truetype/stb_truetype.h>
+#if !RENDERER_WEBGPU
 #include "gl2d/gl2d.h"
+#endif
 #include <iostream>
 #include <ctime>
 #include "platformTools.h"
@@ -21,7 +25,9 @@
 #if REMOVE_IMGUI == 0
 	#include "imgui.h"
 	#include "backends/imgui_impl_glfw.h"
+	#if !RENDERER_WEBGPU
 	#include "backends/imgui_impl_opengl3.h"
+	#endif
 	#include "imguiThemes.h"
 #endif
 
@@ -350,23 +356,10 @@ int main()
 
 #pragma endregion
 
-#if RENDERER_WEBGPU
-	// Milestone 1b: the WebGPU path clears the window to a solid color every
-	// frame. gl2d, ImGui, audio, and the game loop still need the OpenGL
-	// context and are wired to WebGPU in later milestones.
-	while (!glfwWindowShouldClose(wind))
-	{
-		glfwPollEvents();
-		render::wgpuRenderFrame();
-	}
-	render::wgpuShutdown();
-	glfwDestroyWindow(wind);
-	glfwTerminate();
-	return 0;
-#endif
-
 #pragma region gl2d
+#if !RENDERER_WEBGPU
 	gl2d::init();
+#endif
 #pragma endregion
 
 
@@ -379,6 +372,15 @@ int main()
 		ImGuiIO& io = ImGui::GetIO(); (void)io;
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		//io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+	#if RENDERER_WEBGPU
+		// Milestone 7: no ImGui renderer backend yet (that is milestone 8).
+		// The GLFW platform backend still feeds input and display size, the
+		// font atlas is built on the CPU so ImGui::NewFrame is satisfied, and
+		// the draw data produced each frame is discarded. No docking or
+		// multi-viewport on this path.
+		ImGui_ImplGlfw_InitForOther(wind, true);
+		io.Fonts->Build();
+	#else
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
 		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;         // Enable Multi-Viewport / Platform Windows
 		//io.ConfigViewportsNoAutoMerge = true;
@@ -394,6 +396,7 @@ int main()
 	
 		ImGui_ImplGlfw_InitForOpenGL(wind, true);
 		ImGui_ImplOpenGL3_Init("#version 330");
+	#endif
 	#endif
 #pragma endregion
 
@@ -444,12 +447,25 @@ int main()
 	
 	#pragma endregion
 
+	#pragma region frame start
+		#if RENDERER_WEBGPU
+			// Acquire the surface texture and open the frame's encoder. The
+			// game's flush() draws into it; wgpuEndFrame submits and presents.
+			render::wgpuBeginFrame();
+		#endif
+	#pragma endregion
+
 	#pragma region imgui
 		#if REMOVE_IMGUI == 0
-			ImGui_ImplOpenGL3_NewFrame();
-			ImGui_ImplGlfw_NewFrame();
-			ImGui::NewFrame();
-			ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
+			#if RENDERER_WEBGPU
+				ImGui_ImplGlfw_NewFrame();
+				ImGui::NewFrame();
+			#else
+				ImGui_ImplOpenGL3_NewFrame();
+				ImGui_ImplGlfw_NewFrame();
+				ImGui::NewFrame();
+				ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
+			#endif
 		#endif
 	#pragma endregion
 
@@ -516,6 +532,13 @@ int main()
 
 	#pragma region window stuff
 
+	#if RENDERER_WEBGPU
+		#if REMOVE_IMGUI == 0
+			ImGui::Render(); // draw data is discarded until milestone 8
+		#endif
+		render::wgpuEndFrame(); // end pass, submit, present
+		glfwPollEvents();
+	#else
 		#pragma region imgui
 				#if REMOVE_IMGUI == 0
 				ImGui::Render();
@@ -539,12 +562,19 @@ int main()
 
 		glfwSwapBuffers(wind);
 		glfwPollEvents();
+	#endif
 
 	#pragma endregion
 
 	}
 
 	closeGame();
+
+#if RENDERER_WEBGPU
+	render::wgpuShutdown();
+	glfwDestroyWindow(wind);
+	glfwTerminate();
+#endif
 
 	//if you want the console to stay after closing the window
 	//std::cin.clear();

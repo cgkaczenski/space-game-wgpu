@@ -1,5 +1,5 @@
 #pragma once
-#include <gl2d/gl2d.h>
+#include <render/renderer.h>
 #include <collisionSystem.h>
 
 constexpr float enemyShipSize = 250.f;
@@ -20,8 +20,8 @@ struct Enemy
 
   float life = 1.f;
 
-	void render(gl2d::Renderer2D &renderer, gl2d::Texture &sprites,
-		gl2d::TextureAtlasPadding &atlas);
+	void render(r2d::Renderer2D &renderer, r2d::Texture &sprites,
+		r2d::TextureAtlasPadding &atlas);
 
   bool update(float deltaTime, glm::vec2 playerPos, float speedMultiplier = 1.f);
 

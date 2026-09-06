@@ -119,6 +119,10 @@ if(RENDERER_WEBGPU)
 	target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE webgpu glfw3webgpu)
 	target_copy_webgpu_binaries("${CMAKE_PROJECT_NAME}")
 	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC RENDERER_WEBGPU=1)
+	# GLFW's header includes the system OpenGL header by default. The WebGPU
+	# path never needs it, and it collides with glad.h when gl2d.h (via glui.h)
+	# is included after GLFW/glfw3.h.
+	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC GLFW_INCLUDE_NONE)
 
 	if(APPLE)
 		# Objective-C++ helper that pins the CAMetalLayer color space to sRGB
