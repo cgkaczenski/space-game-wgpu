@@ -1,5 +1,5 @@
 #pragma once
-#include <render/renderer.h>
+#include <render/wgpu2d.h>
 #include <collisionSystem.h>
 
 constexpr float bulletHitboxRadius = 20.f;
@@ -11,8 +11,8 @@ struct Bullet
 	glm::vec2 position = {};
 	glm::vec2 fireDirection = {};
 
-	void render(r2d::Renderer2D &renderer,
-		r2d::Texture bulletsTexture, r2d::TextureAtlasPadding bulletsAtlas
+	void render(wgpu2d::Renderer2D &renderer,
+		wgpu2d::Texture bulletsTexture, wgpu2d::TextureAtlasPadding bulletsAtlas
 		);
 
 	void update(float deltaTime, float speedMultiplier = 1.f);

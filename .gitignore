@@ -9,4 +9,3 @@ Makefile
 .cache/
 imgui.ini
 errorLogs.txt
-build-webgpu/

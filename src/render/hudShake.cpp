@@ -1,7 +1,5 @@
 #include <render/hudShake.h>
 
-#if RENDERER_WEBGPU
-
 #include <chrono>
 #include <cmath>
 
@@ -12,7 +10,7 @@ namespace
 {
 	// The target the HUD is composed into. Screen-sized and recreated when the
 	// window changes, so the composite is 1:1 and, at rest, an exact copy.
-	r2d::FrameBuffer hudTarget;
+	wgpu2d::FrameBuffer hudTarget;
 
 	// 1 right after a hit, decaying towards 0. Time is wall-clock, so the
 	// shake is unaffected by the game-speed debug slider.
@@ -58,7 +56,7 @@ void hudShakeTrigger(float strength)
 	phase = 0.f;
 }
 
-void hudShakeFlush(r2d::Renderer2D &renderer, int width, int height)
+void hudShakeFlush(wgpu2d::Renderer2D &renderer, int width, int height)
 {
 	if (width <= 0 || height <= 0)
 	{
@@ -110,25 +108,9 @@ void hudShakeFlush(r2d::Renderer2D &renderer, int width, int height)
 	// back to the world camera (which is offset and zoomed), and the target
 	// has to land on the screen 1:1 the way the HUD itself was laid out.
 	renderer.pushCamera();
-	const r2d::Rect target = {dx, dy, (float)width, (float)height};
+	const wgpu2d::Rect target = {dx, dy, (float)width, (float)height};
 	renderer.renderRectangle(target, hudTarget.texture, Colors_White, {}, tilt);
 	renderer.popCamera();
 }
 
 }
-
-#else
-
-// OpenGL path: render targets are the WebGPU milestone, so the HUD is drawn
-// the way it always was and the trigger is ignored.
-namespace render
-{
-	void hudShakeTrigger(float) {}
-
-	void hudShakeFlush(r2d::Renderer2D &renderer, int, int)
-	{
-		renderer.flush();
-	}
-}
-
-#endif

@@ -2,8 +2,8 @@
 #include <tiledRenderer.h>
 
 
-void Enemy::render(r2d::Renderer2D &renderer,
-	r2d::Texture &sprites, r2d::TextureAtlasPadding &atlas)
+void Enemy::render(wgpu2d::Renderer2D &renderer,
+	wgpu2d::Texture &sprites, wgpu2d::TextureAtlasPadding &atlas)
 {
 	renderSpaceShip(renderer, position, enemyShipSize,
 		sprites, atlas.get(type.x, type.y), viewDirection);

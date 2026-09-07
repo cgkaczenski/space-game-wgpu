@@ -1,5 +1,3 @@
-#if RENDERER_WEBGPU
-
 // The WebGPU render context (render::wgpu*) and the gl2d-shaped API on top
 // of it (wgpu2d::*). One translation unit on purpose: the API's methods
 // need the context's internals and there is one renderer.
@@ -2308,5 +2306,3 @@ namespace wgpu2d
 		if (clearDrawData) { clearBatch(); }
 	}
 }
-
-#endif // RENDERER_WEBGPU

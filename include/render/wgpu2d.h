@@ -2,7 +2,7 @@
 
 // wgpu2d: the WebGPU renderer behind gl2d's public shape. Only the subset
 // the game calls is here. Names, parameter order, and defaults match
-// gl2d so the game files compile unchanged through the r2d alias.
+// gl2d so the game files could switch by include and namespace.
 //
 // One Renderer2D instance is supported (the game has one). The GPU
 // context itself (instance, device, surface, frame) lives in
@@ -27,9 +27,6 @@ namespace wgpu2d
 	// from the bottom. Converted to WebGPU's top-left origin inside the renderer.
 	#define WGPU2D_DefaultTextureCoords (glm::vec4{ 0, 1, 1, 0 })
 
-	// gl2d defines these unguarded; when gl2d.h is also visible (via glui.h)
-	// its definitions win and are type-compatible (both are glm::vec4).
-	#ifndef Colors_Red
 	#define Colors_Red (wgpu2d::Color4f{ 1, 0, 0, 1 })
 	#define Colors_Green (wgpu2d::Color4f{ 0, 1, 0, 1 })
 	#define Colors_Blue (wgpu2d::Color4f{ 0, 0, 1, 1 })
@@ -42,7 +39,6 @@ namespace wgpu2d
 	#define Colors_Purple (wgpu2d::Color4f{ 101.0f / 255.0f, 29.0f / 255.0f, 173.0f / 255.0f, 1 })
 	#define Colors_Gray (wgpu2d::Color4f{ (float)0x7F / 255.0f, (float)0x7F / 255.0f, (float)0x7F / 255.0f, 1 })
 	#define Colors_Transparent (wgpu2d::Color4f{ 0,0,0,0 })
-	#endif
 
 	// A copyable handle like gl2d's Texture { GLuint id }; 0 means invalid.
 	struct Texture

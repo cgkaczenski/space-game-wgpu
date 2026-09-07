@@ -1,3 +1,5 @@
+#pragma once
+
 # Working agreements for coding agents
 
 Read this before touching the repo. Claude Code and other agents that read
@@ -27,10 +29,10 @@ a file before patching it — the author edits committed files between sessions.
 
 ## What the project is
 
-A 2D space shooter (GLFW + gl2d + OpenGL) whose render layer is being ported to
-WebGPU (wgpu-native on Metal) as a deliberate learning exercise. The port is
-tracked in `docs/webgpu-port-plan.md`; the concepts, and where each one landed,
-are in `docs/webgpu-learning-outline.md`. Read the outline first — it is the map.
+A 2D space shooter (GLFW + WebGPU). The render layer was ported from OpenGL +
+gl2d to WebGPU (wgpu-native on Metal) as a deliberate learning exercise. The
+concepts, and where each one landed, are in `docs/webgpu-learning-outline.md`.
+Read the outline first — it is the map.
 
 ## Rules the author set for the port
 
@@ -43,32 +45,30 @@ are in `docs/webgpu-learning-outline.md`. Read the outline first — it is the m
   change, say so instead of making it.
 - **Never write wgpu API calls from memory.** The C API churns between releases.
   Read the vendored headers:
-  - `build-webgpu/_deps/wgpu-macos-x86_64-release-src/include/webgpu/webgpu.h`
+  - `build/_deps/wgpu-macos-x86_64-release-src/include/webgpu/webgpu.h`
   - `.../include/webgpu/wgpu.h` (wgpu-native extensions)
-  - `build-webgpu/_deps/webgpu-distribution-src/wgpu-native/include/webgpu/webgpu.hpp`
-- **Keep the OpenGL build compiling** until the WebGPU path reaches parity.
-  Every change gets built both ways.
+  - `build/_deps/webgpu-distribution-src/wgpu-native/include/webgpu/webgpu.hpp`
 - **When something is broken, list candidate causes before proposing a fix.**
 
 ## Build and run
 
-Two configurations, two build directories, both kept working:
+One configuration. WebGPU is the only renderer.
 
 ```bash
-cmake --build build -j8           # OpenGL (default)
-cmake --build build-webgpu -j8    # WebGPU (-DRENDERER_WEBGPU=ON)
+cmake -S . -B build
+cmake --build build -j8
 ```
 
 ```bash
-./build-webgpu/spaceGame                          # WebGPU build
-WGPU_RENDER_SCALE=0.25 ./build-webgpu/spaceGame   # low-res target, upscaled
+./build/spaceGame
+WGPU_RENDER_SCALE=0.25 ./build/spaceGame   # low-res target, upscaled
 ```
 
 The game runs until its window is closed, so cap it when running it yourself —
 macOS has no `timeout`:
 
 ```bash
-perl -e 'alarm 8; exec @ARGV' ./build-webgpu/spaceGame
+perl -e 'alarm 8; exec @ARGV' ./build/spaceGame
 ```
 
 Redirected stdout is fully buffered; the renderer's reports flush explicitly, so
@@ -83,9 +83,9 @@ the window.** Two honest options:
 - Console evidence: surface configuration, texture and pipeline creation, first
   flush, "first frame presented", absence of validation errors.
 - A GPU readback: draw a fixed, time-independent scene and copy the frame back
-  to the CPU (`glReadPixels` / `copyTextureToBuffer` + `mapAsync`), then compare
-  numerically. This is how the milestone 7-parity check was done and it is
-  stronger than a screenshot; write PNGs and send them to the author to look at.
+  to the CPU (`copyTextureToBuffer` + `mapAsync`), then compare numerically.
+  This is how the milestone 7-parity check was done and it is stronger than a
+  screenshot; write PNGs and send them to the author to look at.
 
 Temporary verification scaffolding is fine — say that it is temporary, keep it
 out of the commit, and remove it when done.
@@ -94,14 +94,13 @@ out of the commit, and remove it when done.
 
 | File | Role |
 |---|---|
-| `include/render/renderer.h` | the `r2d` alias the game includes; picks gl2d or wgpu2d |
-| `include/render/wgpu2d.h` | gl2d's public shape, WebGPU behind it |
+| `include/render/wgpu2d.h` | gl2d's public shape, WebGPU behind it; the include game files use |
 | `include/render/wgpuContext.h` | what the platform layer sees: init / begin / end / shutdown, no WebGPU types |
 | `include/render/wgpuFrame.h` | what other render TUs see: device, queue, pass, texture bind groups |
 | `src/render/wgpuContext.cpp` | instance through batch flush |
 | `src/render/wgpuImgui.cpp` | the hand-written ImGui renderer backend |
 | `src/platform/glfwMain.cpp` | window, frame bracket, ImGui wiring |
 
-`wgpu2d` mirrors gl2d's **signatures** name for name so game files change only by
-an include and a namespace. It does not mirror gl2d's implementation: vertices
-stay in world pixels and the camera is a matrix on the GPU.
+`wgpu2d` mirrors gl2d's **signatures** name for name. It does not mirror gl2d's
+implementation: vertices stay in world pixels and the camera is a matrix on the
+GPU.

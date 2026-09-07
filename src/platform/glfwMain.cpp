@@ -1,12 +1,6 @@
-#if !RENDERER_WEBGPU
-#include <glad/glad.h>
-#endif
 #include <GLFW/glfw3.h>
 #include <stb_image/stb_image.h>
 #include <stb_truetype/stb_truetype.h>
-#if !RENDERER_WEBGPU
-#include "gl2d/gl2d.h"
-#endif
 #include <iostream>
 #include <ctime>
 #include "platformTools.h"
@@ -14,9 +8,7 @@
 #include "platformInput.h"
 #include "otherPlatformFunctions.h"
 #include "gameLayer.h"
-#if RENDERER_WEBGPU
 #include <render/wgpuContext.h>
-#endif
 #include <fstream>
 #include <chrono>
 
@@ -25,11 +17,7 @@
 #if REMOVE_IMGUI == 0
 	#include "imgui.h"
 	#include "backends/imgui_impl_glfw.h"
-	#if RENDERER_WEBGPU
 	#include <render/wgpuImgui.h>
-	#else
-	#include "backends/imgui_impl_opengl3.h"
-	#endif
 	#include "imguiThemes.h"
 #endif
 
@@ -314,32 +302,17 @@ int main()
 #endif
 
 
-#pragma region window and opengl
+#pragma region window
 
 	permaAssertComment(glfwInit(), "err initializing glfw");
 
-#if RENDERER_WEBGPU
 	// No OpenGL context: WebGPU drives the window's Metal layer through a surface.
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-#else
-	glfwWindowHint(GLFW_SAMPLES, 4);
-
-#ifdef __APPLE__
-	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, 1);
-	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-#endif
-#endif
 
 
 	int w = 500;
 	int h = 500;
 	wind = glfwCreateWindow(w, h, "geam", nullptr, nullptr);
-#if !RENDERER_WEBGPU
-	glfwMakeContextCurrent(wind);
-	glfwSwapInterval(1);
-#endif
 
 	glfwSetKeyCallback(wind, keyCallback);
 	glfwSetMouseButtonCallback(wind, mouseCallback);
@@ -348,20 +321,9 @@ int main()
 	glfwSetCursorPosCallback(wind, cursorPositionCallback);
 	glfwSetCharCallback(wind, characterCallback);
 
-#if RENDERER_WEBGPU
 	permaAssertComment(render::wgpuInit(wind), "err initializing WebGPU");
-#else
-	//permaAssertComment(gladLoadGL(), "err initializing glad");
-	permaAssertComment(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress), "err initializing glad");
-#endif
 
 
-#pragma endregion
-
-#pragma region gl2d
-#if !RENDERER_WEBGPU
-	gl2d::init();
-#endif
 #pragma endregion
 
 
@@ -374,40 +336,18 @@ int main()
 		ImGuiIO& io = ImGui::GetIO(); (void)io;
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		//io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-	#if RENDERER_WEBGPU
-		// Milestone 8: the GLFW platform backend feeds input and display
-		// size, render::wgpuImgui* draws the result. Docking is core ImGui
-		// and works with any renderer, so it matches the OpenGL path;
-		// multi-viewport does not, because every torn-off window would need
-		// its own WebGPU surface, so it stays off here.
+		// GLFW platform backend feeds input and display size;
+		// render::wgpuImgui* draws the result. Docking is core ImGui.
+		// Multi-viewport stays off: every torn-off window would need its
+		// own WebGPU surface.
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-		// Transparent window background, like the OpenGL path (which zeroes
-		// it because multi-viewport windows get their background from the
-		// platform). The theme's 0.94 alpha becomes 0, so the game shows
-		// through the debug window and only its title bar, text, and widgets
-		// draw. Nothing else about the theme changes.
+		// Transparent window background so the game shows through the debug
+		// window and only its title bar, text, and widgets draw.
 		ImGui::GetStyle().Colors[ImGuiCol_WindowBg].w = 0.f;
 
 		ImGui_ImplGlfw_InitForOther(wind, true);
 		permaAssertComment(render::wgpuImguiInit(), "err initializing the WebGPU ImGui backend");
-	#else
-		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;         // Enable Multi-Viewport / Platform Windows
-		//io.ConfigViewportsNoAutoMerge = true;
-		//io.ConfigViewportsNoTaskBarIcon = true;
-	
-		ImGuiStyle& style = ImGui::GetStyle();
-		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-		{
-			//style.WindowRounding = 0.0f;
-			style.Colors[ImGuiCol_WindowBg].w = 0.f;
-			style.Colors[ImGuiCol_DockingEmptyBg].w = 0.f;
-		}
-	
-		ImGui_ImplGlfw_InitForOpenGL(wind, true);
-		ImGui_ImplOpenGL3_Init("#version 330");
-	#endif
 	#endif
 #pragma endregion
 
@@ -459,31 +399,20 @@ int main()
 	#pragma endregion
 
 	#pragma region frame start
-		#if RENDERER_WEBGPU
 			// Acquire the surface texture and open the frame's encoder. The
 			// game's flush() draws into it; wgpuEndFrame submits and presents.
 			render::wgpuBeginFrame();
-		#endif
 	#pragma endregion
 
 	#pragma region imgui
 		#if REMOVE_IMGUI == 0
-			#if RENDERER_WEBGPU
 				render::wgpuImguiNewFrame();
 				ImGui_ImplGlfw_NewFrame();
 				ImGui::NewFrame();
 				// PassthruCentralNode: the host window and the empty middle
 				// of the dockspace draw nothing, so the game stays visible
-				// underneath. The OpenGL path gets the same effect from the
-				// zeroed WindowBg/DockingEmptyBg alphas it needs for
-				// multi-viewport.
+				// underneath.
 				ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
-			#else
-				ImGui_ImplOpenGL3_NewFrame();
-				ImGui_ImplGlfw_NewFrame();
-				ImGui::NewFrame();
-				ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
-			#endif
 		#endif
 	#pragma endregion
 
@@ -550,38 +479,12 @@ int main()
 
 	#pragma region window stuff
 
-	#if RENDERER_WEBGPU
 		#if REMOVE_IMGUI == 0
 			ImGui::Render();
 			render::wgpuImguiRenderDrawData(); // on top of the game, same pass
 		#endif
 		render::wgpuEndFrame(); // end pass, submit, present
 		glfwPollEvents();
-	#else
-		#pragma region imgui
-				#if REMOVE_IMGUI == 0
-				ImGui::Render();
-				int display_w, display_h;
-				glfwGetFramebufferSize(wind, &display_w, &display_h);
-				glViewport(0, 0, display_w, display_h);
-				ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-				// Update and Render additional Platform Windows
-				// (Platform functions may change the current OpenGL context, so we save/restore it to make it easier to paste this code elsewhere.
-				//  For this specific demo app we could also call glfwMakeContextCurrent(window) directly)
-				if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-				{
-					GLFWwindow* backup_current_context = glfwGetCurrentContext();
-					ImGui::UpdatePlatformWindows();
-					ImGui::RenderPlatformWindowsDefault();
-					glfwMakeContextCurrent(backup_current_context);
-				}
-			#endif
-		#pragma endregion
-
-		glfwSwapBuffers(wind);
-		glfwPollEvents();
-	#endif
 
 	#pragma endregion
 
@@ -589,7 +492,6 @@ int main()
 
 	closeGame();
 
-#if RENDERER_WEBGPU
 	#if REMOVE_IMGUI == 0
 		// Before the device goes away: the backend owns GPU objects.
 		render::wgpuImguiShutdown();
@@ -599,7 +501,6 @@ int main()
 	render::wgpuShutdown();
 	glfwDestroyWindow(wind);
 	glfwTerminate();
-#endif
 
 	//if you want the console to stay after closing the window
 	//std::cin.clear();

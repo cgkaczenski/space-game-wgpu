@@ -2,15 +2,13 @@
 
 A table of contents for the render port. Each section is one concept cluster: LearnWebGPU chapter, where it landed in this repo, and the commit that introduced it. Expand in place later.
 
-The game-facing API is `r2d` (`include/render/renderer.h`). Almost all GPU work lives in `src/render/wgpuContext.cpp`, with the ImGui half in `src/render/wgpuImgui.cpp`. The GLFW loop in `src/platform/glfwMain.cpp` only owns init / begin / end / ImGui.
+The game-facing API is `wgpu2d` (`include/render/wgpu2d.h`). Almost all GPU work lives in `src/render/wgpuContext.cpp`, with the ImGui half in `src/render/wgpuImgui.cpp`. The GLFW loop in `src/platform/glfwMain.cpp` only owns init / begin / end / ImGui.
 
 **The rule the port follows:** mirror gl2d's *signatures* name for name, never its implementation. gl2d transforms every corner on the CPU and hands the shader NDC; here the vertex buffer keeps world pixels and the camera is a matrix on the GPU. That is why the game files changed by an include and a namespace only.
 
 Guide: [Learn WebGPU for C++](https://eliemichel.github.io/LearnWebGPU/index.html). Use the **With webgpu.hpp** tab. Our wrapper is compiled in one TU: `src/render/webgpuImpl.cpp`.
 
 The guide is 3D; this project is a 2D sprite batch. Same objects, different use.
-
-Related: [webgpu-port-plan.md](webgpu-port-plan.md).
 
 ---
 
@@ -26,17 +24,17 @@ Each block is: **concepts → LearnWebGPU chapters → where it landed → commi
 
 **LearnWebGPU:** [Project setup](https://eliemichel.github.io/LearnWebGPU/getting-started/project-setup.html) · [Hello WebGPU](https://eliemichel.github.io/LearnWebGPU/getting-started/hello-webgpu.html) · [Opening a window](https://eliemichel.github.io/LearnWebGPU/getting-started/opening-a-window.html) · [C++ idioms](https://eliemichel.github.io/LearnWebGPU/getting-started/cpp-idioms.html) (the wrapper, `Default`, `StringView`)
 
-**Code:** `CMakeLists.txt` (`RENDERER_WEBGPU`, FetchContent of WebGPU-distribution + glfw3webgpu) · `src/platform/glfwMain.cpp` window hints · `src/render/webgpuImpl.cpp`
+**Code:** `CMakeLists.txt` (FetchContent of WebGPU-distribution + glfw3webgpu) · `src/platform/glfwMain.cpp` window hints · `src/render/webgpuImpl.cpp`
 
 **Pins:** WebGPU-distribution `v0.3.0-gamma`, which fetches prebuilt **wgpu-native v24.0.3.1** · glfw3webgpu `v1.3.0-alpha` · GLFW 3.4 (`thirdparty/glfw-3.4`; the unused 3.3.2 tree is still in the repo). The two tags were tested together on the GLFW 3.4 line.
 
 **Read the header, not your memory.** The C API churns between wgpu-native releases (string views instead of `const char*`, surface configuration instead of swapchains, `ShaderSourceWGSL` instead of the old chained descriptors). The vendored copies:
 
-- `build-webgpu/_deps/wgpu-macos-x86_64-release-src/include/webgpu/webgpu.h` — the spec header
+- `build/_deps/wgpu-macos-x86_64-release-src/include/webgpu/webgpu.h` — the spec header
 - `.../include/webgpu/wgpu.h` — wgpu-native's own extensions
-- `build-webgpu/_deps/webgpu-distribution-src/wgpu-native/include/webgpu/webgpu.hpp` — the C++ wrapper
+- `build/_deps/webgpu-distribution-src/wgpu-native/include/webgpu/webgpu.hpp` — the C++ wrapper
 
-**Build directories:** `build/` is the OpenGL configuration, `build-webgpu/` is `-DRENDERER_WEBGPU=ON`. Both stay working until the port reaches parity.
+**Build directory:** `build/`
 
 **Commits:** `43b3255` GLFW 3.4 · `5861a4d` 1a · `21d6524` wrapper
 
@@ -140,11 +138,11 @@ Each block is: **concepts → LearnWebGPU chapters → where it landed → commi
 
 ## 7. Atlas, padded loader, mipmaps, game wiring
 
-**Concepts:** Atlas UV math (CPU only). Pixel padding so filtering does not bleed cells. **CPU mipmaps** (WebGPU has no `glGenerateMipmap`; the guide’s GPU version is compute). Game files switch via `r2d`, not a new API.
+**Concepts:** Atlas UV math (CPU only). Pixel padding so filtering does not bleed cells. **CPU mipmaps** (WebGPU has no `glGenerateMipmap`; the guide’s GPU version is compute). Game files switched onto `wgpu2d` under gl2d's signatures.
 
 **LearnWebGPU:** [Loading from file](https://eliemichel.github.io/LearnWebGPU/basic-3d-rendering/texturing/loading-from-file.html) (stb_image) · [Mipmap Generation](https://eliemichel.github.io/LearnWebGPU/basic-compute/image-processing/mipmap-generation.html) (CPU half of that chapter, not the compute pass)
 
-**Code:** `downsampleRGBA8` · `createPaddedTextureFromFileData` · `computeTextureAtlas*` · `Texture::loadFromFileWithPixelPadding` · `include/render/renderer.h` (the `r2d` alias) · game: `include/gameLayer/{tiledRenderer,bullet,enemy}.h` and `src/gameLayer/{gameLayer,tiledRenderer,bullet,enemy}.cpp`
+**Code:** `downsampleRGBA8` · `createPaddedTextureFromFileData` · `computeTextureAtlas*` · `Texture::loadFromFileWithPixelPadding` · `include/render/wgpu2d.h` · game: `include/gameLayer/{tiledRenderer,bullet,enemy}.h` and `src/gameLayer/{gameLayer,tiledRenderer,bullet,enemy}.cpp`
 
 **Commit:** `b01187f`
 
@@ -223,7 +221,6 @@ Facts established while porting, all specific to an Intel Mac with an AMD Radeon
 
 | File | Role |
 |---|---|
-| `docs/webgpu-port-plan.md` | milestone list and risks |
 | `include/render/wgpuContext.h` | platform: init / begin / end / shutdown |
 | `include/render/wgpuFrame.h` | other render TUs: device, pass, texture bind groups |
 | `include/render/wgpu2d.h` | gl2d-shaped game API |
@@ -233,9 +230,7 @@ Facts established while porting, all specific to an Intel Mac with an AMD Radeon
 | `resources/shaders/imgui.wgsl` | UI |
 | `src/platform/glfwMain.cpp` | window + frame bracket |
 | `src/render/webgpuImpl.cpp` | the one TU that defines the wrapper's bodies |
-| `include/render/renderer.h` | the `r2d` alias the game includes |
 | `include/render/wgpuMetalLayer.h` / `.mm` | macOS: pin the `CAMetalLayer` color space |
-| `docs/render-port.md` | call-flow and frame-lifecycle diagrams |
 
 ## Reference shelf
 

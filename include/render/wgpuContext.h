@@ -1,8 +1,8 @@
 #pragma once
 
-// WebGPU render context. Only built when RENDERER_WEBGPU=1; the OpenGL path
-// never includes WebGPU headers. This header deliberately exposes no WebGPU
-// types so glfwMain.cpp compiles identically in both configurations.
+// WebGPU render context. This header deliberately exposes no WebGPU types
+// so the platform layer can call init / begin / end / shutdown without
+// including webgpu.hpp.
 
 struct GLFWwindow;
 

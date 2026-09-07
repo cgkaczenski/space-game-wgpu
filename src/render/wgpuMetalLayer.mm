@@ -1,4 +1,4 @@
-#if RENDERER_WEBGPU && defined(__APPLE__)
+#if defined(__APPLE__)
 
 #include <render/wgpuMetalLayer.h>
 

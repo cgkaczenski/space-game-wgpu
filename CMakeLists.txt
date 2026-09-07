@@ -10,12 +10,6 @@ cmake_minimum_required(VERSION 3.16)
 option(PRODUCTION_BUILD "Make this a production build" OFF)
 #DELETE THE OUT FOLDER AFTER CHANGING THIS BECAUSE VISUAL STUDIO DOESN'T SEEM TO RECOGNIZE THIS CHANGE AND REBUILD!
 
-# Render with WebGPU (wgpu-native on Metal) instead of OpenGL. OFF keeps the
-# original OpenGL/gl2d path exactly as it was. Use a separate build directory
-# per setting, e.g. build/ for OpenGL and build-webgpu/ for WebGPU.
-option(RENDERER_WEBGPU "Use the WebGPU render path instead of OpenGL" OFF)
-
-
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDebug$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Release>:Release>")
 
@@ -32,7 +26,6 @@ set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(thirdparty/glfw-3.4)			#window oppener
-add_subdirectory(thirdparty/glad)				#opengl loader
 add_subdirectory(thirdparty/stb_image)			#loading immaged
 add_subdirectory(thirdparty/stb_truetype)		#loading ttf files
 #add_subdirectory(thirdparty/enet-1.3.17)		#networking
@@ -42,8 +35,7 @@ add_subdirectory(thirdparty/imgui-docking)		#ui
 #----------V-----------------------V------------#my libraries												
 add_subdirectory(thirdparty/safeSave)			#saving data, designed for gamedev. It also makes backups so the player won't loose saves.
 add_subdirectory(thirdparty/profilerLib)		#profiling, just a simpe library for measuring elapsed time
-add_subdirectory(thirdparty/gl2d)				#2D rendering library
-add_subdirectory(thirdparty/glui)				#ui library, usefull for making game menus
+add_subdirectory(thirdparty/glui)				#layout math (Frame, Box); the rest of glui was a gl2d UI and is gone
 
 
 # Define MY_SOURCES to be a list of all the source files for my game 
@@ -89,54 +81,44 @@ target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_SOURC
 target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/platform/")
 
 
-#target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE glm glfw 
-#	glad stb_image stb_truetype gl2d raudio imgui safeSave profilerLib enet glui)
-
 #enet not working yet on linux for some reason
-target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE glm glfw 
-	glad stb_image stb_truetype gl2d raudio imgui safeSave profilerLib glui)
+target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE glm glfw
+	stb_image stb_truetype raudio imgui safeSave profilerLib glui)
 
+# WebGPU-distribution fetches a prebuilt wgpu-native release and exports the
+# `webgpu` target plus the bundled webgpu.hpp. glfw3webgpu turns a GLFW
+# window into a WGPUSurface; it assumes the `glfw` and `webgpu` targets exist
+# and, on macOS, compiles itself as Objective-C and links Cocoa/QuartzCore.
+# Both are pinned to tags that were tested together (GLFW 3.4 line).
+include(FetchContent)
+set(WEBGPU_BACKEND "WGPU" CACHE STRING "WebGPU implementation to use" FORCE)
+set(WEBGPU_BUILD_FROM_SOURCE OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(webgpu-distribution
+	GIT_REPOSITORY https://github.com/eliemichel/WebGPU-distribution
+	GIT_TAG        v0.3.0-gamma
+)
+FetchContent_Declare(glfw3webgpu
+	GIT_REPOSITORY https://github.com/eliemichel/glfw3webgpu
+	GIT_TAG        v1.3.0-alpha
+)
+FetchContent_MakeAvailable(webgpu-distribution glfw3webgpu)
 
-if(RENDERER_WEBGPU)
-	# WebGPU-distribution fetches a prebuilt wgpu-native release and exports the
-	# `webgpu` target plus the bundled webgpu.hpp. glfw3webgpu turns a GLFW
-	# window into a WGPUSurface; it assumes the `glfw` and `webgpu` targets exist
-	# and, on macOS, compiles itself as Objective-C and links Cocoa/QuartzCore.
-	# Both are pinned to tags that were tested together (GLFW 3.4 line).
-	include(FetchContent)
-	set(WEBGPU_BACKEND "WGPU" CACHE STRING "WebGPU implementation to use" FORCE)
-	set(WEBGPU_BUILD_FROM_SOURCE OFF CACHE BOOL "" FORCE)
-	FetchContent_Declare(webgpu-distribution
-		GIT_REPOSITORY https://github.com/eliemichel/WebGPU-distribution
-		GIT_TAG        v0.3.0-gamma
-	)
-	FetchContent_Declare(glfw3webgpu
-		GIT_REPOSITORY https://github.com/eliemichel/glfw3webgpu
-		GIT_TAG        v1.3.0-alpha
-	)
-	FetchContent_MakeAvailable(webgpu-distribution glfw3webgpu)
+target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE webgpu glfw3webgpu)
+target_copy_webgpu_binaries("${CMAKE_PROJECT_NAME}")
+# GLFW's header includes the system OpenGL header by default. This project
+# never needs it.
+target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC GLFW_INCLUDE_NONE)
 
-	target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE webgpu glfw3webgpu)
-	target_copy_webgpu_binaries("${CMAKE_PROJECT_NAME}")
-	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC RENDERER_WEBGPU=1)
-	# GLFW's header includes the system OpenGL header by default. The WebGPU
-	# path never needs it, and it collides with glad.h when gl2d.h (via glui.h)
-	# is included after GLFW/glfw3.h.
-	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC GLFW_INCLUDE_NONE)
-
-	if(APPLE)
-		# Objective-C++ helper that pins the CAMetalLayer color space to sRGB
-		# (see include/render/wgpuMetalLayer.h). The .mm is not in the *.cpp
-		# glob. Compiled through the C++ toolchain with -x objective-c++ (as
-		# glfw3webgpu does for its .c file) rather than enable_language(OBJCXX),
-		# which, called this late, breaks the rules already generated for GLFW.
-		set(WGPU_METAL_LAYER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/render/wgpuMetalLayer.mm")
-		set_source_files_properties("${WGPU_METAL_LAYER_SRC}" PROPERTIES
-			LANGUAGE CXX
-			COMPILE_OPTIONS "-x;objective-c++")
-		target_sources("${CMAKE_PROJECT_NAME}" PRIVATE "${WGPU_METAL_LAYER_SRC}")
-		target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE "-framework QuartzCore" "-framework CoreGraphics")
-	endif()
-else()
-	target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC RENDERER_WEBGPU=0)
+if(APPLE)
+	# Objective-C++ helper that pins the CAMetalLayer color space to sRGB
+	# (see include/render/wgpuMetalLayer.h). The .mm is not in the *.cpp
+	# glob. Compiled through the C++ toolchain with -x objective-c++ (as
+	# glfw3webgpu does for its .c file) rather than enable_language(OBJCXX),
+	# which, called this late, breaks the rules already generated for GLFW.
+	set(WGPU_METAL_LAYER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/render/wgpuMetalLayer.mm")
+	set_source_files_properties("${WGPU_METAL_LAYER_SRC}" PROPERTIES
+		LANGUAGE CXX
+		COMPILE_OPTIONS "-x;objective-c++")
+	target_sources("${CMAKE_PROJECT_NAME}" PRIVATE "${WGPU_METAL_LAYER_SRC}")
+	target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE "-framework QuartzCore" "-framework CoreGraphics")
 endif()

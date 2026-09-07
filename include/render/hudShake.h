@@ -8,11 +8,10 @@
 // the reason the target earns its place: individual quads cannot be rotated
 // about a shared centre without shearing their layout apart.
 //
-// The effect is on the WebGPU path only. On the OpenGL path both calls are
-// harmless: the trigger does nothing and the flush is an ordinary flush, so
-// that build renders exactly as it did before.
+// The HUD is drawn into an offscreen target so the whole bar can shake as
+// one composed image.
 
-#include <render/renderer.h>
+#include <render/wgpu2d.h>
 
 namespace render
 {
@@ -28,5 +27,5 @@ namespace render
 	//
 	// `width` and `height` are the framebuffer size, the same values the game
 	// passes to updateWindowMetrics; the target follows them.
-	void hudShakeFlush(r2d::Renderer2D &renderer, int width, int height);
+	void hudShakeFlush(wgpu2d::Renderer2D &renderer, int width, int height);
 }

@@ -1,5 +1,3 @@
-#if RENDERER_WEBGPU
-
 // Milestone 8: the ImGui renderer backend (see include/render/wgpuImgui.h
 // for why it is hand written). Its job is small and fixed: every frame
 // ImGui::Render produces an ImDrawData, and this file turns that into one
@@ -488,4 +486,3 @@ void wgpuImguiShutdown()
 
 } // namespace render
 
-#endif

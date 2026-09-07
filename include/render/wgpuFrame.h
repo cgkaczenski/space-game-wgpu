@@ -9,8 +9,6 @@
 // and needs the device, the queue, the surface format, the frame's render
 // pass, and the bind group behind a wgpu2d::Texture id.
 
-#if RENDERER_WEBGPU
-
 #include <webgpu/webgpu.hpp>
 #include <cstdint>
 
@@ -42,5 +40,3 @@ namespace render
 	// recorded into it after the game's flush draws on top.
 	wgpu::RenderPassEncoder wgpuCurrentRenderPass();
 }
-
-#endif

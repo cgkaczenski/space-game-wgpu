@@ -1,5 +1,5 @@
 #pragma once
-#include <render/renderer.h>
+#include <render/wgpu2d.h>
 #include <collisionSystem.h>
 
 constexpr float enemyShipSize = 250.f;
@@ -20,8 +20,8 @@ struct Enemy
 
   float life = 1.f;
 
-	void render(r2d::Renderer2D &renderer, r2d::Texture &sprites,
-		r2d::TextureAtlasPadding &atlas);
+	void render(wgpu2d::Renderer2D &renderer, wgpu2d::Texture &sprites,
+		wgpu2d::TextureAtlasPadding &atlas);
 
   bool update(float deltaTime, glm::vec2 playerPos, float speedMultiplier = 1.f);
 

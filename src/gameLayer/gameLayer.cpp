@@ -1,8 +1,5 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "gameLayer.h"
-#if !RENDERER_WEBGPU
-#include <glad/glad.h>
-#endif
 #include <glm/glm.hpp>
 #include <glm/gtx/transform.hpp>
 #include "platformInput.h"
@@ -10,8 +7,8 @@
 #include <iostream>
 #include <sstream>
 #include "imfilebrowser.h"
-#include <glui/glui.h>      // layout only (Frame, Box); brings gl2d.h with it, so it comes before the render alias
-#include <render/renderer.h>
+#include <glui/glui.h>      // layout only (Frame, Box)
+#include <render/wgpu2d.h>
 #include <render/hudShake.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
@@ -40,22 +37,22 @@ GameplayData data;
 
 collision::BasicCollisionSystem collisionSystem;
 
-r2d::Renderer2D renderer;
+wgpu2d::Renderer2D renderer;
 
 constexpr int BACKGROUNDS = 4;
 
-r2d::Texture spaceShipsTexture;
-r2d::TextureAtlasPadding spaceShipsAtlas;
+wgpu2d::Texture spaceShipsTexture;
+wgpu2d::TextureAtlasPadding spaceShipsAtlas;
 
-r2d::Texture bulletsTexture;
-r2d::TextureAtlasPadding bulletsAtlas;
+wgpu2d::Texture bulletsTexture;
+wgpu2d::TextureAtlasPadding bulletsAtlas;
 
-r2d::Texture backgroundTexture[BACKGROUNDS];
+wgpu2d::Texture backgroundTexture[BACKGROUNDS];
 TiledRenderer tiledRenderer[BACKGROUNDS];
 
 
-r2d::Texture healthBar;
-r2d::Texture health;
+wgpu2d::Texture healthBar;
+wgpu2d::Texture health;
 
 Sound shootSound;
 bool soundEffectsEnabled = false;
@@ -89,16 +86,16 @@ bool initGame()
 	std::srand(std::time(0));
 
 	//initializing stuff for the renderer
-	r2d::init();
+	wgpu2d::init();
 	renderer.create();
 
 	spaceShipsTexture.loadFromFileWithPixelPadding
 	(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png", 128, true);
-	spaceShipsAtlas = r2d::TextureAtlasPadding(5, 2, spaceShipsTexture.GetSize().x, spaceShipsTexture.GetSize().y);
+	spaceShipsAtlas = wgpu2d::TextureAtlasPadding(5, 2, spaceShipsTexture.GetSize().x, spaceShipsTexture.GetSize().y);
 
 	bulletsTexture.loadFromFileWithPixelPadding
 	(RESOURCES_PATH "spaceShip/stitchedFiles/projectiles.png", 500, true);
-	bulletsAtlas = r2d::TextureAtlasPadding(3, 2, bulletsTexture.GetSize().x, bulletsTexture.GetSize().y);
+	bulletsAtlas = wgpu2d::TextureAtlasPadding(3, 2, bulletsTexture.GetSize().x, bulletsTexture.GetSize().y);
 
 	healthBar.loadFromFile(RESOURCES_PATH "healthBar.png", true);
 	health.loadFromFile(RESOURCES_PATH "health.png", true);
@@ -163,12 +160,7 @@ bool gameLogic(float deltaTime)
 	w = platform::getFrameBufferSizeX(); //window w
 	h = platform::getFrameBufferSizeY(); //window h
 	
-#if RENDERER_WEBGPU
 	renderer.clearScreen({0, 0, 0, 1}); //clear screen (the pass's load op, applied at flush)
-#else
-	glViewport(0, 0, w, h);
-	glClear(GL_COLOR_BUFFER_BIT); //clear screen
-#endif
 
 	renderer.updateWindowMetrics(w, h);
 #pragma endregion

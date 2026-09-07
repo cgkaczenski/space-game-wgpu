@@ -2,7 +2,7 @@
 
 
 
-void TiledRenderer::render(r2d::Renderer2D &renderer)
+void TiledRenderer::render(wgpu2d::Renderer2D &renderer)
 {
 
 	auto viewRect = renderer.getViewRect();
@@ -30,9 +30,9 @@ void TiledRenderer::render(r2d::Renderer2D &renderer)
 
 }
 
-void renderSpaceShip(r2d::Renderer2D &renderer,
+void renderSpaceShip(wgpu2d::Renderer2D &renderer,
 	glm::vec2 position, float size,
-	r2d::Texture texture, glm::vec4 uvs, glm::vec2 viewDirection)
+	wgpu2d::Texture texture, glm::vec4 uvs, glm::vec2 viewDirection)
 {
 	float spaceShipAngle = atan2(viewDirection.y, -viewDirection.x);
 

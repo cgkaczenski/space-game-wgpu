@@ -1,9 +1,7 @@
 #pragma once
 
-// Milestone 8: the Dear ImGui *renderer* backend for the WebGPU path, the
-// counterpart of imgui_impl_opengl3 on the OpenGL path. The platform
-// backend stays imgui_impl_glfw (input, display size, cursors), which the
-// WebGPU path already used in milestone 7 with its draw data thrown away.
+// Milestone 8: the Dear ImGui *renderer* backend. The platform backend stays
+// imgui_impl_glfw (input, display size, cursors).
 //
 // Written by hand instead of using the bundled imgui_impl_wgpu.cpp: that
 // file is from ImGui 1.89.5 and targets the 2022 webgpu.h (SPIR-V shader
@@ -20,8 +18,8 @@ namespace render
 	// render::wgpuInit. Returns false on failure.
 	bool wgpuImguiInit();
 
-	// Per-frame hook, called before ImGui::NewFrame like the OpenGL
-	// backend's. Nothing to do yet; kept so the call sites match.
+	// Per-frame hook, called before ImGui::NewFrame. Nothing to do yet;
+	// kept so the call sites match.
 	void wgpuImguiNewFrame();
 
 	// Draws ImGui::GetDrawData() into the frame's render pass. Call after

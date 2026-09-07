@@ -4,8 +4,8 @@
 
 
 
-void Bullet::render(r2d::Renderer2D &renderer,
-	r2d::Texture bulletsTexture, r2d::TextureAtlasPadding bulletsAtlas)
+void Bullet::render(wgpu2d::Renderer2D &renderer,
+	wgpu2d::Texture bulletsTexture, wgpu2d::TextureAtlasPadding bulletsAtlas)
 {
 	float angle = atan2(fireDirection.y, -fireDirection.x);
 	angle = glm::degrees(angle) + 90.f;

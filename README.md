@@ -1,40 +1,40 @@
 # spaceGame
 
-A 2D space shooter: fly, shoot, take hits, recover. Built with GLFW, originally rendered with OpenGL + [gl2d](https://github.com/meemknight/gl2d). The render layer is being ported to WebGPU (wgpu-native on Metal) as a learning exercise; both backends stay working until the port reaches parity.
+A 2D space shooter used to learn WebGPU: GLFW for the window, wgpu-native
+(Metal on macOS) for drawing.
 
-The game-facing renderer is `r2d` (`include/render/renderer.h`). CMake picks OpenGL/gl2d or WebGPU/`wgpu2d`; gameplay code does not care which one it got.
+The game-facing renderer is `wgpu2d` (`include/render/wgpu2d.h`). Gameplay code
+does not mention WebGPU types; it talks in textures, atlases, and rectangles.
+
+Concepts, LearnWebGPU chapters, and where each one landed:
+[docs/webgpu-learning-outline.md](docs/webgpu-learning-outline.md).
 
 ## Requirements
 
 - CMake 3.16 or newer
 - A C++17 compiler
-- On macOS, the WebGPU path uses Metal via wgpu-native. First configure of that build fetches [WebGPU-distribution](https://github.com/eliemichel/WebGPU-distribution) and [glfw3webgpu](https://github.com/eliemichel/glfw3webgpu).
+- On macOS, Metal via wgpu-native. First configure fetches
+  [WebGPU-distribution](https://github.com/eliemichel/WebGPU-distribution) and
+  [glfw3webgpu](https://github.com/eliemichel/glfw3webgpu).
 
 ## Build
 
-Two configurations, two directories. Do not mix them.
-
 ```bash
-# OpenGL (default)
 cmake -S . -B build
 cmake --build build -j8
-
-# WebGPU
-cmake -S . -B build-webgpu -DRENDERER_WEBGPU=ON
-cmake --build build-webgpu -j8
 ```
 
 ## Run
 
 ```bash
 ./build/spaceGame
-./build-webgpu/spaceGame
 
-# WebGPU only: draw the world into a smaller target and upscale with nearest filtering
-WGPU_RENDER_SCALE=0.25 ./build-webgpu/spaceGame
+# Draw the world into a smaller target and upscale with nearest filtering
+WGPU_RENDER_SCALE=0.25 ./build/spaceGame
 ```
 
-`PRODUCTION_BUILD=ON` makes `RESOURCES_PATH` relative to the executable (for a shippable layout). Use a fresh build directory after flipping that option.
+`PRODUCTION_BUILD=ON` makes `RESOURCES_PATH` relative to the executable (for a
+shippable layout). Use a fresh build directory after flipping that option.
 
 ## Play
 
@@ -42,7 +42,8 @@ WGPU_RENDER_SCALE=0.25 ./build-webgpu/spaceGame
 - **Aim:** mouse
 - **Shoot:** left click
 
-Enemy waves and shoot sound start off. The ImGui **debug** window can spawn enemies, toggle sound and hitboxes, change game speed, and reset.
+Enemy waves and shoot sound start off. The ImGui **debug** window can spawn
+enemies, toggle sound and hitboxes, change game speed, and reset.
 
 ## Layout
 
@@ -51,16 +52,15 @@ Enemy waves and shoot sound start off. The ImGui **debug** window can spawn enem
 | `src/gameLayer/` | gameplay: ships, bullets, enemies, collision, HUD |
 | `src/platform/` | GLFW window, input, frame loop, ImGui wiring |
 | `src/render/` | WebGPU context, sprite batch, ImGui backend |
-| `include/render/` | `r2d` alias, wgpu2d API, platform-facing init/begin/end |
+| `include/render/` | wgpu2d API, platform-facing init/begin/end |
 | `resources/` | sprites, shoot sound, WGSL shaders |
-| `docs/` | WebGPU port plan and learning notes |
+| `docs/webgpu-learning-outline.md` | WebGPU concepts and where they live in this repo |
 
-## WebGPU port
-
-Tracked in [docs/webgpu-port-plan.md](docs/webgpu-port-plan.md). Concepts, LearnWebGPU chapters, and where each one landed: [docs/webgpu-learning-outline.md](docs/webgpu-learning-outline.md). Call-flow diagrams: [docs/render-port.md](docs/render-port.md).
-
-`wgpu2d` mirrors gl2d's **signatures** so game files change by an include and a namespace. It does not mirror gl2d's implementation: vertices stay in world pixels and the camera is a matrix on the GPU.
+`wgpu2d` mirrors gl2d's **signatures**. It does not mirror gl2d's implementation:
+vertices stay in world pixels and the camera is a matrix on the GPU.
 
 ## Origin
 
-Started from [meemknight/cmakeSetup](https://github.com/meemknight/cmakeSetup) (GLFW, gl2d, ImGui, raudio). The OpenGL path still uses that stack.
+Started from [meemknight/cmakeSetup](https://github.com/meemknight/cmakeSetup)
+(GLFW, gl2d, ImGui, raudio). The render layer was ported to WebGPU; gl2d, glad,
+and the OpenGL ImGui backend were then removed.
