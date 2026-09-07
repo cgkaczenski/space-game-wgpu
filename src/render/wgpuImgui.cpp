@@ -69,6 +69,11 @@ namespace
 	{
 		if (buffer && bytes <= capacity) { return true; }
 
+		// Past the early return, so this is a growth step, not a frame step:
+		// the scope's stall happens a handful of times over a run, never in
+		// the steady state.
+		ErrorScope scope(label);
+
 		uint64_t newCapacity = capacity ? capacity : 4096;
 		while (newCapacity < bytes) { newCapacity *= 2; }
 
@@ -105,6 +110,8 @@ namespace
 		entry.sampler.type = SamplerBindingType::BindingNotUsed;
 		entry.texture.sampleType = TextureSampleType::BindingNotUsed;
 		entry.storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		ErrorScope scope("imgui uniform resources");
 
 		BindGroupLayoutDescriptor layoutDesc = Default;
 		layoutDesc.label = StringView("imgui uniform bind group layout");
@@ -153,8 +160,12 @@ namespace
 
 	bool createPipeline()
 	{
+		// The shader module has its own scope inside wgpuCreateShaderModuleFromFile,
+		// so this one starts after it and claims only the pipeline's own errors.
 		ShaderModule module = wgpuCreateShaderModuleFromFile(RESOURCES_PATH "shaders/imgui.wgsl");
 		if (!module) { return false; }
+
+		ErrorScope scope("imgui pipeline");
 
 		// The vertex layout must describe ImDrawVert exactly: ImGui owns that
 		// struct, so the offsets come from offsetof rather than from us.
@@ -240,10 +251,11 @@ namespace
 		desc.layout = b.pipelineLayout;
 
 		b.pipeline = wgpuDevice().createRenderPipeline(desc);
+		const bool invalid = scope.failed(); // rejected pipelines are non-null; see createQuadPipeline
 		module.release();
-		if (!b.pipeline)
+		if (!b.pipeline || invalid)
 		{
-			std::cerr << "WebGPU imgui: createRenderPipeline returned null\n";
+			std::cerr << "WebGPU imgui: pipeline is not usable\n";
 			return false;
 		}
 		return true;
@@ -350,6 +362,11 @@ void wgpuImguiRenderDrawData()
 	// The UI goes on top of whatever the game drew, in the same pass.
 	RenderPassEncoder pass = wgpuCurrentRenderPass();
 	if (!pass) { return; }
+
+	// Everything below is one group in a capture. It has to be a guard: the
+	// buffer-capacity checks further down return early, and a push left
+	// unmatched when the pass ends is a validation error.
+	DebugGroup group(pass, "imgui");
 
 	// One buffer out of every draw list, keeping their order.
 	cpuVertices.clear();

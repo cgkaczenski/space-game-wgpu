@@ -106,13 +106,45 @@ that now:
 R1–R6, agreed. Ordered: each unblocks the ones after it. All of it lives under
 `src/render/` and none of it touches gameplay.
 
-### R1. Error scopes, labels, debug groups
+### R1. Error scopes, labels, debug groups — **landed**
 
 **Lands in:** library · **Detail:** N1 below
 
-Do it first because it touches every creation site in `wgpuContext.cpp`, so it
-is cheapest while the file is already being moved around, and because it makes
-everything after it debuggable.
+Kept here only until it is written up as a milestone in the outline; the item
+itself is done.
+
+**A correction, because the premise was wrong.** This item was written claiming
+that "`createRenderPipeline returned null` is the whole diagnosis." That was
+not checked before it was written, and it is false. Two of the three parts
+already existed:
+
+- wgpu-native's own logger has been wired since the port —
+  `wgpuSetLogCallback` + `wgpuSetLogLevel(Warn)` in `wgpuInit`.
+- The device's uncaptured-error callback (`onUncapturedError`) prints every
+  validation message with its type.
+- Labels were essentially complete: 27 assignments across both render TUs
+  covering every pipeline, layout, bind group, buffer, texture, view, sampler,
+  pass, encoder and command buffer, plus the device and queue.
+
+So validation *text* already reached stderr. What was genuinely missing was
+`pushErrorScope`/`popErrorScope` and `pushDebugGroup`/`popDebugGroup` — zero
+uses of either — and what they add is **attribution**, not text: the
+uncaptured-error callback cannot say which call produced a message, and it can
+arrive after the null handle it explains.
+
+**What doing it turned up**, both worth carrying into R2:
+
+1. **A rejected pipeline is not null.** `createRenderPipeline` returns a live
+   handle in an invalid state, so the existing `if (!g.quadPipeline)` check
+   passed and the failure only showed up as a per-frame cascade
+   (`setPipeline` → invalid, then `draw` → no pipeline set). Only the scope
+   could tell the difference. Both pipelines now fail properly.
+2. **A wrong `colorTarget.format` is not a creation error.** The pipeline is
+   created happily and the mismatch is caught when it meets an attachment
+   inside a pass. Milestone 10's note that a wrong format "is a validation
+   error, not a wrong picture" is right about *what* but not about *when* — R2
+   builds pipelines per target format, so this is the failure mode it has to
+   design around.
 
 ### R2. A pipeline cache, and a third component on the run key
 
@@ -339,10 +371,14 @@ passes and pipelines, which is what a GPU capture shows.
 
 **Why first:** the cheapest item here, and the one that pays back given the
 constraint in `AGENTS.md` — the window cannot be looked at from an agent
-session. Today `createRenderPipeline returned null` is the whole diagnosis. Named
-passes and groups also make an Xcode Metal frame capture legible: "world flush",
-"hud target", "imgui" instead of anonymous draws. Everything below is easier to
-debug once this exists.
+session. Named passes and groups also make an Xcode Metal frame capture
+legible: "batch -> surface", "composite scaled target", "imgui" instead of
+anonymous draws. Everything below is easier to debug once this exists.
+
+**Corrected:** an earlier version of this block claimed the diagnosis today is
+just a null handle. It is not — see the correction under R1. The logger, the
+uncaptured-error callback and the labels were already in place; scopes and
+groups were the gap.
 
 ---
 

@@ -242,7 +242,10 @@ namespace
 	// not cover it). Warn and above is enough for now.
 	void logCallback(WGPULogLevel level, WGPUStringView message, void *)
 	{
-		const char *tag = level == WGPULogLevel_Error ? "error" : level == WGPULogLevel_Warn ? "warn" : "info";
+		const char *tag = level == WGPULogLevel_Error ? "error"
+			: level == WGPULogLevel_Warn ? "warn"
+			: level == WGPULogLevel_Info ? "info"
+			: level == WGPULogLevel_Debug ? "debug" : "trace";
 		std::cerr << "[wgpu " << tag << "] " << StringView(message) << "\n";
 	}
 
@@ -319,6 +322,65 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------
+	// Error scopes and debug groups
+	// ---------------------------------------------------------------------
+
+	// onUncapturedError above is the catch-all: it reports errors that no
+	// scope claimed, and it cannot say which call produced them. When five
+	// objects are created in a row and one message appears, matching it to a
+	// call site is done by eye, and the message can arrive after the null
+	// handle it explains.
+	//
+	// An error scope is a stack on the device. pushErrorScope claims errors
+	// of one class (Validation / OutOfMemory / Internal); popErrorScope ends
+	// the scope and reports the first error it captured, or NoError. Errors
+	// inside a scope do not reach onUncapturedError. What that buys is not
+	// the text -- it is attribution: this operation, right here, failed for
+	// this reason.
+	//
+	// popErrorScope is asynchronous. The callback fires inside
+	// instance.processEvents(), the same mechanism requestAdapter and
+	// requestDevice use in wgpuInit. Draining it means a stall, which is why
+	// every scope in this file wraps object *creation* and none of them wrap
+	// per-frame recording.
+	struct ErrorScopeResult
+	{
+		const char *what = nullptr;
+		bool done = false;
+		bool failed = false;
+	};
+
+	void onPopErrorScope(WGPUPopErrorScopeStatus status, WGPUErrorType type,
+		WGPUStringView message, void *userdata1, void *)
+	{
+		auto *result = static_cast<ErrorScopeResult *>(userdata1);
+		result->done = true;
+
+		if (status != PopErrorScopeStatus::Success)
+		{
+			// EmptyStack means a pop without a push; anything else is the
+			// instance going away underneath us.
+			std::cerr << "WebGPU: popErrorScope (" << result->what << ") failed with status "
+				<< status << "\n";
+			return;
+		}
+
+		if (type == ErrorType::NoError) { return; }
+
+		const char *kind = type == ErrorType::Validation ? "validation"
+			: type == ErrorType::OutOfMemory ? "out of memory"
+			: type == ErrorType::Internal ? "internal" : "unknown";
+		std::cerr << "WebGPU " << kind << " error creating " << result->what << ": "
+			<< StringView(message) << "\n";
+		std::cerr.flush();
+		result->failed = true;
+	}
+
+	// The scope stack's names. Scopes are pushed and popped on one thread
+	// inside creation calls, so a plain vector is enough.
+	std::vector<const char *> errorScopeNames;
+
+	// ---------------------------------------------------------------------
 	// Surface
 	// ---------------------------------------------------------------------
 
@@ -386,6 +448,9 @@ namespace
 		desc.label = StringView(path);
 		desc.nextInChain = &wgsl.chain;
 
+		// WGSL compile errors arrive here with line and column numbers, named
+		// to the file, instead of loose on the uncaptured-error callback.
+		ErrorScope scope(path);
 		return g.device.createShaderModule(desc);
 	}
 
@@ -407,6 +472,8 @@ namespace
 		desc.lodMaxClamp = 32.0f;
 		desc.compare = CompareFunction::Undefined;
 		desc.maxAnisotropy = 1;
+
+		ErrorScope scope(label);
 		return g.device.createSampler(desc);
 	}
 
@@ -430,6 +497,10 @@ namespace
 	// lists them by group index.
 	bool createLayouts()
 	{
+		// One scope for the whole function: the three layouts are created
+		// together and a failure in any of them means the same thing.
+		ErrorScope scope("bind group layouts");
+
 		BindGroupLayoutEntry entries[2];
 
 		// Each entry describes exactly one kind of binding. Default leaves the
@@ -508,6 +579,8 @@ namespace
 	bool ensureCameraSlotCapacity(uint32_t slots)
 	{
 		if (g.uniformBuffer && slots <= g.cameraSlotCapacity) { return true; }
+
+		ErrorScope scope("camera uniform buffer");
 
 		g.cameraSlotStride = ceilToNextMultiple((uint32_t)sizeof(CameraUniforms), g.minUniformBufferOffsetAlignment);
 		uint32_t capacity = g.cameraSlotCapacity ? g.cameraSlotCapacity : 16;
@@ -640,15 +713,28 @@ namespace
 		// The explicit layout: group 0 texture + sampler, group 1 camera.
 		desc.layout = g.pipelineLayout;
 
-		g.quadPipeline = g.device.createRenderPipeline(desc);
+		bool invalid = false;
+		{
+			// The densest descriptor in the file: a layout that disagrees
+			// with the shader, or a bad blend factor, lands here as one
+			// message naming this pipeline rather than as a null handle.
+			ErrorScope scope("quad pipeline");
+			g.quadPipeline = g.device.createRenderPipeline(desc);
+			// A rejected pipeline is not null -- createRenderPipeline hands
+			// back a live handle in an invalid state, and every later
+			// setPipeline reports it again. Only the scope can tell the
+			// difference here, which is the whole reason it is worth its
+			// stall at startup.
+			invalid = scope.failed();
+		}
 
 		// The pipeline holds what it needs from the module; the module itself
 		// can go now.
 		module.release();
 
-		if (!g.quadPipeline)
+		if (!g.quadPipeline || invalid)
 		{
-			std::cerr << "WebGPU: createRenderPipeline returned null\n";
+			std::cerr << "WebGPU: quad pipeline is not usable\n";
 			return false;
 		}
 		return true;
@@ -712,6 +798,10 @@ namespace
 				levelH.push_back(h);
 			}
 		}
+
+		// One scope for texture, view and bind group: they are created
+		// together and the label names the image either way.
+		ErrorScope scope(label);
 
 		TextureEntry entry;
 		entry.width = width;
@@ -833,6 +923,8 @@ namespace
 			std::cerr << "WebGPU: createRenderTarget with no device or empty size (" << label << ")\n";
 			return wgpu2d::Texture{};
 		}
+
+		ErrorScope scope(label);
 
 		TextureEntry entry;
 		entry.width = width;
@@ -1172,6 +1264,11 @@ namespace
 		uint64_t capacity = g.vertexBufferCapacityBytes ? g.vertexBufferCapacityBytes : 64 * sizeof(Vertex);
 		while (capacity < bytes) { capacity *= 2; }
 
+		// Past the early return above, so this is a growth step, not a frame
+		// step: doubling means a handful of these over a run, and the scope's
+		// stall never lands in the steady state.
+		ErrorScope scope("batch vertex buffer");
+
 		BufferDescriptor desc = Default;
 		desc.label = StringView("batch vertices");
 		desc.usage = BufferUsage::Vertex | BufferUsage::CopyDst;
@@ -1339,6 +1436,17 @@ namespace
 		g.cameraSlotsUsed = cameraSlotBase + (uint32_t)frameCameras.size();
 
 		RenderPassEncoder pass = g.framePass;
+
+		// One group per flush, so a capture reads as "world", "scaled
+		// composite", "HUD target" rather than a flat run of draws. The pass
+		// cannot change inside this function -- ensurePassBegun already ran --
+		// so the group is safe for the whole body.
+		const char *groupName = g.compositing ? "composite scaled target"
+			: target == 0 ? "batch -> surface"
+			: isFrameTarget(target) ? "batch -> scaled target"
+			: "batch -> render target";
+		DebugGroup group(pass, groupName);
+
 		pass.setPipeline(g.quadPipeline);
 		// The bound slice starts at this flush's offset, so the per-draw
 		// firstVertex below stays relative to the batch.
@@ -1529,7 +1637,23 @@ bool wgpuInit(GLFWwindow *window)
 {
 	g.window = window;
 	wgpuSetLogCallback(logCallback, nullptr);
-	wgpuSetLogLevel(WGPULogLevel_Warn);
+	// Warn and above by default. WGPU_LOG_LEVEL raises it without a rebuild;
+	// "info" and "debug" say what the backend is doing between our calls,
+	// which is the level worth reaching for when a scope reports something
+	// that the descriptor alone does not explain.
+	WGPULogLevel logLevel = WGPULogLevel_Warn;
+	if (const char *level = getenv("WGPU_LOG_LEVEL"))
+	{
+		const std::string wanted = level;
+		if (wanted == "off") { logLevel = WGPULogLevel_Off; }
+		else if (wanted == "error") { logLevel = WGPULogLevel_Error; }
+		else if (wanted == "warn") { logLevel = WGPULogLevel_Warn; }
+		else if (wanted == "info") { logLevel = WGPULogLevel_Info; }
+		else if (wanted == "debug") { logLevel = WGPULogLevel_Debug; }
+		else if (wanted == "trace") { logLevel = WGPULogLevel_Trace; }
+		else { std::cerr << "WGPU_LOG_LEVEL: unknown level '" << wanted << "', keeping warn\n"; }
+	}
+	wgpuSetLogLevel(logLevel);
 
 	// 1. Instance: the library itself. No GPU involved yet.
 	InstanceDescriptor instanceDesc = Default;
@@ -1940,6 +2064,48 @@ RenderPassEncoder wgpuCurrentRenderPass()
 	// the composited world, never inside a render target.
 	if (!ensurePassBegun(0)) { return nullptr; }
 	return g.framePass;
+}
+
+// The two halves of the ErrorScope guard declared in wgpuFrame.h. They live
+// here because they need the device and the instance; the guard lives in the
+// header so wgpuImgui.cpp gets the same one.
+void wgpuBeginErrorScope(const char *what)
+{
+	if (!g.device) { return; }
+	errorScopeNames.push_back(what ? what : "(unnamed)");
+	g.device.pushErrorScope(ErrorFilter::Validation);
+}
+
+bool wgpuEndErrorScope()
+{
+	if (!g.device || errorScopeNames.empty()) { return false; }
+
+	ErrorScopeResult result;
+	result.what = errorScopeNames.back();
+	errorScopeNames.pop_back();
+
+	PopErrorScopeCallbackInfo info = Default;
+	info.mode = CallbackMode::AllowProcessEvents;
+	info.callback = onPopErrorScope;
+	info.userdata1 = &result;
+	info.userdata2 = nullptr;
+	g.device.popErrorScope(info);
+
+	// The same bounded pump the adapter and device requests use in wgpuInit.
+	// Bounded because a scope that never resolves must not hang the game.
+	for (int i = 0; !result.done && i < 1000; i++)
+	{
+		g.instance.processEvents();
+		if (!result.done)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
+	if (!result.done)
+	{
+		std::cerr << "WebGPU: error scope for " << result.what << " never completed\n";
+	}
+	return result.failed;
 }
 
 } // namespace render
