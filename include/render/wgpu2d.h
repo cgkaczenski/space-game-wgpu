@@ -23,6 +23,20 @@ namespace wgpu2d
 	using Color4f = glm::vec4;
 	using Rect = glm::vec4; // x, y, width, height in world pixels, y down
 
+	// An addition to gl2d's shape, not a mirror of it: gl2d had one blend
+	// state for the whole program. Blending is baked into a render pipeline,
+	// so a second mode means a second pipeline, and the batch has to break a
+	// draw run when the mode changes -- the same way it already breaks on
+	// texture and camera.
+	enum class BlendMode
+	{
+		// gl2d's blend, and the default: src * srcAlpha + dst * (1 - srcAlpha).
+		Alpha,
+		// Light adds: src * srcAlpha + dst. Nothing gets darker, so overlapping
+		// sprites build up. For muzzle flashes, explosions, thrusters.
+		Additive,
+	};
+
 	// gl2d's texture-coordinate convention: {u0, v0, u1, v1} with v measured
 	// from the bottom. Converted to WebGPU's top-left origin inside the renderer.
 	#define WGPU2D_DefaultTextureCoords (glm::vec4{ 0, 1, 1, 0 })
@@ -171,6 +185,12 @@ namespace wgpu2d
 
 		Camera currentCamera = {};
 		std::vector<Camera> cameraPushPop;
+
+		// Applies to every quad recorded after it, until it is set again.
+		// Not a stack like the camera: nothing nests blend modes, and a
+		// missing pop would be silent where a missing popCamera is obvious.
+		BlendMode currentBlendMode = BlendMode::Alpha;
+		void setBlendMode(BlendMode mode) { currentBlendMode = mode; }
 		void pushCamera(Camera c = {});
 		void popCamera();
 

@@ -37,6 +37,32 @@ namespace render
 
 namespace
 {
+	// What actually varies between sprite pipelines. Everything else the
+	// descriptor sets -- topology, cull mode, vertex layout, bind group layout
+	// -- is the same for every sprite draw, so it stays hardcoded in
+	// createQuadPipelineVariant rather than becoming a key nobody varies.
+	//
+	// Deliberately narrow. Sample count (N6), depth state (N7) and the vertex
+	// layout (N5) all belong here eventually; adding a field then is a few
+	// lines, and guessing at four futures now is how the wrong key gets built.
+	struct PipelineKey
+	{
+		TextureFormat format = TextureFormat::Undefined;
+		wgpu2d::BlendMode blend = wgpu2d::BlendMode::Alpha;
+
+		bool operator==(const PipelineKey &other) const
+		{
+			return format == other.format && blend == other.blend;
+		}
+	};
+
+	struct PipelineEntry
+	{
+		PipelineKey key;
+		RenderPipeline pipeline = nullptr;
+		std::string label; // owns the text; useful in logs after creation
+	};
+
 	// ---------------------------------------------------------------------
 	// Context: everything created once, plus the state of the current frame.
 	// ---------------------------------------------------------------------
@@ -58,8 +84,13 @@ namespace
 		bool surfaceConfigured = false;
 		bool firstFramePresented = false;
 
-		// 2: created once at init, selected every flush
-		RenderPipeline quadPipeline = nullptr;
+		// 2, then R2: a render pipeline bakes in its colour target's format and
+		// its blend state, so "the pipeline" is really one per (format, blend)
+		// pair. They are built on demand and kept; there are a handful at most.
+		// The shader module is compiled once and shared by every variant --
+		// with one pipeline it could be released immediately, with N it cannot.
+		ShaderModule quadShaderModule = nullptr;
+		std::vector<PipelineEntry> quadPipelines;
 
 		// 6a: the vertex buffer is rewritten every flush from the CPU batch
 		// and grows (never shrinks) when a flush needs more than it holds.
@@ -171,6 +202,11 @@ namespace
 		int width = 0;
 		int height = 0;
 
+		// R2: the format a pipeline must be built for to draw into this as an
+		// attachment. Sampled-only textures carry it too, so nothing has to
+		// guess which kind it is holding.
+		TextureFormat format = TextureFormat::Undefined;
+
 		// 10: render targets can also be drawn into. needsClear makes the
 		// next pass on it clear instead of load, which is how FrameBuffer's
 		// deferred clear and a freshly created (undefined) target work.
@@ -187,6 +223,7 @@ namespace
 	std::vector<Vertex> batchVertices;
 	std::vector<uint32_t> batchQuadTextures;
 	std::vector<uint32_t> batchQuadCameras;   // index into frameCameras
+	std::vector<wgpu2d::BlendMode> batchQuadBlends; // R2: the third run key
 	std::vector<wgpu2d::Camera> frameCameras; // every distinct camera used this frame, in order
 	wgpu2d::Texture white1pxSquareTexture;    // gl2d's untextured path samples this
 
@@ -632,13 +669,21 @@ namespace
 	// The render pipeline: every configurable stage of the GPU's fixed
 	// triangle pipeline, baked into one immutable object. Selected per pass
 	// with setPipeline; never mutated.
-	bool createQuadPipeline()
+	const char *blendName(wgpu2d::BlendMode mode)
 	{
-		ShaderModule module = createShaderModuleFromFile(RESOURCES_PATH "shaders/quad.wgsl");
-		if (!module) { return false; }
+		return mode == wgpu2d::BlendMode::Additive ? "additive" : "alpha";
+	}
+
+	// One pipeline for one (format, blend) pair. Everything the descriptor
+	// sets other than those two is identical across variants, which is what
+	// makes the key as small as it is.
+	RenderPipeline createQuadPipelineVariant(const PipelineKey &key, const char *label)
+	{
+		if (!g.quadShaderModule) { return nullptr; }
+		ShaderModule module = g.quadShaderModule;
 
 		RenderPipelineDescriptor desc = Default;
-		desc.label = StringView("quad pipeline");
+		desc.label = StringView(label);
 
 		// Vertex layout: how the pipeline reads bytes out of the vertex buffer.
 		// One buffer, interleaved, 32 bytes per vertex. Each attribute names
@@ -678,20 +723,30 @@ namespace
 		desc.primitive.cullMode = CullMode::None; // gl2d never culled; quads may be flipped by negative sizes
 		desc.primitive.unclippedDepth = false;
 
-		// Blending, matching gl2d's enableNecessaryGLFeatures():
+		// Alpha is gl2d's blend, matching enableNecessaryGLFeatures():
 		//   glBlendEquation(GL_FUNC_ADD)
 		//   glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+		// Additive keeps the source term and leaves the destination whole, so
+		// overlapping sprites accumulate instead of replacing each other. Its
+		// alpha channel still behaves like alpha's, so a target composited
+		// afterwards still knows what it covered.
 		BlendState blend = Default;
 		blend.color.operation = BlendOperation::Add;
 		blend.color.srcFactor = BlendFactor::SrcAlpha;
-		blend.color.dstFactor = BlendFactor::OneMinusSrcAlpha;
+		blend.color.dstFactor = key.blend == wgpu2d::BlendMode::Additive
+			? BlendFactor::One
+			: BlendFactor::OneMinusSrcAlpha;
 		blend.alpha.operation = BlendOperation::Add;
 		blend.alpha.srcFactor = BlendFactor::One;
 		blend.alpha.dstFactor = BlendFactor::OneMinusSrcAlpha;
 
-		// The one color target: must match the surface's format exactly.
+		// A pipeline may only draw into an attachment of the format it was
+		// built for. R1 established that this is not caught at creation: the
+		// pipeline is built happily and the mismatch is only reported when it
+		// meets the attachment inside a pass. Keying on the format is what
+		// makes that structural instead of a rule in a comment.
 		ColorTargetState colorTarget = Default;
-		colorTarget.format = g.surfaceFormat;
+		colorTarget.format = key.format;
 		colorTarget.blend = &blend;
 		colorTarget.writeMask = ColorWriteMask::All;
 
@@ -713,31 +768,58 @@ namespace
 		// The explicit layout: group 0 texture + sampler, group 1 camera.
 		desc.layout = g.pipelineLayout;
 
+		RenderPipeline pipeline = nullptr;
 		bool invalid = false;
 		{
 			// The densest descriptor in the file: a layout that disagrees
 			// with the shader, or a bad blend factor, lands here as one
-			// message naming this pipeline rather than as a null handle.
-			ErrorScope scope("quad pipeline");
-			g.quadPipeline = g.device.createRenderPipeline(desc);
+			// message naming this variant rather than as a null handle.
+			ErrorScope scope(label);
+			pipeline = g.device.createRenderPipeline(desc);
 			// A rejected pipeline is not null -- createRenderPipeline hands
 			// back a live handle in an invalid state, and every later
 			// setPipeline reports it again. Only the scope can tell the
-			// difference here, which is the whole reason it is worth its
-			// stall at startup.
+			// difference, and an invalid variant must never reach the cache
+			// or it is re-served every frame.
 			invalid = scope.failed();
 		}
 
-		// The pipeline holds what it needs from the module; the module itself
-		// can go now.
-		module.release();
+		// The module is not released here: it is g.quadShaderModule and every
+		// other variant is built from it. wgpuShutdown owns its lifetime.
 
-		if (!g.quadPipeline || invalid)
+		if (!pipeline || invalid)
 		{
-			std::cerr << "WebGPU: quad pipeline is not usable\n";
-			return false;
+			std::cerr << "WebGPU: pipeline variant '" << label << "' is not usable\n";
+			if (pipeline) { pipeline.release(); }
+			return nullptr;
 		}
-		return true;
+		return pipeline;
+	}
+
+	// The cache. A linear scan over a handful of entries beats writing a hash
+	// for a two-field key, and lookups happen at run boundaries, not per quad.
+	RenderPipeline getQuadPipeline(const PipelineKey &key)
+	{
+		for (const PipelineEntry &entry : g.quadPipelines)
+		{
+			if (entry.key == key) { return entry.pipeline; }
+		}
+
+		// Built on demand. The label is what a validation message and a GPU
+		// capture show, so it names both halves of the key.
+		PipelineEntry entry;
+		entry.key = key;
+		entry.label = std::string("quad pipeline (") + formatName(key.format) + ", "
+			+ blendName(key.blend) + ")";
+		entry.pipeline = createQuadPipelineVariant(key, entry.label.c_str());
+		if (!entry.pipeline) { return nullptr; }
+
+		g.quadPipelines.push_back(std::move(entry));
+		std::cout << "WebGPU " << g.quadPipelines.back().label << " created ("
+			<< g.quadPipelines.size() << " variant"
+			<< (g.quadPipelines.size() == 1 ? "" : "s") << " cached)\n";
+		std::cout.flush();
+		return g.quadPipelines.back().pipeline;
 	}
 
 	// ---------------------------------------------------------------------
@@ -816,6 +898,7 @@ namespace
 		texDesc.size.height = (uint32_t)height;
 		texDesc.size.depthOrArrayLayers = 1;
 		texDesc.format = TextureFormat::RGBA8Unorm;
+		entry.format = texDesc.format;
 		texDesc.mipLevelCount = (uint32_t)levels.size();
 		texDesc.sampleCount = 1;
 		texDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
@@ -940,6 +1023,7 @@ namespace
 		texDesc.size.height = (uint32_t)height;
 		texDesc.size.depthOrArrayLayers = 1;
 		texDesc.format = g.surfaceFormat;
+		entry.format = texDesc.format;
 		texDesc.mipLevelCount = 1;
 		texDesc.sampleCount = 1;
 		texDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
@@ -1381,6 +1465,7 @@ namespace
 		batchVertices.clear();
 		batchQuadTextures.clear();
 		batchQuadCameras.clear();
+		batchQuadBlends.clear();
 		frameCameras.clear();
 	}
 
@@ -1447,7 +1532,20 @@ namespace
 			: "batch -> render target";
 		DebugGroup group(pass, groupName);
 
-		pass.setPipeline(g.quadPipeline);
+		// The attachment's format is fixed for the whole flush -- every quad
+		// here lands on the same view -- so it is half of every pipeline key
+		// below and is resolved once.
+		//
+		// Note this does *not* mirror the projection above, which deliberately
+		// uses the surface's dimensions for the low-res stand-in so framing
+		// survives a render scale. Format has no such reason: a pipeline must
+		// match the attachment it actually draws into, stand-in or not.
+		TextureFormat targetFormat = g.surfaceFormat;
+		if (target != 0 && target <= textures.size())
+		{
+			targetFormat = textures[target - 1].format;
+		}
+
 		// The bound slice starts at this flush's offset, so the per-draw
 		// firstVertex below stays relative to the batch.
 		pass.setVertexBuffer(0, g.vertexBuffer, vertexOffset, bytes);
@@ -1455,12 +1553,33 @@ namespace
 		const size_t quadCount = batchQuadTextures.size();
 		size_t runStart = 0;
 		uint32_t runs = 0;
+		RenderPipeline boundPipeline = nullptr; // only re-set when it changes
 		for (size_t i = 1; i <= quadCount; i++)
 		{
+			// R2 adds the third component. Texture and camera change which
+			// resources are bound; blend changes which *pipeline* is bound,
+			// because blending is baked into the pipeline and cannot be set
+			// on a pass.
 			const bool boundary = (i == quadCount)
 				|| batchQuadTextures[i] != batchQuadTextures[runStart]
-				|| batchQuadCameras[i] != batchQuadCameras[runStart];
+				|| batchQuadCameras[i] != batchQuadCameras[runStart]
+				|| batchQuadBlends[i] != batchQuadBlends[runStart];
 			if (!boundary) { continue; }
+
+			RenderPipeline pipeline = getQuadPipeline(PipelineKey{ targetFormat, batchQuadBlends[runStart] });
+			if (!pipeline)
+			{
+				// The variant could not be built. Skipping the run loses those
+				// quads; drawing with the wrong pipeline would be a validation
+				// error every frame.
+				runStart = i;
+				continue;
+			}
+			if (pipeline != boundPipeline)
+			{
+				pass.setPipeline(pipeline);
+				boundPipeline = pipeline;
+			}
 
 			const uint32_t dynamicOffset = (cameraSlotBase + batchQuadCameras[runStart]) * g.cameraSlotStride;
 			pass.setBindGroup(0, textures[batchQuadTextures[runStart] - 1].bindGroup, 0, nullptr); // texture + sampler
@@ -1485,7 +1604,8 @@ namespace
 	// vertex buffer. Texture coordinates arrive in gl2d's convention
 	// ({u0, v0, u1, v1} with v measured from the bottom, default {0,1,1,0})
 	// and are converted to WebGPU's top-left origin here: v = 1 - v.
-	void pushQuad(const wgpu2d::Camera &camera, const glm::vec4 transforms, const wgpu2d::Texture texture,
+	void pushQuad(const wgpu2d::Camera &camera, wgpu2d::BlendMode blend,
+		const glm::vec4 transforms, const wgpu2d::Texture texture,
 		const glm::vec4 colors[4], const glm::vec2 origin, const float rotation, const glm::vec4 textureCoords)
 	{
 		wgpu2d::Texture textureCopy = texture;
@@ -1542,6 +1662,7 @@ namespace
 			frameCameras.push_back(camera);
 		}
 		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
+		batchQuadBlends.push_back(blend);
 	}
 
 	// 10: the upscale. One quad covering the surface, sampling the low-res
@@ -1566,7 +1687,9 @@ namespace
 		wgpu2d::Texture handle;
 		handle.id = g.scaledTargetId;
 		const glm::vec4 white[4] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
-		pushQuad(wgpu2d::Camera{},
+		// Alpha explicitly: the composite draws the target's own pixels back,
+		// whatever blend the quads inside it used.
+		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Alpha,
 			glm::vec4{0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight},
 			handle, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
 		g.scaledTargetDrawn = false; // the pass below is the surface's, not the target's
@@ -1826,12 +1949,22 @@ bool wgpuInit(GLFWwindow *window)
 		return false;
 	}
 
-	// 9. The sprite pipeline. Depends on the surface format and the layout.
-	if (!createQuadPipeline())
+	// 9. The sprite shader, compiled once and shared by every pipeline
+	//    variant, then the one variant the common case needs: the surface's
+	//    format with gl2d's alpha blend. The rest are built the first time a
+	//    flush asks for them. Warming this one here keeps a validation
+	//    failure in the shader or the layout at startup, where it can stop
+	//    init, rather than in the first frame.
+	g.quadShaderModule = createShaderModuleFromFile(RESOURCES_PATH "shaders/quad.wgsl");
+	if (!g.quadShaderModule)
 	{
 		return false;
 	}
-	std::cout << "WebGPU quad pipeline created\n";
+	if (!getQuadPipeline(PipelineKey{ g.surfaceFormat, wgpu2d::BlendMode::Alpha }))
+	{
+		return false;
+	}
+	// getQuadPipeline already reported the variant; no second line for it.
 
 	// 10. gl2d's 1px white texture: what every untextured draw samples.
 	white1pxSquareTexture.create1PxSquare();
@@ -2016,7 +2149,12 @@ void wgpuShutdown()
 	textures.clear();
 	g.scaledTargetId = 0;
 	g.scaledTargetDrawn = false;
-	if (g.quadPipeline) { g.quadPipeline.release(); g.quadPipeline = nullptr; }
+	for (PipelineEntry &entry : g.quadPipelines)
+	{
+		if (entry.pipeline) { entry.pipeline.release(); }
+	}
+	g.quadPipelines.clear();
+	if (g.quadShaderModule) { g.quadShaderModule.release(); g.quadShaderModule = nullptr; }
 	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
 	if (g.cameraBindGroupLayout) { g.cameraBindGroupLayout.release(); g.cameraBindGroupLayout = nullptr; }
 	if (g.textureBindGroupLayout) { g.textureBindGroupLayout.release(); g.textureBindGroupLayout = nullptr; }
@@ -2399,7 +2537,7 @@ namespace wgpu2d
 	void Renderer2D::renderRectangleAbsRotation(const Rect transforms, const Texture texture, const Color4f colors[4],
 		const glm::vec2 origin, const float rotationDegrees, const glm::vec4 textureCoords)
 	{
-		pushQuad(currentCamera, transforms, texture, colors, origin, rotationDegrees, textureCoords);
+		pushQuad(currentCamera, currentBlendMode, transforms, texture, colors, origin, rotationDegrees, textureCoords);
 	}
 
 	void Renderer2D::renderRectangle(const Rect transforms, const Color4f colors[4], const glm::vec2 origin, const float rotationDegrees)
