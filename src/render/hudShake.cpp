@@ -1,4 +1,5 @@
 #include <render/hudShake.h>
+#include <render/layerEffect.h>
 
 #include <chrono>
 #include <cmath>
@@ -8,9 +9,8 @@ namespace render
 
 namespace
 {
-	// The target the HUD is composed into. Screen-sized and recreated when the
-	// window changes, so the composite is 1:1 and, at rest, an exact copy.
-	wgpu2d::FrameBuffer hudTarget;
+	// The mechanism. Everything else in this file is this game's numbers.
+	LayerEffect effect;
 
 	// 1 right after a hit, decaying towards 0. Time is wall-clock, so the
 	// shake is unaffected by the game-speed debug slider.
@@ -58,68 +58,29 @@ void hudShakeTrigger(float strength)
 
 void hudShakeFlush(wgpu2d::Renderer2D &renderer, int width, int height)
 {
-	if (width <= 0 || height <= 0)
-	{
-		renderer.flush();
-		return;
-	}
-
 	const float dt = advanceClock();
 	if (intensity > 0.f)
 	{
 		phase += dt;
 		intensity *= std::exp(-decayPerSecond * dt);
-		if (intensity < 0.002f) { intensity = 0.f; } // settle exactly, so rest is 1:1
+		// Settle to exactly zero, which is what earns the identity bypass in
+		// LayerEffect::flush and keeps the HUD pixel-exact at rest.
+		if (intensity < 0.002f) { intensity = 0.f; }
 	}
 
-	// No shake in progress: nothing to gain from the round trip, and drawing
-	// straight to the screen keeps the HUD pixel-exact.
-	if (intensity <= 0.f)
+	LayerTransform transform;
+	if (intensity > 0.f)
 	{
-		renderer.flush();
-		return;
+		// The displacement, scaled with the window so the shake is the same
+		// fraction of the screen at any size.
+		const float scale = (float)height / 500.f;
+		const float amplitude = amplitudePixels * scale * intensity;
+		transform.offsetPixels.x = amplitude * std::sin(6.2831853f * frequencyX * phase);
+		transform.offsetPixels.y = amplitude * std::sin(6.2831853f * frequencyY * phase + 1.1f);
+		transform.rotationDegrees = rotationDegrees * intensity * std::sin(6.2831853f * frequencyX * phase);
 	}
 
-	if (hudTarget.fbo == 0)
-	{
-		hudTarget.create((unsigned)width, (unsigned)height);
-		if (hudTarget.fbo == 0) { renderer.flush(); return; } // creation failed; draw normally
-	}
-	hudTarget.resize((unsigned)width, (unsigned)height);
-
-	// Last frame's HUD must not linger: the target is transparent everywhere
-	// the HUD does not cover, and that is what lets the world show through.
-	hudTarget.clear();
-	renderer.flushFBO(hudTarget);
-
-	// The displacement, scaled with the window so the shake is the same
-	// fraction of the screen at any size, and rounded to nothing finer than
-	// the sub-pixel the linear filter can show.
-	const float scale = (float)height / 500.f;
-	const float amplitude = amplitudePixels * scale * intensity;
-	const float dx = amplitude * std::sin(6.2831853f * frequencyX * phase);
-	const float dy = amplitude * std::sin(6.2831853f * frequencyY * phase + 1.1f);
-	const float tilt = rotationDegrees * intensity * std::sin(6.2831853f * frequencyX * phase);
-
-	// One quad, the size of the screen, sampling the composed HUD. The
-	// rotation is about the quad's centre, which is the screen's centre.
-	//
-	// Under the default camera, not the caller's: by here the game has popped
-	// back to the world camera (which is offset and zoomed), and the target
-	// has to land on the screen 1:1 the way the HUD itself was laid out.
-	//
-	// Premultiplied, not Alpha: the target was cleared transparent and the HUD
-	// drawn into it, so every pixel it holds is already scaled by its own
-	// coverage. Drawing it back with Alpha would scale by coverage a second
-	// time and the HUD would visibly darken for the length of a shake -- and
-	// only during a shake, since the no-shake path skips the target entirely.
-	const wgpu2d::BlendMode previousBlend = renderer.currentBlendMode;
-	renderer.setBlendMode(wgpu2d::BlendMode::Premultiplied);
-	renderer.pushCamera();
-	const wgpu2d::Rect target = {dx, dy, (float)width, (float)height};
-	renderer.renderRectangle(target, hudTarget.texture, Colors_White, {}, tilt);
-	renderer.popCamera();
-	renderer.setBlendMode(previousBlend);
+	effect.flush(renderer, width, height, transform);
 }
 
 }

@@ -1,15 +1,17 @@
 #pragma once
 
-// A damage shake for the HUD, built on milestone 10's render targets.
+// A damage shake for the HUD: this game's numbers, on top of the general
+// layer effect in render/layerEffect.h.
 //
-// The HUD is drawn into an offscreen target and that target is drawn back to
-// the screen displaced and slightly rotated, so the whole HUD moves as one
-// composed image instead of as a pile of separately nudged quads. Rotation is
-// the reason the target earns its place: individual quads cannot be rotated
-// about a shared centre without shearing their layout apart.
+// Everything general moved there -- the target, the round trip, the draw back.
+// What is left here is policy: how hard a hit shakes, how fast that decays,
+// how fast it oscillates, how far it tips, and that taking damage is what
+// starts it. Another game wants a layer effect; it does not want these numbers.
 //
-// The HUD is drawn into an offscreen target so the whole bar can shake as
-// one composed image.
+// This file is still under src/render/ only because engine/gameLayer has
+// nowhere for it yet. Roadmap R4 moves it into the HUD module, where it
+// belongs -- it is the standing counter-example in AGENTS.md and it stops
+// being one then.
 
 #include <render/wgpu2d.h>
 
