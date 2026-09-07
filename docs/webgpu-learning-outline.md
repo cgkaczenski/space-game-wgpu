@@ -170,6 +170,28 @@ Bundled `imgui_impl_wgpu` (ImGui 1.89.5) is too old for wgpu-native v24: SPIR-V 
 
 ---
 
+## 10. Render targets (and a low-res render scale)
+
+**Concepts:** There is no framebuffer object in WebGPU: a render pass's colour attachment *is* a texture view, so drawing to the screen and drawing to a texture are one operation with a different attachment. `wgpu2d::FrameBuffer` mirrors gl2d's shape over that, and its `texture` is an ordinary handle, so the result is drawn back with `renderRectangle` and needs no new pipeline or shader.
+
+Three constraints that only show up here:
+
+- **A pipeline is bound to its target's format.** `createQuadPipeline` bakes `colorTarget.format`, so a render target must use the surface's format for the sprite pipeline to draw into it. Wrong format is a validation error, not a wrong picture.
+- **A pass belongs to one attachment and passes cannot nest.** `ensurePassBegun(target)` ends the open pass when the target changes and chooses the load operation: the surface and the low-res stand-in clear on their first pass of a frame, a user's FrameBuffer loads its contents like gl2d's. `wgpuCurrentRenderPass` therefore means *the surface* specifically, and requesting it while the frame sits in the low-res target composites that first, so the UI lands on top of the world.
+- **More than one flush per frame means more than one buffer slice.** `writeBuffer` is ordered against the submit, not against the recorded draws, so two flushes writing at offset 0 leave the first pass's draws reading the second flush's data. Each flush appends its own slice of the vertex buffer and its own camera slots, both reset in `wgpuBeginFrame`. The symptom of getting this wrong was the whole atlas stretched across the target with the scene one quad out of step.
+
+Also worth knowing: colours are straight, not premultiplied, alpha. An opaque scene round-trips through a same-size target byte-identically; a translucent draw that goes through a target and is then composited is multiplied by its coverage twice and comes out darker.
+
+`WGPU_RENDER_SCALE=0.25` uses all of it for something real: the world is drawn into a quarter-size target and upscaled with nearest filtering, while the projection keeps using the surface's dimensions so framing, HUD layout and mouse mapping are unchanged. ImGui still draws to the surface at native size.
+
+**LearnWebGPU:** no dedicated chapter — it is the pass and attachment machinery from [First Color](https://eliemichel.github.io/LearnWebGPU/getting-started/first-color.html) and [Hello Triangle](https://eliemichel.github.io/LearnWebGPU/basic-3d-rendering/hello-triangle.html) pointed at a texture from [A first texture](https://eliemichel.github.io/LearnWebGPU/basic-3d-rendering/texturing/a-first-texture.html).
+
+**Code:** `createRenderTarget` · `ensureScaledTarget` · `ensurePassBegun(target)` · `compositeScaledTarget` · `flushBatch(target)` · `FrameBuffer` and `Renderer2D::flushFBO` in `include/render/wgpu2d.h`
+
+**Commit:** `b15b5bb`
+
+---
+
 ## This machine, and what it does differently
 
 Facts established while porting, all specific to an Intel Mac with an AMD Radeon Pro 560X on Metal via wgpu-native. None of them are bugs in the renderer; each one cost time before it was understood.
@@ -193,7 +215,7 @@ Facts established while porting, all specific to an Intel Mac with an AMD Radeon
 | Compute pipeline (except as mipmap reading) | CPU mips instead |
 | Instancing, render bundles, MSAA | one growable buffer + draw runs |
 | Building for the Web | native Metal only |
-| Milestones 9–10 (text, render targets) | unused by the game; still in the plan |
+| Milestone 9 (text) | skipped: gl2d's font path is almost all CPU (stb_truetype pack, glyph quads through the existing batch), and the game draws no gl2d text — glui is layout only and every string is ImGui |
 
 ---
 
