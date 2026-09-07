@@ -1,6 +1,6 @@
 #pragma once
 #include <render/wgpu2d.h>
-#include <collisionSystem.h>
+#include <engine/collisionSystem.h>
 
 constexpr float bulletHitboxRadius = 20.f;
 // Trail sprites sit ahead of `position`; keep radius and shift the circle to the nose.

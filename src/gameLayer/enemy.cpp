@@ -1,4 +1,5 @@
 #include <enemy.h>
+#include <shipHitbox.h>
 #include <tiledRenderer.h>
 
 
@@ -11,7 +12,7 @@ void Enemy::render(wgpu2d::Renderer2D &renderer,
 
 collision::Circle Enemy::getHitbox() const
 {
-	return collision::shipHitbox(position, enemyShipSize);
+	return game::shipHitbox(position, enemyShipSize);
 }
 
 

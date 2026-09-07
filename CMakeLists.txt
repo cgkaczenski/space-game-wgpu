@@ -67,11 +67,31 @@ namespace render
 }
 ")
 
+# ---------------------------------------------------------------------------
+# engine: reusable gameplay systems. No drawing, no window, no ships.
+#
+# A target rather than just a folder, for the same reason wgpu2d is one: a
+# folder is a convention and a target is a wall. `engine` does not carry
+# include/gameLayer/ on its include path, so a system reaching for this game's
+# types fails to compile rather than being caught in review.
+#
+# It links glm and nothing else. In particular it does not link wgpu2d -- an
+# engine system that needed the drawing library would not be an engine system.
+# ---------------------------------------------------------------------------
+add_library(engine STATIC
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/collisionSystem.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/cameraFollow.cpp"
+)
+set_property(TARGET engine PROPERTY CXX_STANDARD 17)
+target_include_directories(engine PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/")
+target_link_libraries(engine PUBLIC glm)
+
 # Define MY_SOURCES to be a list of all the source files for my game.
 # src/render is not among them: it is the wgpu2d library target below, and the
 # whole point of that target is that these sources cannot see the game's.
 file(GLOB_RECURSE MY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 list(FILTER MY_SOURCES EXCLUDE REGEX "/src/render/")
+list(FILTER MY_SOURCES EXCLUDE REGEX "/src/engine/")
 
 
 add_executable("${CMAKE_PROJECT_NAME}")
@@ -116,7 +136,7 @@ target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_SOURC
 
 #enet not working yet on linux for some reason
 target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE glm glfw
-	stb_image stb_truetype raudio imgui safeSave profilerLib glui)
+	stb_image stb_truetype raudio imgui safeSave profilerLib glui engine)
 
 # WebGPU-distribution fetches a prebuilt wgpu-native release and exports the
 # `webgpu` target plus the bundled webgpu.hpp. glfw3webgpu turns a GLFW

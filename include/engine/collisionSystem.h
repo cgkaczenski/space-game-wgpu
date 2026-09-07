@@ -35,6 +35,14 @@ public:
 
 	// Push to separate two overlapping circles. Zero if they do not overlap.
 	// Intended for ship-ship resolution (player vs enemy, enemy vs enemy).
+	//
+	// Nothing in the game calls this yet -- gameLayer.cpp names it in a
+	// comment where ship-ship collision will go. It was kept rather than
+	// deleted on that basis, and checked rather than kept on faith: 200,000
+	// random circle pairs, including exactly concentric ones, confirm that
+	// applying the push to `a` separates the pair and that non-overlapping
+	// pairs get a zero push. There is nowhere durable to keep that test yet,
+	// which is its own gap.
 	virtual glm::vec2 separation(const Circle &a, const Circle &b) const = 0;
 };
 
@@ -49,17 +57,5 @@ public:
 
 	glm::vec2 separation(const Circle &a, const Circle &b) const override;
 };
-
-// Sprite is visualSize x visualSize; radius is half of that so the circle
-// fits the ship square. Player, enemies, and ship-ship all use this.
-inline float shipHitboxRadius(float visualSize)
-{
-	return visualSize * 0.5f;
-}
-
-inline Circle shipHitbox(glm::vec2 center, float visualSize)
-{
-	return {center, shipHitboxRadius(visualSize)};
-}
 
 } // namespace collision

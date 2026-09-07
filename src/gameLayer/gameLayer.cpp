@@ -16,8 +16,9 @@
 #include <enemy.h>
 #include <cstdio>
 #include <raudio.h>
-#include <collisionSystem.h>
-#include <cameraFollow.h>
+#include <engine/collisionSystem.h>
+#include <shipHitbox.h>
+#include <engine/cameraFollow.h>
 
 struct GameplayData
 {
@@ -313,7 +314,7 @@ bool gameLogic(float deltaTime)
 			else
 			{
 				if (collisionSystem.overlaps(data.bullets[i].getHitbox(),
-					collision::shipHitbox(data.playerPos, shipSize)))
+					game::shipHitbox(data.playerPos, shipSize)))
 				{
 					data.health -= 0.1;
 					hud::onDamage(); // shake the HUD on the hit
@@ -430,7 +431,7 @@ bool gameLogic(float deltaTime)
 			return overlapping ? Colors_Red : Colors_Green;
 		};
 
-		const auto playerHitbox = collision::shipHitbox(data.playerPos, shipSize);
+		const auto playerHitbox = game::shipHitbox(data.playerPos, shipSize);
 
 		bool playerHit = false;
 		for (auto &b : data.bullets)
