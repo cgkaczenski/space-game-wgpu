@@ -107,10 +107,19 @@ void hudShakeFlush(wgpu2d::Renderer2D &renderer, int width, int height)
 	// Under the default camera, not the caller's: by here the game has popped
 	// back to the world camera (which is offset and zoomed), and the target
 	// has to land on the screen 1:1 the way the HUD itself was laid out.
+	//
+	// Premultiplied, not Alpha: the target was cleared transparent and the HUD
+	// drawn into it, so every pixel it holds is already scaled by its own
+	// coverage. Drawing it back with Alpha would scale by coverage a second
+	// time and the HUD would visibly darken for the length of a shake -- and
+	// only during a shake, since the no-shake path skips the target entirely.
+	const wgpu2d::BlendMode previousBlend = renderer.currentBlendMode;
+	renderer.setBlendMode(wgpu2d::BlendMode::Premultiplied);
 	renderer.pushCamera();
 	const wgpu2d::Rect target = {dx, dy, (float)width, (float)height};
 	renderer.renderRectangle(target, hudTarget.texture, Colors_White, {}, tilt);
 	renderer.popCamera();
+	renderer.setBlendMode(previousBlend);
 }
 
 }

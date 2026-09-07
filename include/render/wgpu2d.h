@@ -35,6 +35,13 @@ namespace wgpu2d
 		// Light adds: src * srcAlpha + dst. Nothing gets darker, so overlapping
 		// sprites build up. For muzzle flashes, explosions, thrusters.
 		Additive,
+		// src + dst * (1 - srcAlpha): "over", for a source whose colour is
+		// already multiplied by its own coverage. That is exactly what a
+		// render target holds -- drawing (C, a) into a transparent target with
+		// Alpha leaves (C*a, a) -- so this is the mode for drawing a
+		// FrameBuffer back. Using Alpha there multiplies by coverage a second
+		// time and the result comes out dark.
+		Premultiplied,
 	};
 
 	// gl2d's texture-coordinate convention: {u0, v0, u1, v1} with v measured
@@ -146,13 +153,13 @@ namespace wgpu2d
 		// otherwise applied when the target is next drawn into.
 		void clear();
 
-		// Note on translucency: colours here are straight (not
-		// premultiplied) alpha, so a partly transparent draw that goes into a
-		// target and is then composited on screen is multiplied by its
-		// coverage twice and comes out darker than the same draw made
-		// directly. Opaque draws round-trip exactly. Clear the target to an
-		// opaque colour, or keep translucent work on the screen pass, to
-		// avoid it.
+		// Note on translucency: a draw of (C, a) into a transparent target
+		// leaves (C*a, a) -- the target's contents are premultiplied by
+		// coverage, whatever the source was. Draw the result back with
+		// BlendMode::Premultiplied, which is what compositing expects; with
+		// BlendMode::Alpha the coverage is applied a second time and a
+		// translucent target comes out darker than the same draw made
+		// directly. Opaque targets round-trip identically either way.
 	};
 
 	// gl2d's Camera. Rotation is accepted but not applied (the game never sets it).

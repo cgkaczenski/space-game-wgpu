@@ -671,7 +671,12 @@ namespace
 	// with setPipeline; never mutated.
 	const char *blendName(wgpu2d::BlendMode mode)
 	{
-		return mode == wgpu2d::BlendMode::Additive ? "additive" : "alpha";
+		switch (mode)
+		{
+			case wgpu2d::BlendMode::Additive: return "additive";
+			case wgpu2d::BlendMode::Premultiplied: return "premultiplied";
+			default: return "alpha";
+		}
 	}
 
 	// One pipeline for one (format, blend) pair. Everything the descriptor
@@ -726,16 +731,33 @@ namespace
 		// Alpha is gl2d's blend, matching enableNecessaryGLFeatures():
 		//   glBlendEquation(GL_FUNC_ADD)
 		//   glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
-		// Additive keeps the source term and leaves the destination whole, so
-		// overlapping sprites accumulate instead of replacing each other. Its
-		// alpha channel still behaves like alpha's, so a target composited
-		// afterwards still knows what it covered.
+		//
+		// The alpha channel is One / OneMinusSrcAlpha in every mode, which is
+		// what makes a render target usable: drawing (C, a) into a cleared
+		// target leaves rgb = C*a and a = a, so the target's contents are
+		// premultiplied no matter which colour mode produced them. That is
+		// why Premultiplied exists and why it is the right mode to draw a
+		// target back with.
 		BlendState blend = Default;
 		blend.color.operation = BlendOperation::Add;
-		blend.color.srcFactor = BlendFactor::SrcAlpha;
-		blend.color.dstFactor = key.blend == wgpu2d::BlendMode::Additive
-			? BlendFactor::One
-			: BlendFactor::OneMinusSrcAlpha;
+		switch (key.blend)
+		{
+			case wgpu2d::BlendMode::Additive:
+				// src*a + dst: the destination survives whole, so light adds.
+				blend.color.srcFactor = BlendFactor::SrcAlpha;
+				blend.color.dstFactor = BlendFactor::One;
+				break;
+			case wgpu2d::BlendMode::Premultiplied:
+				// src + dst*(1-a): the source is already scaled by coverage.
+				blend.color.srcFactor = BlendFactor::One;
+				blend.color.dstFactor = BlendFactor::OneMinusSrcAlpha;
+				break;
+			default:
+				// src*a + dst*(1-a): gl2d's "over".
+				blend.color.srcFactor = BlendFactor::SrcAlpha;
+				blend.color.dstFactor = BlendFactor::OneMinusSrcAlpha;
+				break;
+		}
 		blend.alpha.operation = BlendOperation::Add;
 		blend.alpha.srcFactor = BlendFactor::One;
 		blend.alpha.dstFactor = BlendFactor::OneMinusSrcAlpha;
@@ -1687,9 +1709,12 @@ namespace
 		wgpu2d::Texture handle;
 		handle.id = g.scaledTargetId;
 		const glm::vec4 white[4] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
-		// Alpha explicitly: the composite draws the target's own pixels back,
-		// whatever blend the quads inside it used.
-		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Alpha,
+		// The target's pixels are premultiplied by their own coverage, so
+		// this is Premultiplied regardless of what the quads inside it used.
+		// The world target is cleared opaque, so today this is numerically
+		// identical to Alpha -- it stops being identical the moment anything
+		// clears it to anything translucent.
+		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Premultiplied,
 			glm::vec4{0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight},
 			handle, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
 		g.scaledTargetDrawn = false; // the pass below is the surface's, not the target's
