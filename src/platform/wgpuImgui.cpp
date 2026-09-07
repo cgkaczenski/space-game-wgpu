@@ -1,11 +1,11 @@
-// Milestone 8: the ImGui renderer backend (see include/render/wgpuImgui.h
+// Milestone 8: the ImGui renderer backend (see include/platform/wgpuImgui.h
 // for why it is hand written). Its job is small and fixed: every frame
 // ImGui::Render produces an ImDrawData, and this file turns that into one
 // vertex buffer, one index buffer, and one draw call per ImDrawCmd with a
 // scissor rectangle. Three things the sprite path never needed appear here:
 // an index buffer, scissor rectangles, and a packed 8-bit color attribute.
 
-#include <render/wgpuImgui.h>
+#include <platform/wgpuImgui.h>
 #include <render/wgpuFrame.h>
 #include <render/wgpu2d.h>
 

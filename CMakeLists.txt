@@ -43,8 +43,35 @@ add_subdirectory(thirdparty/profilerLib)		#profiling, just a simpe library for m
 add_subdirectory(thirdparty/glui)				#layout math (Frame, Box); the rest of glui was a gl2d UI and is gone
 
 
-# Define MY_SOURCES to be a list of all the source files for my game 
+# The sprite shader, compiled into the library rather than loaded from disk.
+# A library cannot reach into an application's resource layout, and
+# RESOURCES_PATH is the application's. Generated as a raw string literal so the
+# WGSL needs no escaping and resources/shaders/quad.wgsl stays an ordinary,
+# editable, syntax-highlighted file.
+#
+# The cost is real: the shader is no longer swappable without a rebuild.
+# CMAKE_CONFIGURE_DEPENDS at least makes editing it re-run this step.
+#
+# The contents follow R"WGSL( with no newline between, deliberately: a leading
+# newline would make string line 1 the file's line 0 and every WGSL compile
+# error would report one line further down than the file it came from.
+set(QUAD_WGSL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/quad.wgsl")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${QUAD_WGSL_SRC}")
+file(READ "${QUAD_WGSL_SRC}" QUAD_WGSL_CONTENTS)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/render/quadShaderSource.h"
+"#pragma once
+// Generated from resources/shaders/quad.wgsl by CMake. Do not edit.
+namespace render
+{
+\tinline const char *quadShaderWGSL = R\"WGSL(${QUAD_WGSL_CONTENTS})WGSL\";
+}
+")
+
+# Define MY_SOURCES to be a list of all the source files for my game.
+# src/render is not among them: it is the wgpu2d library target below, and the
+# whole point of that target is that these sources cannot see the game's.
 file(GLOB_RECURSE MY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+list(FILTER MY_SOURCES EXCLUDE REGEX "/src/render/")
 
 
 add_executable("${CMAKE_PROJECT_NAME}")
@@ -81,6 +108,7 @@ if(MSVC) # If using the VS compiler...
 
 endif()
 
+target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated/")
 target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/")
 target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/gameLayer/")
 target_include_directories("${CMAKE_PROJECT_NAME}" PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/platform/")
@@ -110,17 +138,52 @@ FetchContent_MakeAvailable(webgpu-distribution glfw3webgpu)
 
 target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE webgpu glfw3webgpu)
 target_copy_webgpu_binaries("${CMAKE_PROJECT_NAME}")
+
+# ---------------------------------------------------------------------------
+# wgpu2d: the 2D drawing library.
+#
+# Defined after FetchContent because it links the `webgpu` target. Its sources
+# are everything under src/render and nothing else, which is what turns the
+# inward boundary -- render/ must not use gameLayer/ -- from a rule in
+# AGENTS.md into a link error.
+#
+# Note what this does NOT catch: the game including render/wgpuFrame.h still
+# compiles, because headers do not respect target boundaries. That direction
+# stays a rule.
+#
+# It links no window library. wgpuInit takes a WGPUSurface the application
+# already made, so nothing here knows GLFW exists.
+# ---------------------------------------------------------------------------
+add_library(wgpu2d STATIC
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/wgpuContext.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/layerEffect.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/webgpuImpl.cpp"
+)
+set_property(TARGET wgpu2d PROPERTY CXX_STANDARD 17)
+
+# PUBLIC: wgpu2d.h includes glm, wgpuFrame.h includes webgpu.hpp, and the
+# generated shader header is included by wgpuContext.cpp from the same
+# directory the consumers search. stb_image is PRIVATE -- Texture::loadFromFile
+# uses it, no header exposes it.
+target_include_directories(wgpu2d PUBLIC
+	"${CMAKE_CURRENT_SOURCE_DIR}/include/"
+	"${CMAKE_CURRENT_BINARY_DIR}/generated/")
+target_link_libraries(wgpu2d PUBLIC webgpu glm PRIVATE stb_image)
+# No glfw, no glfw3webgpu: the application creates the surface and hands it in.
+# That is what makes this target usable by a project that is not on GLFW.
+
+target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE wgpu2d)
 # GLFW's header includes the system OpenGL header by default. This project
 # never needs it.
 target_compile_definitions("${CMAKE_PROJECT_NAME}" PUBLIC GLFW_INCLUDE_NONE)
 
 if(APPLE)
 	# Objective-C++ helper that pins the CAMetalLayer color space to sRGB
-	# (see include/render/wgpuMetalLayer.h). The .mm is not in the *.cpp
+	# (see include/platform/wgpuMetalLayer.h). The .mm is not in the *.cpp
 	# glob. Compiled through the C++ toolchain with -x objective-c++ (as
 	# glfw3webgpu does for its .c file) rather than enable_language(OBJCXX),
 	# which, called this late, breaks the rules already generated for GLFW.
-	set(WGPU_METAL_LAYER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/render/wgpuMetalLayer.mm")
+	set(WGPU_METAL_LAYER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/wgpuMetalLayer.mm")
 	set_source_files_properties("${WGPU_METAL_LAYER_SRC}" PROPERTIES
 		LANGUAGE CXX
 		COMPILE_OPTIONS "-x;objective-c++")

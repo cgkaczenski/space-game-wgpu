@@ -30,9 +30,10 @@ frozen at gl2d.** Mirroring its signatures was a port tactic — it let the game
 files switch by include and namespace, and that job finished at milestone 7. It
 was never a ceiling on what a 2D drawing library may grow. `BlendMode` (12) was
 the first addition past it and `LayerEffect` (R3) the second; both live in
-`wgpu2d.h`, because one public header is a rule R6 can turn into a link error
-and a second game-facing render header would need an exception. Exceptions are
-how `hudShake.cpp` happened.
+`wgpu2d.h`. That header is the only one the *game* includes from `render/`.
+The library still has a second public header for a different consumer:
+`wgpuContext.h`, which the platform includes for init / begin / end. WebGPU
+has no implicit current context, so gl2d's one-header shape does not carry.
 
 It is closer than it looks — a survey of the current code found the inward
 direction already clean: nothing under `src/render/` includes anything from
@@ -42,24 +43,28 @@ mess:
 1. **No target boundary.** `CMakeLists.txt` does `file(GLOB_RECURSE MY_SOURCES
    src/*.cpp)` into one executable. There is no wall, so nothing can be caught
    leaning on it. → **R6**
-2. **The library reads the app's resource layout.** `RESOURCES_PATH
-   "shaders/quad.wgsl"` (`wgpuContext.cpp:564`) and the same in
-   `wgpuImgui.cpp:156`. A library has to carry its own shaders. → **R6**
+2. **The library reads the app's resource layout.** Only
+   `wgpuContext.cpp:1983` loading `quad.wgsl` is actually the library's
+   problem. `wgpuImgui.cpp:165` becomes app code when that file moves (R6).
+   A library has to carry its own shaders. → **R6**
 3. ~~**A game effect lives in the library folder.**~~ **Done.** R3 split the
    mechanism into `wgpu2d::LayerEffect` and R4 moved the policy to
    `gameLayer/hud`. Every include from `gameLayer/` into `render/` is now
    `render/wgpu2d.h`, which is the state R6 needs to enforce.
-4. **Who owns the device is unsettled.** `wgpuContext.h` takes a `GLFWwindow*`
-   and owns instance, surface, device and the frame bracket. gl2d owns none of
-   that — it is handed a live context. Deciding this is most of R6's design
-   work, and it is worth deciding before N2/N4 add features and limits to
-   device creation.
+4. **GLFW, which is bigger than "who owns the device."** The library includes
+   `glfw3webgpu.h`, calls `glfwCreateWindowWGPUSurface`, stores a
+   `GLFWwindow*`, and polls `glfwGetFramebufferSize` every frame in
+   `wgpuBeginFrame`. That is the dependency that blocks reuse — a project on
+   SDL could not link this. Device ownership is the other half of the same
+   question, and it is worth deciding before N2/N4 add features and limits to
+   device creation. → **R6**
 
 **Not everything here should travel.** The HUD, the ships, the tuning constants
 and the game's ImGui panels are this game's. The renderer, the camera, the
 batch, the target and post-process machinery are the library's. The ImGui
 *backend* is a third thing — reusable, but not part of a 2D drawing API — and
-probably wants its own target rather than a home in either.
+moves to `platform/` in R6 rather than into a third CMake target in the same
+milestone.
 
 ---
 
@@ -158,8 +163,9 @@ that now:
 
 ## Now — the render track
 
-R3–R6. Ordered: each unblocks the ones after it. All of it lives under
-`src/render/`.
+R3–R6. Ordered: each unblocks the ones after it. R3–R5 live under
+`src/render/` (and R4 under `gameLayer/`); R6 is the target split, plus moving
+ImGui and the Metal-layer pin into `platform/`.
 
 R1 and R2 have landed (outline milestones 11 and 12), and R2 came with a
 correctness fix its machinery made cheap: render targets are now composited
@@ -239,22 +245,78 @@ design.
 
 ### R6. Split the library out as its own target
 
-**Lands in:** build
+**Lands in:** build (and a file move into `platform/`)
 
-`add_library(wgpu2d)` over `src/render/`, the game links it, and the remaining
-blockers listed at the top get fixed in the process — shaders embedded rather
-than loaded from `RESOURCES_PATH`, and the device ownership question answered.
-Blocker 3 is already gone. The payoff is that the boundary stops being a rule
-in `AGENTS.md` and becomes a link error.
-
-**What the target exports is `wgpu2d.h` and nothing else.** `wgpuContext.h` is
-the platform layer's, `wgpuFrame.h` is internal, and `wgpuImgui.h` /
-`wgpuMetalLayer.h` are app. That single public header is what makes the wall
-checkable rather than a convention, so a new drawing capability goes into it
-rather than beside it.
+`add_library(wgpu2d)` over the drawing sources, the game links it, and the
+remaining blockers at the top get fixed in the process. The payoff is that the
+inward boundary (`render/` must not use `gameLayer/`) stops being a rule in
+`AGENTS.md` and becomes a link error. The other direction — game or platform
+including `wgpuFrame.h` — still compiles; that include rule stays a rule, not
+a wall.
 
 Do it after R3–R5, not before: the split is easy once the things that cross the
 line have been moved, and painful while they still do.
+
+#### Where each file lands
+
+| File | Home | Why |
+|---|---|---|
+| `wgpu2d.h` | library, the only *game-facing* header | sprites, cameras, targets, `LayerEffect`. New drawing capabilities go here. |
+| `wgpuContext.h` | library, public to the *platform* | init / begin / end / shutdown. WebGPU has no implicit current context, so this cannot hide inside `wgpu2d.h` without putting `Surface` on the game include. |
+| `wgpuFrame.h` | library, internal to library TUs — and, after the ImGui move, the named backend hook | device, queue, pass, texture bind groups. `gameLayer` never includes it. |
+| `wgpuContext.cpp`, `layerEffect.cpp`, `webgpuImpl.cpp` | library | |
+| `wgpuImgui.{h,cpp}` | moves to `platform/` | an ImGui backend is not a 2D drawing API — it is the third thing the standing goal already flagged. A separate `wgpu_imgui` CMake target can wait. |
+| `wgpuMetalLayer.{h,mm}` | moves to `platform/` | takes a `GLFWwindow*`; it is window plumbing. The app calls it after creating the window, not `wgpuInit`. |
+
+#### The blockers, restated from the code
+
+1. **The glob.** `file(GLOB_RECURSE src/*.cpp)` into one executable. Straightforward: `add_library(wgpu2d)`, the game links it. The library links `webgpu`, `glm`, and `stb_image`, and does **not** link `glfw` or `glfw3webgpu`.
+
+2. **`RESOURCES_PATH` — only one of the two sites is actually a problem.** `wgpuImgui.cpp:165` becomes app code by the move above, so it may keep reading files. Only `wgpuContext.cpp:1983` loading `quad.wgsl` is the library reaching into an app's resource layout. Generate a header from the `.wgsl` at build time rather than inlining a raw string — it keeps `resources/shaders/quad.wgsl` an editable, highlighted file, which matters here since the shader is a teaching artifact.
+
+3. **hudShake** — gone in R3/R4.
+
+4. **GLFW, which is bigger than "who owns the device."** The library currently includes `glfw3webgpu.h`, calls `glfwCreateWindowWGPUSurface`, stores a `GLFWwindow*`, and polls `glfwGetFramebufferSize` every frame in `wgpuBeginFrame`. That is the dependency that actually blocks reuse — a project on SDL could not link this. Acceptance test: `grep -i glfw src/render/` returns nothing.
+
+#### The fork (take A)
+
+**Option A — the app owns the window and the surface; the library owns instance, adapter, device, and the frame bracket.** GLFW leaves the library entirely. Resize becomes `wgpuResize(w, h)` pushed by the app instead of the library polling GLFW every frame. `glfwMain` already has the window-size callback and already reads framebuffer size; Metal still will not report `Outdated`, so the app may push every frame. That is fine.
+
+**Option B — the app owns instance, adapter, device and surface, and hands them all in.** Closer to gl2d, which is handed a live context. But it pushes WebGPU bring-up — adapter callbacks, device descriptors, required features and limits — into the platform layer of every consumer, and N2 (timestamp queries) and N4 (compute) both add to device creation. Under B those additions land in app code.
+
+Take A. B copies the wrong part of gl2d: gl2d is handed a live context because *the context is thread-global*. WebGPU has no current device. This library *is* the WebGPU bring-up for a 2D game, not a guest in someone else's pass.
+
+**The hole in A as first written.** `glfwCreateWindowWGPUSurface` takes an **instance**. Bring-up is instance → surface from instance + window → adapter with `compatibleSurface` → device → configure. So `wgpuInit(WGPUSurface, w, h)` cannot be the first call. Put the instance with the library: it is "the library itself, no GPU yet" (log callback, `processEvents` for adapter/device requests and error scopes). N2/N4 add *device* features and limits, which stay in the library under A — that is the point of A.
+
+App sequence:
+
+```
+wgpuInitInstance()                              // library: instance + logging
+surface = glfwCreateWindowWGPUSurface(...)      // app
+pinMetalLayerColorSpaceToSRGB(window)           // app; no-op off Apple
+wgpuInit(surface, fbW, fbH)                     // library: adapter, device, pipelines
+// each frame:
+wgpuResize(fbW, fbH)                            // app pushes
+wgpuBeginFrame()
+...
+wgpuEndFrame()
+wgpuShutdown()                                  // library unconfigures the surface, releases instance
+wgpuSurfaceRelease(surface)                     // app: we created it
+```
+
+`wgpuContext.h` will name a WebGPU surface type. The current "no WebGPU types in this header" rule was to keep `glfwMain.cpp` free of WebGPU. After A, platform already has WebGPU in order to create a surface, so that rule retires. `wgpu2d.h` still names none.
+
+#### Three gaps, none blocking
+
+1. **Teardown ownership — decided: app creates the surface, app releases it.** The library-takes-ownership version was the unique-ownership story, and it is the one that bites: a second consumer pairs `glfwCreateWindowWGPUSurface` with `wgpuSurfaceRelease` because they created it, and double-frees. Failed `wgpuInit` is the other hole — the surface is stored and then several `return false` paths would leave ownership transferred on a call that failed. Holding for the process lifetime is not owning; that is how the library used to hold a `GLFWwindow*`. So: `wgpuShutdown` unconfigures and drops the pointer (`forgetSurface`). It does not `release`. `glfwMain` calls `wgpuSurfaceRelease` after shutdown, next to `glfwDestroyWindow`. Failed init nulls the pointer without releasing (a destructor guard on the success flag), so the application still has the handle. Instance stays library-complete: create and destroy. Surface matches the window: create and destroy.
+
+2. **The library's link line is more than `webgpu` and `glm`.** `wgpuContext.cpp` uses `stb_image` for `Texture::loadFromFile`, so `stb_image` comes with the library. (The glob item above already names it.)
+
+3. **`webgpuImpl.cpp` needs a second look now that platform includes `webgpu.hpp`.** Exactly one TU may define `WEBGPU_CPP_IMPLEMENTATION`, and that TU is in the library (`webgpuImpl.cpp` already says so). Once `glfwMain.cpp` includes the wrapper to create a surface, it gets declarations and must resolve the bodies from the static library. That should work, but it is the kind of thing that fails at link time with a wall of undefined symbols, so it is the first thing to verify rather than the last.
+
+**Metal pin, no `#ifdef` in `glfwMain`.** The pin needs the GLFW window, so it lives in `platform/`, not in the drawing library — putting it back in `render/` reimports GLFW for a colour-space workaround. A platform `main` that knows which OS it is on is not a regression (`glfwMain` already has `#ifdef _WIN32` for the debug console). What was off was an `#ifdef __APPLE__` at the *call site*. `wgpuMetalLayer.h` is a no-op that returns true everywhere except Apple; the `.mm` is the real implementation and owns the log. `glfwMain` always calls `pinMetalLayerColorSpaceToSRGB(wind)`.
+
+**What R6 does not do.** Fold `wgpuInit` into `wgpu2d.h` just to have one public header. Inline `quad.wgsl` as a raw string. A third CMake target for ImGui in the same milestone.
 
 ---
 

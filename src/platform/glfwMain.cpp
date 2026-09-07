@@ -9,6 +9,8 @@
 #include "otherPlatformFunctions.h"
 #include "gameLayer.h"
 #include <render/wgpuContext.h>
+#include <glfw3webgpu.h>   // glfwCreateWindowWGPUSurface: the app owns the window
+#include <platform/wgpuMetalLayer.h>
 #include <fstream>
 #include <chrono>
 
@@ -17,7 +19,7 @@
 #if REMOVE_IMGUI == 0
 	#include "imgui.h"
 	#include "backends/imgui_impl_glfw.h"
-	#include <render/wgpuImgui.h>
+	#include <platform/wgpuImgui.h>
 	#include "imguiThemes.h"
 #endif
 
@@ -321,7 +323,25 @@ int main()
 	glfwSetCursorPosCallback(wind, cursorPositionCallback);
 	glfwSetCharCallback(wind, characterCallback);
 
-	permaAssertComment(render::wgpuInit(wind), "err initializing WebGPU");
+	// Bring-up is three steps because creating a surface needs an instance and
+	// only this layer knows what a window is: the library makes the instance,
+	// we make the surface from it and keep it, the library borrows it for the
+	// frame bracket.
+	WGPUInstance wgpuInstance = render::wgpuInitInstance();
+	permaAssertComment(wgpuInstance != nullptr, "err creating the WebGPU instance");
+
+	WGPUSurface wgpuSurface = glfwCreateWindowWGPUSurface(wgpuInstance, wind);
+	permaAssertComment(wgpuSurface != nullptr, "err creating the WebGPU surface");
+
+	// No-op off Apple. Needs the window, and needs the surface to exist first
+	// -- glfw3webgpu is what attaches the CAMetalLayer.
+	render::pinMetalLayerColorSpaceToSRGB(wind);
+
+	{
+		int fbw = 0, fbh = 0;
+		glfwGetFramebufferSize(wind, &fbw, &fbh);
+		permaAssertComment(render::wgpuInit(wgpuSurface, fbw, fbh), "err initializing WebGPU");
+	}
 
 
 #pragma endregion
@@ -399,6 +419,18 @@ int main()
 	#pragma endregion
 
 	#pragma region frame start
+			// Push the framebuffer size before acquiring anything. The
+			// library no longer asks the window for it, and on Metal the
+			// surface never reports itself Outdated, so this has to be told
+			// every frame rather than only from the resize callback --
+			// otherwise sprites stretch while the visible world does not
+			// change. wgpuResize is a no-op when the size is unchanged.
+			{
+				int fbw = 0, fbh = 0;
+				glfwGetFramebufferSize(wind, &fbw, &fbh);
+				render::wgpuResize(fbw, fbh);
+			}
+
 			// Acquire the surface texture and open the frame's encoder. The
 			// game's flush() draws into it; wgpuEndFrame submits and presents.
 			render::wgpuBeginFrame();
@@ -499,6 +531,7 @@ int main()
 		ImGui::DestroyContext();
 	#endif
 	render::wgpuShutdown();
+	wgpuSurfaceRelease(wgpuSurface); // we created it; the library only borrowed it
 	glfwDestroyWindow(wind);
 	glfwTerminate();
 

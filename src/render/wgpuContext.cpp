@@ -2,15 +2,14 @@
 // of it (wgpu2d::*). One translation unit on purpose: the API's methods
 // need the context's internals and there is one renderer.
 
+#include <render/quadShaderSource.h> // generated from resources/shaders/quad.wgsl
 #include <render/wgpuContext.h>
 #include <render/wgpu2d.h>
 #include <render/wgpuFrame.h>
 #ifdef __APPLE__
-#include <render/wgpuMetalLayer.h>
 #endif
 
 #include <webgpu/webgpu.hpp> // WebGPU-Cpp wrapper over webgpu.h (+ wgpu.h extensions)
-#include <glfw3webgpu.h>     // glfwCreateWindowWGPUSurface
 #include <stb_image/stb_image.h>
 #include <glm/glm.hpp>       // column-major like WGSL's mat4x4f
 
@@ -68,11 +67,9 @@ namespace
 	// ---------------------------------------------------------------------
 	struct Context
 	{
-		GLFWwindow *window = nullptr;
-
 		// 1a
 		Instance instance = nullptr;
-		Surface surface = nullptr;
+		Surface surface = nullptr; // borrowed: the app creates and releases it
 		Adapter adapter = nullptr;
 
 		// 1b
@@ -421,13 +418,28 @@ namespace
 	// Surface
 	// ---------------------------------------------------------------------
 
+	// The surface is the application's. We configure it and present to it,
+	// then drop the pointer. Calling release() here would double-free with
+	// the app's wgpuSurfaceRelease.
+	void forgetSurface()
+	{
+		if (!g.surface) { return; }
+		if (g.surfaceConfigured)
+		{
+			g.surface.unconfigure();
+			g.surfaceConfigured = false;
+		}
+		g.surface = nullptr;
+	}
+
 	// Configures (or reconfigures) the surface at the window's current
 	// framebuffer size. Framebuffer size, not window size: on a Retina
 	// display they differ by the scale factor.
-	void configureSurface()
+	// The size comes from the caller. The library used to ask GLFW, which is
+	// how it came to depend on a window system it has no business knowing
+	// about; the application already has this number.
+	void configureSurface(int w, int h)
 	{
-		int w = 0, h = 0;
-		glfwGetFramebufferSize(g.window, &w, &h);
 		if (w <= 0 || h <= 0)
 		{
 			return; // minimized; keep the old configuration
@@ -465,8 +477,29 @@ namespace
 		return true;
 	}
 
-	// Compiles a WGSL file into a shader module. Compile errors arrive through
-	// the uncaptured-error callback with line and column numbers.
+	// Compiles WGSL source into a shader module. `label` names it in
+	// validation messages and in a GPU capture.
+	ShaderModule createShaderModule(const char *source, const char *label)
+	{
+		// The WGSL source is a chained struct hanging off the module descriptor.
+		// Default sets chain.sType = ShaderSourceWGSL and chain.next = nullptr.
+		ShaderSourceWGSL wgsl = Default;
+		wgsl.code = StringView(source);
+
+		ShaderModuleDescriptor desc = Default;
+		desc.label = StringView(label);
+		desc.nextInChain = &wgsl.chain;
+
+		// WGSL compile errors arrive here with line and column numbers, named
+		// to the module, instead of loose on the uncaptured-error callback.
+		ErrorScope scope(label);
+		return g.device.createShaderModule(desc);
+	}
+
+	// Same, from a file. The library's own shaders are compiled in (see
+	// quadShaderSource.h); this exists for the application, which has a
+	// resource layout and may keep its shaders in it -- the ImGui backend in
+	// src/platform does exactly that through wgpuCreateShaderModuleFromFile.
 	ShaderModule createShaderModuleFromFile(const char *path)
 	{
 		std::string source;
@@ -475,20 +508,7 @@ namespace
 			std::cerr << "WebGPU: cannot read shader file " << path << "\n";
 			return nullptr;
 		}
-
-		// The WGSL source is a chained struct hanging off the module descriptor.
-		// Default sets chain.sType = ShaderSourceWGSL and chain.next = nullptr.
-		ShaderSourceWGSL wgsl = Default;
-		wgsl.code = StringView(source);
-
-		ShaderModuleDescriptor desc = Default;
-		desc.label = StringView(path);
-		desc.nextInChain = &wgsl.chain;
-
-		// WGSL compile errors arrive here with line and column numbers, named
-		// to the file, instead of loose on the uncaptured-error callback.
-		ErrorScope scope(path);
-		return g.device.createShaderModule(desc);
+		return createShaderModule(source.c_str(), path);
 	}
 
 	// Samplers: how a shader reads a texture. Separate from the texture
@@ -1781,9 +1801,10 @@ namespace
 // Context lifecycle, called from the platform loop
 // -------------------------------------------------------------------------
 
-bool wgpuInit(GLFWwindow *window)
+WGPUInstance wgpuInitInstance()
 {
-	g.window = window;
+	if (g.instance) { return g.instance; }
+
 	wgpuSetLogCallback(logCallback, nullptr);
 	// Warn and above by default. WGPU_LOG_LEVEL raises it without a rebuild;
 	// "info" and "debug" say what the backend is doing between our calls,
@@ -1803,38 +1824,49 @@ bool wgpuInit(GLFWwindow *window)
 	}
 	wgpuSetLogLevel(logLevel);
 
-	// 1. Instance: the library itself. No GPU involved yet.
+	// The instance is the library itself: no GPU, no window. It exists before
+	// wgpuInit because creating a surface needs it, and creating a surface is
+	// the application's job -- only the application knows what a window is.
 	InstanceDescriptor instanceDesc = Default;
 	g.instance = createInstance(instanceDesc);
 	if (!g.instance)
 	{
 		std::cerr << "WebGPU: createInstance returned null\n";
+		return nullptr;
+	}
+	return g.instance;
+}
+
+bool wgpuInit(WGPUSurface surface, int width, int height)
+{
+	if (!g.instance)
+	{
+		std::cerr << "WebGPU: wgpuInit before wgpuInitInstance\n";
 		return false;
 	}
-
-	// 2. Surface: the window's Metal layer, wrapped so WebGPU can present to it.
-	//    Created now so the adapter request can ask for a GPU that can drive it.
-	g.surface = glfwCreateWindowWGPUSurface(g.instance, window);
-	if (!g.surface)
+	if (!surface)
 	{
-		std::cerr << "WebGPU: glfwCreateWindowWGPUSurface returned null\n";
+		std::cerr << "WebGPU: wgpuInit given a null surface\n";
 		return false;
 	}
+	g.surface = surface;
 
-#ifdef __APPLE__
-	// Pin the layer's color space so windowed and fullscreen presentation
-	// agree where macOS honors it (see wgpuMetalLayer.h).
-	if (pinMetalLayerColorSpaceToSRGB(window))
+	// Any return false below must drop the borrowed surface without
+	// releasing it. The flag is set only on the success path.
+	struct DropSurfaceIfFailed
 	{
-		std::cout << "WebGPU Metal layer color space pinned to sRGB\n";
-	}
-	else
-	{
-		std::cerr << "WebGPU: window layer is not a CAMetalLayer; color space not pinned\n";
-	}
-#endif
+		bool keep = false;
+		~DropSurfaceIfFailed()
+		{
+			if (!keep) { forgetSurface(); }
+		}
+	} dropSurface;
 
-	// 3. Adapter: a description of one physical GPU that fits the options.
+	// The macOS colour-space pin used to happen here. It needs the window, so
+	// it moved out with GLFW -- glfwMain calls it right after creating the
+	// surface. See platform/wgpuMetalLayer.h.
+
+	// Adapter: a description of one physical GPU that fits the options.
 	//    The request is callback-based; on native backends it completes
 	//    during processEvents, so the loop below runs at most a few times.
 	RequestAdapterOptions options = Default;
@@ -1875,7 +1907,7 @@ bool wgpuInit(GLFWwindow *window)
 
 	printAdapter(g.adapter);
 
-	// 4. Device: the working connection to the GPU. Every later object is
+	// Device: the working connection to the GPU. Every later object is
 	//    created from it. No required features or limits: the defaults are
 	//    far above what a 2D sprite batcher needs.
 	DeviceDescriptor deviceDesc = Default;
@@ -1921,7 +1953,7 @@ bool wgpuInit(GLFWwindow *window)
 	}
 	g.device = deviceRequest.device;
 
-	// 5. Queue: the device's single inbox for command buffers and uploads.
+	// Queue: the device's single inbox for command buffers and uploads.
 	g.queue = g.device.getQueue();
 	if (!g.queue)
 	{
@@ -1929,7 +1961,7 @@ bool wgpuInit(GLFWwindow *window)
 		return false;
 	}
 
-	// 6. Surface format. The first listed format is the surface's preferred
+	// Surface format. The first listed format is the surface's preferred
 	//    one and on Metal it is normally an sRGB variant. gl2d never gamma
 	//    corrected, so prefer the plain (non-sRGB) 8-bit format when offered
 	//    and only fall back to the preferred one otherwise.
@@ -1958,9 +1990,9 @@ bool wgpuInit(GLFWwindow *window)
 	std::cout << "WebGPU surface format chosen: " << formatName(g.surfaceFormat) << "\n";
 	caps.freeMembers();
 
-	// 7. Configure the surface: this is the OpenGL default framebuffer plus
+	// Configure the surface: this is the OpenGL default framebuffer plus
 	//    swap interval, expressed as an explicit object.
-	configureSurface();
+	configureSurface(width, height);
 	if (!g.surfaceConfigured)
 	{
 		std::cerr << "WebGPU: surface not configured (framebuffer size "
@@ -1968,19 +2000,19 @@ bool wgpuInit(GLFWwindow *window)
 		return false;
 	}
 
-	// 8. Samplers and layouts. The pipeline needs the layout.
+	// Samplers and layouts. The pipeline needs the layout.
 	if (!createSamplers() || !createLayouts())
 	{
 		return false;
 	}
 
-	// 9. The sprite shader, compiled once and shared by every pipeline
+	// The sprite shader, compiled once and shared by every pipeline
 	//    variant, then the one variant the common case needs: the surface's
 	//    format with gl2d's alpha blend. The rest are built the first time a
 	//    flush asks for them. Warming this one here keeps a validation
 	//    failure in the shader or the layout at startup, where it can stop
 	//    init, rather than in the first frame.
-	g.quadShaderModule = createShaderModuleFromFile(RESOURCES_PATH "shaders/quad.wgsl");
+	g.quadShaderModule = createShaderModule(quadShaderWGSL, "quad.wgsl");
 	if (!g.quadShaderModule)
 	{
 		return false;
@@ -1991,14 +2023,14 @@ bool wgpuInit(GLFWwindow *window)
 	}
 	// getQuadPipeline already reported the variant; no second line for it.
 
-	// 10. gl2d's 1px white texture: what every untextured draw samples.
+	// gl2d's 1px white texture: what every untextured draw samples.
 	white1pxSquareTexture.create1PxSquare();
 	if (white1pxSquareTexture.id == 0)
 	{
 		return false;
 	}
 
-	// 11. The camera uniform slots. Grow on demand.
+	// The camera uniform slots. Grow on demand.
 	if (!ensureCameraSlotCapacity(1))
 	{
 		return false;
@@ -2023,28 +2055,34 @@ bool wgpuInit(GLFWwindow *window)
 	ensureScaledTarget();
 
 	std::cout.flush();
+	dropSurface.keep = true;
 	return true;
+}
+
+void wgpuResize(int width, int height)
+{
+	if (!g.surface) { return; }
+	if (g.surfaceConfigured && width == g.surfaceWidth && height == g.surfaceHeight) { return; }
+
+	configureSurface(width, height);
+	if (g.surfaceConfigured)
+	{
+		ensureScaledTarget(); // the low-res target follows the surface's size
+	}
 }
 
 void wgpuBeginFrame()
 {
 	g.frameOpen = false;
 
-	// Resize detection. On Metal, wgpu-native keeps presenting a drawable of
-	// the configured size and the layer stretches it to the window; the
-	// surface never reports itself Outdated. So compare the framebuffer size
-	// every frame and reconfigure when it changed. The Outdated/Lost path
-	// below stays as a backstop for backends that do report it.
-	{
-		int w = 0, h = 0;
-		glfwGetFramebufferSize(g.window, &w, &h);
-		if (!g.surfaceConfigured || w != g.surfaceWidth || h != g.surfaceHeight)
-		{
-			configureSurface();
-			if (!g.surfaceConfigured) { return; } // minimized: nothing to draw this frame
-			ensureScaledTarget(); // the low-res target follows the surface's size
-		}
-	}
+	// The surface must have been configured, which wgpuResize does. It is the
+	// application's job to call that with the current framebuffer size --
+	// every frame is fine and is what this game does, because on Metal
+	// wgpu-native keeps presenting a drawable of the configured size and
+	// stretches it to the window rather than ever reporting the surface
+	// Outdated. The Outdated/Lost path below stays as a backstop for backends
+	// that do report it.
+	if (!g.surfaceConfigured) { return; } // minimized, or resize not pushed yet
 
 	// Acquire: the texture that will next go on screen.
 	SurfaceTexture surfaceTexture = Default;
@@ -2060,9 +2098,13 @@ void wgpuBeginFrame()
 		case SurfaceGetCurrentTextureStatus::Timeout:
 		case SurfaceGetCurrentTextureStatus::Outdated:
 		case SurfaceGetCurrentTextureStatus::Lost:
-			// Reconfigure at the current size and try again next frame.
+			// Reconfigure at the size we believe and try again next frame. If
+			// the surface went Outdated *because* the window changed size,
+			// the application's next wgpuResize corrects it -- this path is
+			// the backstop for backends that report Outdated at all, which
+			// Metal does not.
 			if (texture) { texture.release(); }
-			configureSurface();
+			configureSurface(g.surfaceWidth, g.surfaceHeight);
 			return;
 
 		default:
@@ -2185,11 +2227,10 @@ void wgpuShutdown()
 	if (g.textureBindGroupLayout) { g.textureBindGroupLayout.release(); g.textureBindGroupLayout = nullptr; }
 	if (g.samplerPixelated) { g.samplerPixelated.release(); g.samplerPixelated = nullptr; }
 	if (g.samplerLinear) { g.samplerLinear.release(); g.samplerLinear = nullptr; }
-	if (g.surface && g.surfaceConfigured) { g.surface.unconfigure(); g.surfaceConfigured = false; }
+	forgetSurface();
 	if (g.queue) { g.queue.release(); g.queue = nullptr; }
 	if (g.device) { g.device.release(); g.device = nullptr; }
 	if (g.adapter) { g.adapter.release(); g.adapter = nullptr; }
-	if (g.surface) { g.surface.release(); g.surface = nullptr; }
 	if (g.instance) { g.instance.release(); g.instance = nullptr; }
 }
 
