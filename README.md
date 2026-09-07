@@ -61,6 +61,6 @@ vertices stay in world pixels and the camera is a matrix on the GPU.
 
 ## Origin
 
-Started from [meemknight/cmakeSetup](https://github.com/meemknight/cmakeSetup)
+Started from [meemknight/game-in-cpp-full-course](https://github.com/meemknight/game-in-cpp-full-course)
 (GLFW, gl2d, ImGui, raudio). The render layer was ported to WebGPU; gl2d, glad,
 and the OpenGL ImGui backend were then removed.
