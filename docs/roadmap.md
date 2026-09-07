@@ -64,9 +64,42 @@ a rule rather than proposed as a scheme:
 | Feature | Mechanism (general) | Policy (this game) | Item |
 |---|---|---|---|
 | HUD shake | flush a layer through a target, draw it back transformed | decay 10/s, 9px, 19 and 24 Hz, 1.4°, triggered by damage | R3 / R4 |
-| Camera | the transform, and the dynamic-offset slot machinery | `follow(speed, min, max)` chasing the player | R5 |
+| Camera | the transform and its slots, **and `follow` as a function** | the *call*: `follow(data.playerPos, 550, 0, 0, w, h)` | R5 |
 | Collision | `ICollisionSystem`, overlap dispatch, `Hitbox` variant | `shipHitbox()` — *ships* | R7 |
 | Movement | input-independent integrator with a momentum option | `playerMoveSpeed = 2000.f`, WASD | R8 |
+
+### A mechanism is not always one home
+
+The camera row above was wrong in an earlier version of this file, which filed
+`follow` itself as policy. Only the **call** is policy. `Camera::follow` is
+pure position maths — a chase with a dead zone (`min`), a leash (`max`) and
+speed easing near the target — with no drawing and no knowledge of this game;
+`w, h` only centre the target in the view. It is a parameterized behaviour, the
+same shape as R8's integrator. It ended up as a method on `wgpu2d::Camera`
+because gl2d put it there, not because a drawing library needs it. That is the
+`shipHitbox` leak a second time.
+
+So the rule needs one more turn of the screw: **a mechanism can span two
+homes.** Both of the features this file spends the most words on are three
+pieces, not two.
+
+| | `render/` | `engine/` | `gameLayer/` |
+|---|---|---|---|
+| **HUD** | flush a layer through a target, draw it back transformed | layout maths — already `glui`, and already out of tree | this health bar, these textures, `xLeftPerc(0.65)`, `fill = data.health`, decay 10/s, the damage trigger |
+| **Camera** | position, zoom, rotation, `viewProj`, the dynamic-offset slots, `pushCamera`/`popCamera` | `follow` — chase a point with speed / min / max | `follow(data.playerPos, 550, 0, 0, w, h)` |
+
+Two things follow from that, and both are cautions against inventing work:
+
+- **There is no HUD system for `engine/` to own.** R3 and R4 already cut it
+  correctly; the middle column is `glui`, which is a separate CMake target
+  under `thirdparty/` and included only by `gameLayer.cpp`. Moving it into
+  `src/engine/` would mean vendoring a third-party library into our own tree,
+  which is worse than leaving it. It moves if and when something in-tree wants
+  it, not to prove the folder exists.
+- **Same feel, different home.** A world-camera shake (nudge the view's
+  position) would be another `engine/` behaviour. The HUD shake stays a
+  `render/` layer effect. One mutates a transform, the other composites a
+  texture, and no amount of shared vocabulary makes them the same piece.
 
 `collisionSystem.h` is the instructive one because it is already **half right**:
 the interface and the overlap dispatch are exactly what a reusable system should
@@ -91,7 +124,13 @@ fourth home, created in R7.
 
 The test for `engine/` is not "is this generic code." It is **"could a different
 game use this without editing it?"** An integrator with a momentum option
-passes. `playerMoveSpeed = 2000.f` does not.
+passes. `playerMoveSpeed = 2000.f` does not. `follow` passes; the call to it
+does not — see **A mechanism is not always one home** above, which is where
+that distinction gets applied to the two features it matters most for.
+
+`engine/` gets tenants when something needs to live there, never to prove it
+exists. Collision is the first because it is already shaped correctly and only
+needs moving; `follow` is the second for the same reason.
 
 Two of the planned features do not sit in one row, and it is cheaper to know
 that now:
@@ -145,23 +184,44 @@ further into that function.
 policy from R3 and the damage trigger. `gameLogic` calls it once. The test for
 whether this worked: adding a second HUD element touches one file.
 
-### R5. Generalize the camera
+**Stop there.** R3 and R4 are the whole cut — there is no third, general "HUD
+system" for `engine/` to own. The only travelling piece is layout, and that is
+already `glui`, already out of tree. Another game wants a layer effect; it does
+not want a health bar.
 
-**Lands in:** library
+### R5. Strip the camera down to a transform
 
-`wgpu2d::Camera` is a position, a rotation that is accepted and ignored, and a
-zoom, plus a `follow()` that is really a game behaviour wearing a library
-signature (it takes speed, min, max, and window dimensions). Milestone 6b
-already built the hard part underneath it — several cameras per frame in
+**Lands in:** library (and, for now, game)
+
+`wgpu2d::Camera` is a position, a zoom, a rotation that is accepted and
+ignored, and a `follow()` that has no business being a method on it. Milestone
+6b already built the hard part underneath — several cameras per frame in
 dynamic-offset uniform slots.
 
-Two questions to settle, and they are the whole item: **what is a camera** (a
-transform, or a transform plus a behaviour?) and **who owns following** (the
-library, or the game)? The self-contained version is: the library owns the
-transform and the slot machinery, behaviours are separate composable pieces, and
-`follow` becomes one of them rather than a method. Rotation either gets
-implemented or gets deleted from the struct — carrying an ignored field is worse
-than either.
+**The item is one sentence: `Camera` becomes a transform, and `follow` stops
+being a method.** What is left on the struct is position, zoom, rotation,
+`viewProj` and the slot machinery — how sprites get on screen, which is what a
+drawing library is for. `follow` is a behaviour that never draws.
+
+**Where `follow` goes, and the trap.** Its home is `engine/`, which R7 creates.
+Until then it becomes a free function in `gameLayer/`, and R7 moves it in
+alongside collision. It must **not** be parked somewhere in `render/` in the
+meantime under a different name — that is precisely how `hudShake.cpp` came to
+be a general drawing mechanism sitting in the library with one game's numbers
+compiled into it. This is also what `AGENTS.md` already prescribes: until
+`engine/` exists, a system goes in `gameLayer/` with mechanism and policy in
+separate files, so the move is a move.
+
+**Signature matters here.** `follow` must not take a `Camera&`, or `engine/`
+ends up including `wgpu2d.h` and the boundary is lost on day one. It takes and
+returns plain maths — roughly `nextPosition = follow(current, target, params,
+viewSize)` — and the game assigns the result into `currentCamera.position`.
+Verified as safe: `follow` is called only from `gameLayer.cpp:80` and `:214`,
+and nothing under `src/render/` uses it, so removing it from the library breaks
+nothing inside the library.
+
+Rotation is a separate decision in the same file: implement it or delete the
+field. Carrying an ignored one is worse than either.
 
 F3 (parallax layers) is the first real consumer and the honest test of the
 design.
@@ -199,6 +259,19 @@ because a ship is not a general concept.
 Doing this first, with code that already exists and already works, means the
 pattern is established and demonstrated before anything new is written against
 it. It is a move, not a design.
+
+**Second tenant, in the same item:** `follow`, which R5 will have already
+detached from `wgpu2d::Camera` and parked in `gameLayer/`. It arrives here
+already shaped — plain maths in, plain maths out — so this is a file move, not
+a redesign either.
+
+**Ordering note.** R5 and R7 look like they contradict each other: R5 is on the
+render track and `follow`'s home is a folder R7 has not created yet. They do
+not, because R5 does not try to land `follow` in its final home — it only takes
+it off the struct. The alternative, running R7 before R5 so `follow` moves once
+instead of twice, works too and costs one fewer move; it was not taken because
+it couples the two tracks, and the render track should stay about drawing. A
+free function moving between two files is the cheapest thing on this page.
 
 While in there: `separation()` is declared on the interface, implemented, and
 called from nowhere in the repo. Either wire it up to the ship-ship resolution
