@@ -207,13 +207,29 @@ Facts established while porting, all specific to an Intel Mac with an AMD Radeon
 
 ## Not in the port (guide chapters skipped)
 
+Skipped on the way through the milestone path. Several turned out to have a real
+2D use once the port was finished; those rows say where they are picked up again
+in [`roadmap.md`](roadmap.md).
+
 | Guide | Why skipped |
 |---|---|
-| Depth buffer, lighting, PBR, cube maps | 2D, depth off |
-| Compute pipeline (except as mipmap reading) | CPU mips instead |
-| Instancing, render bundles, MSAA | one growable buffer + draw runs |
-| Building for the Web | native Metal only |
+| Lighting, PBR, cube maps, 3D meshes | 2D — cube maps and PBR stay out for good; lighting comes back in a 2D form as N8 |
+| Depth buffer | depth off — but see N7, where depth is a sort key rather than an occlusion test |
+| Compute pipeline (except as mipmap reading) | CPU mips instead — see N4 |
+| Instancing | one growable buffer + draw runs — see N5 |
+| Render bundles, MSAA | same — MSAA is N6; render bundles stay marginal |
+| Building for the Web | native Metal only; `wgpuMetalLayer.mm` and the wgpu-native pin both stand in the way |
 | Milestone 9 (text) | skipped: gl2d's font path is almost all CPU (stb_truetype pack, glyph quads through the existing batch), and the game draws no gl2d text — glui is layout only and every string is ImGui |
+
+---
+
+## What comes next
+
+Planned work — refactors, guide chapters still worth doing, and features that
+would deepen what is here — lives in [`roadmap.md`](roadmap.md), not in this
+file. The two have different lifetimes: a roadmap item is deleted when it lands,
+and a milestone block appears here in its place. This file only ever grows, and
+only ever describes things that exist.
 
 ---
 
