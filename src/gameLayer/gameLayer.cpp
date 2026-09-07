@@ -12,6 +12,7 @@
 #include "imfilebrowser.h"
 #include <glui/glui.h>      // layout only (Frame, Box); brings gl2d.h with it, so it comes before the render alias
 #include <render/renderer.h>
+#include <render/hudShake.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
@@ -323,6 +324,7 @@ bool gameLogic(float deltaTime)
 					collision::shipHitbox(data.playerPos, shipSize)))
 				{
 					data.health -= 0.1;
+					render::hudShakeTrigger(); // shake the HUD on the hit
 
 					data.bullets.erase(data.bullets.begin() + i);
 					i--;
@@ -495,6 +497,8 @@ bool gameLogic(float deltaTime)
 
 #pragma region ui
 
+	renderer.flush(); // the world, before the HUD goes through the shake target
+
 	renderer.pushCamera();
 	{
 
@@ -516,6 +520,8 @@ bool gameLogic(float deltaTime)
 
 	}
 	renderer.popCamera();
+
+	render::hudShakeFlush(renderer, w, h); // HUD -> shake target -> one quad
 
 #pragma endregion
 
