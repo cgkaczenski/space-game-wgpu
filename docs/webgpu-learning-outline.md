@@ -214,6 +214,8 @@ Three things this turned up that are worth more than the feature itself:
 
 ## 12. A pipeline cache, blend modes, and a correct composite
 
+*(14 is the companion: why the API forces this, and what it means for batching. Read that one for the concept; this one is what the code did about it.)*
+
 **Concepts:** Blending and the colour target's format are **baked into a render pipeline** and cannot be set on a pass, so "the pipeline" was always really one per (format, blend) pair. WebGPU has no pipeline-cache object — Vulkan does, `webgpu.h` does not — so this is a small vector of entries built on demand and scanned linearly at run boundaries. `flushBatch`'s run key gains a third component beside texture and camera: texture and camera change which *resources* are bound, blend changes which *pipeline* is bound.
 
 **The key is deliberately two fields.** Sample count, depth state and the vertex layout all belong in it eventually; adding a field then is a few lines, and designing around four futures at once is how the wrong key gets built.
@@ -270,6 +272,60 @@ Predicted `0.25 → 64` and `0.125 → 32`. Exactly half, which is the double mu
 **Code:** `wgpuInitInstance` / `wgpuInit(surface, w, h)` / `wgpuResize` / `forgetSurface` · `include/render/wgpuContext.h` · `wgpu2d::LayerEffect` · `src/gameLayer/hud.{h,cpp}` · `src/engine/` · the `wgpu2d` and `engine` targets and the shader generator in `CMakeLists.txt`
 
 **Commits:** `e6fec09` layer effect · `0d73c53` HUD module, and gl2d unfrozen · `cb2348c` camera as transform · `cfc5755` a NaN guard · `cfdf6c2` the library target · `7e0ec55` the engine home
+
+---
+
+## 14. What blending is, and why it lives in the pipeline
+
+12 built a pipeline cache and a third run key because the code needed them. This is the part that explains *why the API forces that*, which only became concrete once something actually needed a second blend mode: the engine plume in `gameLayer/shipThruster`.
+
+**Concepts:** A fragment shader does not write to the screen. It returns a colour, and a **fixed-function blend unit** then combines that colour with whatever is already in the target, by an equation of the form `srcFactor × src  OP  dstFactor × dst`. "Alpha" and "additive" are not different shaders or different colours — they are different values of `srcFactor`/`dstFactor`:
+
+| | colour srcFactor | colour dstFactor | result |
+|---|---|---|---|
+| Alpha | `SrcAlpha` | `OneMinusSrcAlpha` | `C·a + dst·(1-a)` — the source *replaces* in proportion to coverage |
+| Additive | `SrcAlpha` | `One` | `C·a + dst` — the destination survives whole, so light accumulates |
+| Premultiplied | `One` | `OneMinusSrcAlpha` | `C + dst·(1-a)` — for a source already scaled by its coverage (see 12) |
+
+**Why it cannot be done in the shader.** The fragment shader cannot read the pixel it is about to write — core WebGPU exposes no framebuffer fetch. Blending is the hardware's answer to that, and it is why the operation is a fixed menu of factors rather than arbitrary code.
+
+**Why it cannot be set on a pass.** There is no `glBlendFunc` here. `BlendState` is a field of `ColorTargetState`, which lives inside `RenderPipelineDescriptor`, and a pipeline is immutable once created. The render pass encoder has `setBlendConstant`, but that only supplies the constant operand for `BlendFactor::Constant` — not the equation, not the factors.
+
+**So a second blend mode is a second pipeline object, and that is the whole reason 12 exists.** Before it there was exactly one pipeline, which meant the renderer could only ever draw with one blend equation. A glow was not unimplemented; it was inexpressible.
+
+**And it is why the batch splits where it does.** Quads accumulate into one buffer and are drawn as runs of consecutive quads that share everything the GPU must have bound. A run already broke on texture (a different bind group) and camera (a different dynamic offset). Blend joins them, because a pipeline cannot change inside a draw. Generalised: **a draw call breaks exactly where immutable state changes**, which means the list of things that force a break *is* the renderer's cost model.
+
+### Three things this only taught by being used
+
+- **A state change costs nothing when it coincides with a break you were already paying for.** Switching blend around the bullets, and again around the plume, added **zero** extra draw runs — both use their own texture, so the run was breaking at exactly that point anyway. The intuition "state changes are expensive, minimise them" is too coarse; what matters is whether a change lands on an existing boundary.
+- **Blend mode changes what "too bright" means.** `Bullet::render` ramps its brightness to 1.6. Under alpha that was invisible: the head quad has alpha 1, so it replaced everything under it and the excess merely clamped on write. Under additive nothing is replaced, five overlapping quads summed to **4×**, every channel clipped, and the sprite vanished into a featureless white blob. Values above 1 are latent under one blend equation and load-bearing under another.
+- **Additive is invisible on the wrong art.** Measured across this game's textures: the backgrounds and sprites are 0% partially transparent — every pixel fully opaque or fully clear. A clear pixel contributes nothing under either mode and an opaque one either replaces or adds, so re-blending existing art changed almost nothing. Additive earns its place on *soft-edged, overlapping* content over a dark ground. That is why the plume's glow is generated as a radial gradient rather than reusing a sprite: the effect needs art shaped for it.
+
+### One pipeline per (format, blend), not per effect
+
+The intuition that each new effect needs its own pipeline is wrong, and worth correcting explicitly. The cache key is `(target format, blend mode)` and nothing else, so every additive effect in the game shares **one** pipeline object:
+
+| effect | blend | pipeline |
+|---|---|---|
+| engine plume | additive | variant #2 |
+| a shield bubble | additive | variant #2 — the same object |
+| additive projectiles | additive | variant #2 — the same object |
+| a fade-out cloak | alpha | variant #1 — the existing one |
+| ships, background, HUD | alpha | variant #1 |
+
+What differs between those effects is which texture is bound and what vertex colours are pushed. Neither is pipeline state: one is a bind group, the other is vertex data. Ten additive effects cost one pipeline.
+
+What *does* scale with the number of effects is **run breaks** — every alpha → additive → alpha transition in the draw order splits a run. Which argues for sorting draws by blend mode to group them, except that effects almost always bring their own texture, so the run was breaking there anyway. Measured twice now, and both times the grouping would have bought nothing.
+
+What genuinely needs a new pipeline is a change to something else the descriptor bakes: a different target format (N9), a sample count (N6), a depth state (N7), a vertex layout (N5) — or **a different shader**. The key deliberately omits the shader because there is only one today; the first effect that needs its own WGSL is what extends the key.
+
+**Where the plume put that to work:** four gradient quads behind the hull, sizes and intensities tapering, summing into a hot core — which no single quad can do, because a single quad has one colour per pixel and this needs an accumulation. Its colours are deliberately below 1 per channel, which is the bullets' lesson applied.
+
+**LearnWebGPU:** no chapter. The guide sets a blend state once in [Hello Triangle](https://eliemichel.github.io/LearnWebGPU/basic-3d-rendering/hello-triangle.html) and never needs a second one, so the consequences for batching never come up.
+
+**Code:** `createQuadPipelineVariant`'s `switch (key.blend)` · the run boundary in `flushBatch` · `include/gameLayer/shipThruster.h` · `src/gameLayer/shipThruster.cpp`
+
+**Commit:** `fce9991`
 
 ---
 

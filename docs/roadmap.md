@@ -481,11 +481,27 @@ which side it falls on.
 where it wants light to add — which is a gameplay-side judgement about which
 sprites those are, not render work.
 
-**F2. A post-process chain on the world target.** *(library mechanism, game policy — the split R3 makes)* Milestone 10 built the
+**F2. A post-process chain on the world target.** *(library mechanism, game policy — the split R3 made)* Milestone 10 built the
 machinery and then used it twice (render scale, HUD shake). A damage vignette, a
 chromatic-aberration hit flash, a warp on death — each is a different *shader*
 over the same vertex format and the same attachment. It separates pipeline from
 shader from target in a way a single-shader renderer cannot.
+
+**The wanted feature that lands here: a refraction cloak.** Not the fade-out
+kind — that is one float of vertex alpha on the existing pipeline and needs
+nothing from this item — but the shimmer, where the background *warps* behind
+the ship rather than showing through it. That has to sample the scene behind
+the ship, which means the world goes to a render target and a shader offsets
+its UVs. A blend mode cannot do it: blending combines a fragment with the
+destination, it cannot *read* the destination and move it, and core WebGPU has
+no framebuffer fetch (outline 14).
+
+So this item's real prerequisite is naming it: **the pipeline key has to grow a
+shader.** Today it is `(format, blend)` because there is one shader. The first
+effect with its own WGSL is what extends it, and a refraction cloak is that
+effect. Small change — the key is a two-field struct with a linear scan behind
+it — but it should be a deliberate one rather than something discovered while
+writing a shader.
 
 **F3. Parallax background layers through the camera stack.** *(library: the camera behaviour from R5; game: which layers and at what depth)* Milestone 6b built
 dynamic uniform offsets and `pushCamera` / `popCamera`; the game uses one world

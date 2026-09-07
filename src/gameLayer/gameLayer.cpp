@@ -9,6 +9,7 @@
 #include "imfilebrowser.h"
 #include <render/wgpu2d.h>
 #include <hud.h>
+#include <shipThruster.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
@@ -99,6 +100,7 @@ bool initGame()
 	bulletsAtlas = wgpu2d::TextureAtlasPadding(3, 2, bulletsTexture.GetSize().x, bulletsTexture.GetSize().y);
 
 	if (!hud::init()) { return false; }
+	if (!thruster::init()) { return false; }
 
 	shootSound = LoadSound(RESOURCES_PATH "shoot.flac");
 	if (shootSound.stream.buffer == nullptr)
@@ -199,6 +201,8 @@ bool gameLogic(float deltaTime)
 	{
 		move.x = 1;
 	}
+
+	const float playerThrottle = (move.x != 0 || move.y != 0) ? 1.f : 0.f;
 
 	if (move.x != 0 || move.y != 0)
 	{
@@ -409,6 +413,10 @@ bool gameLogic(float deltaTime)
 
 #pragma region render ship
 
+	// Before the hull, so the hull covers the end of the plume inside it.
+	thruster::draw(renderer, data.playerPos, shipSize, mouseDirection,
+		playerThrottle, deltaTime * gameSpeedMultiplier());
+
 	renderSpaceShip(renderer, data.playerPos, shipSize,
 		spaceShipsTexture, spaceShipsAtlas.get(3, 0), mouseDirection);
 
@@ -545,4 +553,5 @@ bool gameLogic(float deltaTime)
 void closeGame()
 {
 	hud::cleanup();
+	thruster::cleanup();
 }
