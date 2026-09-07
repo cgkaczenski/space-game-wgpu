@@ -6,8 +6,8 @@ that exist; this file shrinks.** An item is deleted from here when it lands, and
 a block describing it appears in the outline in its place. Nothing on this page
 is built.
 
-Every item says where it **lands**: *library* (`src/render/`), *engine*
-(`src/engine/`), *game* (`src/gameLayer/`) or *app*
+Every item says where it **lands**: _library_ (`src/render/`), _engine_
+(`src/engine/`), _game_ (`src/gameLayer/`) or _app_
 (`src/platform/`). See **The shape features take** below for what each one
 means and what the test is.
 
@@ -53,12 +53,12 @@ policy is a struct of constants plus the wiring that composes it. The split has
 already turned up independently three times, which is why it is written down as
 a rule rather than proposed as a scheme:
 
-| Feature | Mechanism (general) | Policy (this game) | Item |
-|---|---|---|---|
-| HUD shake | flush a layer through a target, draw it back transformed | decay 10/s, 9px, 19 and 24 Hz, 1.4°, triggered by damage | R3 / R4 |
-| Camera | the transform and its slots, **and `follow` as a function** | the *call*: `follow(data.playerPos, 550, 0, 0, w, h)` | R5 |
-| Collision | `ICollisionSystem`, overlap dispatch, `Hitbox` variant | `shipHitbox()` — *ships* | R7 |
-| Movement | input-independent integrator with a momentum option | `playerMoveSpeed = 2000.f`, WASD | R8 |
+| Feature   | Mechanism (general)                                         | Policy (this game)                                       | Item    |
+| --------- | ----------------------------------------------------------- | -------------------------------------------------------- | ------- |
+| HUD shake | flush a layer through a target, draw it back transformed    | decay 10/s, 9px, 19 and 24 Hz, 1.4°, triggered by damage | R3 / R4 |
+| Camera    | the transform and its slots, **and `follow` as a function** | the _call_: `follow(data.playerPos, 550, 0, 0, w, h)`    | R5      |
+| Collision | `ICollisionSystem`, overlap dispatch, `Hitbox` variant      | `shipHitbox()` — _ships_                                 | R7      |
+| Movement  | input-independent integrator with a momentum option         | `playerMoveSpeed = 2000.f`, WASD                         | R8      |
 
 ### A mechanism is not always one home
 
@@ -75,10 +75,10 @@ So the rule needs one more turn of the screw: **a mechanism can span two
 homes.** Both of the features this file spends the most words on are three
 pieces, not two.
 
-| | `render/` | `engine/` | `gameLayer/` |
-|---|---|---|---|
-| **HUD** | flush a layer through a target, draw it back transformed | layout maths — already `glui`, and already out of tree | this health bar, these textures, `xLeftPerc(0.65)`, `fill = data.health`, decay 10/s, the damage trigger |
-| **Camera** | position, zoom, rotation, `viewProj`, the dynamic-offset slots, `pushCamera`/`popCamera` | `follow` — chase a point with speed / min / max | `follow(data.playerPos, 550, 0, 0, w, h)` |
+|            | `render/`                                                                                | `engine/`                                              | `gameLayer/`                                                                                             |
+| ---------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| **HUD**    | flush a layer through a target, draw it back transformed                                 | layout maths — already `glui`, and already out of tree | this health bar, these textures, `xLeftPerc(0.65)`, `fill = data.health`, decay 10/s, the damage trigger |
+| **Camera** | position, zoom, rotation, `viewProj`, the dynamic-offset slots, `pushCamera`/`popCamera` | `follow` — chase a point with speed / min / max        | `follow(data.playerPos, 550, 0, 0, w, h)`                                                                |
 
 Two things follow from that, and both are cautions against inventing work:
 
@@ -106,12 +106,12 @@ drawing, so `render/` is wrong, and burying them in `gameLayer/` welds them to
 this game, which is the thing the whole exercise is trying to avoid. That is why
 `src/engine/` exists.
 
-| Home | Holds | Travels? |
-|---|---|---|
-| `src/render/` | `wgpu2d` — the drawing library | yes — a CMake target since R6 |
-| `src/engine/` | collision and camera behaviours today; movement, inventory, combat, AI next | maybe, later |
-| `src/gameLayer/` | ships, enemy types, tuning numbers, HUD content, composition | no — this *is* the game |
-| `src/platform/` | window, input backend, loop, ImGui wiring | no |
+| Home             | Holds                                                                       | Travels?                      |
+| ---------------- | --------------------------------------------------------------------------- | ----------------------------- |
+| `src/render/`    | `wgpu2d` — the drawing library                                              | yes — a CMake target since R6 |
+| `src/engine/`    | collision and camera behaviours today; movement, inventory, combat, AI next | maybe, later                  |
+| `src/gameLayer/` | ships, enemy types, tuning numbers, HUD content, composition                | no — this _is_ the game       |
+| `src/platform/`  | window, input backend, loop, ImGui wiring                                   | no                            |
 
 The test for `engine/` is not "is this generic code." It is **"could a different
 game use this without editing it?"** An integrator with a momentum option
@@ -128,7 +128,7 @@ that now:
 
 - **In-game UI is two things.** Layout and widgets are engine — `glui` is
   already exactly this, reduced to `Frame` and `Box` when its gl2d half was
-  dropped. *Which* screens this game has is `gameLayer`. ImGui debug panels are
+  dropped. _Which_ screens this game has is `gameLayer`. ImGui debug panels are
   neither: they are app.
 - **Combat is mostly policy.** The general part is thin — apply damage, resolve
   a hit, handle death. Damage values, what a hit does, who may hit whom: game.
@@ -196,8 +196,8 @@ So the rule that makes it a feature: **the integrator must not know where the
 intent came from.** Once that holds, the player and the enemy are both
 consumers, and momentum is a field in an options struct rather than a rewrite.
 
-Fix while here: `gameSpeedMultiplier()` is applied *inline* at the player's
-movement site but *passed as an argument* into `Enemy::update` and
+Fix while here: `gameSpeedMultiplier()` is applied _inline_ at the player's
+movement site but _passed as an argument_ into `Enemy::update` and
 `Bullet::update`. Two conventions for one concept, and the integrator is where
 they should become one.
 
@@ -224,14 +224,14 @@ handles, two atlases, a `Sound`, and five debug flags. This is what will fight
 every extraction on this page: **a feature cannot be self-contained while its
 state is a global in another translation unit.**
 
-The real question inside it is *who owns assets*. Textures are loaded in
+The real question inside it is _who owns assets_. Textures are loaded in
 `initGame` and then passed by reference into `Enemy::render`. That is the same
 unanswered question as "who owns the device" in R6, one layer up, and it wants
 the same kind of answer rather than another set of globals.
 
 Related and currently unanswered: `restartGame()` resets `data` and nothing
 else — not the camera, not the shake, not the debug flags. As features acquire
-state, *what restart means* needs a real definition.
+state, _what restart means_ needs a real definition.
 
 ### R11. Each feature owns its debug UI
 
@@ -384,7 +384,7 @@ two textures, which is the clearest possible demonstration of what a resolve is.
 
 **Concepts:** depth attachment, `depthCompare`, `depthWriteEnabled`, the depth
 format, and the reason a 2D renderer would want any of it: a per-sprite layer
-value lets draws be reordered by *texture* without changing what the player
+value lets draws be reordered by _texture_ without changing what the player
 sees, which attacks the run splitting in `flushBatch` directly.
 
 **LearnWebGPU:** [Depth buffer](https://eliemichel.github.io/LearnWebGPU/basic-3d-rendering/3d-meshes/depth-buffer.html)
@@ -475,25 +475,25 @@ from a new angle, and none of them needs a chapter that is not already read.
 These are where the library/game line gets tested in practice, so each says
 which side it falls on.
 
-**F1. Additive bullets and explosions.** *(game)* Mostly done: R2 built
+**F1. Additive bullets and explosions.** _(game)_ Mostly done: R2 built
 `BlendMode::Additive`, the pipeline variant and the run splitting, and outline
 12 records what that taught. What remains is the game calling `setBlendMode`
 where it wants light to add — which is a gameplay-side judgement about which
 sprites those are, not render work.
 
-**F2. A post-process chain on the world target.** *(library mechanism, game policy — the split R3 made)* Milestone 10 built the
+**F2. A post-process chain on the world target.** _(library mechanism, game policy — the split R3 made)_ Milestone 10 built the
 machinery and then used it twice (render scale, HUD shake). A damage vignette, a
-chromatic-aberration hit flash, a warp on death — each is a different *shader*
+chromatic-aberration hit flash, a warp on death — each is a different _shader_
 over the same vertex format and the same attachment. It separates pipeline from
 shader from target in a way a single-shader renderer cannot.
 
 **The wanted feature that lands here: a refraction cloak.** Not the fade-out
 kind — that is one float of vertex alpha on the existing pipeline and needs
-nothing from this item — but the shimmer, where the background *warps* behind
+nothing from this item — but the shimmer, where the background _warps_ behind
 the ship rather than showing through it. That has to sample the scene behind
 the ship, which means the world goes to a render target and a shader offsets
 its UVs. A blend mode cannot do it: blending combines a fragment with the
-destination, it cannot *read* the destination and move it, and core WebGPU has
+destination, it cannot _read_ the destination and move it, and core WebGPU has
 no framebuffer fetch (outline 14).
 
 So this item's real prerequisite is naming it: **the pipeline key has to grow a
@@ -503,7 +503,7 @@ effect. Small change — the key is a two-field struct with a linear scan behind
 it — but it should be a deliberate one rather than something discovered while
 writing a shader.
 
-**F3. Parallax background layers through the camera stack.** *(library: the camera behaviour from R5; game: which layers and at what depth)* Milestone 6b built
+**F3. Parallax background layers through the camera stack.** _(library: the camera behaviour from R5; game: which layers and at what depth)_ Milestone 6b built
 dynamic uniform offsets and `pushCamera` / `popCamera`; the game uses one world
 camera and one HUD camera. Three layers at 0.3x / 0.6x / 1.0x needs no new API
 at all, but exercises the slot stride, the run splitting and `getViewRect` under
@@ -511,12 +511,52 @@ real pressure — and it is the cheapest thing here that makes the game look
 better. It is also the first real consumer of R5, and the honest test of
 whether that camera design is general or just rearranged.
 
-**F4. Present mode from the debug window.** *(library setting, app control)* `configureSurface` picks one.
+**F4. Present mode from the debug window.** _(library setting, app control)_ `configureSurface` picks one.
 Switching Fifo / Immediate / Mailbox at runtime and watching what it does to
 N2's numbers is a few lines, and it is the clearest way to learn what the
 surface actually is.
 
-**F5. Capstone: a GPU-driven starfield.** *(library: the compute-driven instanced particle system; game: that they are stars)* Star positions in a storage buffer,
+**F6. Effect shaders, with parameters.** _(library)_ The renderer can draw a
+textured quad tinted by one colour. That is the whole vocabulary: `quad.wgsl`
+is `in.color * textureSample(...)`, and the only per-quad channel is four
+floats of vertex colour. Everything the shield could become runs into that wall
+at once, so this is one item rather than several.
+
+**What the shield wants, and what each thing actually needs:**
+
+| want                                     | needs                                                         |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| look _spherical_ rather than like a ring | **nothing new** — see below                                   |
+| a specular highlight that tracks a light | nothing new: rotate the quad, the highlight rotates with it   |
+| ripple outward from an impact point      | a shader + per-draw parameters (point, elapsed)               |
+| several overlapping ripples              | the above, with an array — a uniform or storage buffer        |
+| a dissolve / shatter on depletion        | a shader + one threshold parameter + a noise texture          |
+| fragments flying apart                   | many quads with per-quad state — N5, or F5's machinery        |
+| refraction, heat haze                    | F2: it has to _read_ the scene, so it needs the render target |
+
+**The rounded look needs no renderer change at all, and is worth doing first.**
+Fresnel — the reason a bubble looks like a sphere — is, for a screen-facing
+sphere, a pure function of distance from the centre: the normal tilts as
+`Nz = sqrt(1 - r²)` and the rim term is `(1 - Nz)^p`. A radial texture already
+stores exactly "a function of distance from the centre", so a spherical-looking
+bubble is a change to the texture generator in `shipShield.cpp`, not to the
+pipeline. The same is true of a baked specular highlight, and rotating the quad
+rotates the highlight for free.
+
+**What actually needs building is two capabilities:**
+
+1. **A shader per effect.** The pipeline key is `(format, blend)` because there
+   is one shader. It grows a shader entry, and effects bring their own WGSL.
+   F2 needs this too — it is the shared prerequisite, and whichever of the two
+   is done first should build it.
+2. **A per-draw parameter channel.** An impact point and an elapsed time are
+   not a colour, and smuggling them through the vertex colour would cost the
+   colour. Two honest options, and they are not new machinery: per-instance
+   attributes (N5 — this is what instance data _is_), or a dynamic-offset
+   uniform slot, which is exactly what milestone 6b already built for the
+   camera. Either way a time uniform falls out for free.
+
+**F5. Capstone: a GPU-driven starfield.** _(library: the compute-driven instanced particle system; game: that they are stars)_ Star positions in a storage buffer,
 advanced each frame by a compute shader, drawn as instanced quads that read that
 buffer. Combines N4, N5 and storage buffers — none of which the port has — into
 one thing the game visibly gains, replacing a tiled texture with a particle

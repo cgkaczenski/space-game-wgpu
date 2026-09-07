@@ -10,6 +10,7 @@
 #include <render/wgpu2d.h>
 #include <hud.h>
 #include <shipThruster.h>
+#include <shipShield.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
@@ -101,6 +102,7 @@ bool initGame()
 
 	if (!hud::init()) { return false; }
 	if (!thruster::init()) { return false; }
+	if (!shield::init()) { return false; }
 
 	shootSound = LoadSound(RESOURCES_PATH "shoot.flac");
 	if (shootSound.stream.buffer == nullptr)
@@ -321,7 +323,8 @@ bool gameLogic(float deltaTime)
 					game::shipHitbox(data.playerPos, shipSize)))
 				{
 					data.health -= 0.1;
-					hud::onDamage(); // shake the HUD on the hit
+					hud::onDamage();  // shake the HUD on the hit
+					shield::hit();    // and flare the bubble, if it is up
 
 					data.bullets.erase(data.bullets.begin() + i);
 					i--;
@@ -419,6 +422,9 @@ bool gameLogic(float deltaTime)
 
 	renderSpaceShip(renderer, data.playerPos, shipSize,
 		spaceShipsTexture, spaceShipsAtlas.get(3, 0), mouseDirection);
+
+	// After the hull, so the rim reads as being in front of it.
+	shield::draw(renderer, data.playerPos, shipSize, deltaTime * gameSpeedMultiplier());
 
 #pragma endregion
 
@@ -533,6 +539,8 @@ bool gameLogic(float deltaTime)
 
 	ImGui::Checkbox("Hitboxes", &showHitboxes);
 
+	shield::debugUi(); // the feature owns its own controls (roadmap R11)
+
 	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
 	{
 		if (!soundEffectsEnabled)
@@ -554,4 +562,5 @@ void closeGame()
 {
 	hud::cleanup();
 	thruster::cleanup();
+	shield::cleanup();
 }
