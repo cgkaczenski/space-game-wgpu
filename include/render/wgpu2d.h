@@ -1,12 +1,15 @@
 #pragma once
 
-// wgpu2d: the WebGPU renderer behind gl2d's public shape. Only the subset
-// the game calls is here. Names, parameter order, and defaults match
-// gl2d so the game files could switch by include and namespace.
+// wgpu2d: the 2D drawing library. The game includes this header and nothing
+// else from render/. The GPU context (instance, device, surface, frame) lives
+// in render/wgpuContext.h and is driven by the platform loop.
 //
-// One Renderer2D instance is supported (the game has one). The GPU
-// context itself (instance, device, surface, frame) lives in
-// render/wgpuContext.h and is driven by the platform loop.
+// It started as gl2d's signatures so the game could switch by include and
+// namespace. New drawing capabilities belong here too — BlendMode, LayerEffect
+// — rather than in sibling headers. Matching gl2d is how the port landed, not
+// a ceiling on the API.
+//
+// One Renderer2D instance is supported (the game has one).
 
 #include <glm/glm.hpp>
 #include <cstddef>
@@ -22,6 +25,8 @@ namespace wgpu2d
 
 	using Color4f = glm::vec4;
 	using Rect = glm::vec4; // x, y, width, height in world pixels, y down
+
+	struct Renderer2D; // LayerEffect::flush takes one; the full type is below
 
 	// An addition to gl2d's shape, not a mirror of it: gl2d had one blend
 	// state for the whole program. Blending is baked into a render pipeline,
@@ -160,6 +165,61 @@ namespace wgpu2d
 		// BlendMode::Alpha the coverage is applied a second time and a
 		// translucent target comes out darker than the same draw made
 		// directly. Opaque targets round-trip identically either way.
+	};
+
+	// How a composed layer is drawn back. Screen-space pixels, and degrees
+	// about the layer's centre.
+	//
+	// Deliberately just these two. A tint, a scale and a per-effect shader all
+	// have plausible futures, and adding a field when one arrives is a few
+	// lines; a transform designed around three imagined callers is how the
+	// wrong abstraction gets built.
+	struct LayerTransform
+	{
+		glm::vec2 offsetPixels = {};
+		float rotationDegrees = 0.f;
+
+		// Exact comparison on purpose: a caller that settles its animation to
+		// exactly zero at rest gets LayerEffect's identity bypass, and one
+		// that decays asymptotically never does. That is a real property to
+		// design to, not a float-equality bug.
+		bool isIdentity() const
+		{
+			return offsetPixels.x == 0.f && offsetPixels.y == 0.f && rotationDegrees == 0.f;
+		}
+	};
+
+	// Flush everything recorded so far through an offscreen target, then draw
+	// that target back under a transform. The caller owns the transform
+	// (offset, rotation, when it is identity). This is the mechanism; what
+	// the layer is, and why it moves, is the caller's.
+	//
+	// Why the round trip is worth it: a composed layer can be moved and
+	// rotated as one image. Nudging each quad separately cannot rotate a
+	// group about a shared centre without shearing the layout apart.
+	struct LayerEffect
+	{
+		// Flushes everything the renderer has recorded since its last flush
+		// through the target, then records one quad drawing that target back
+		// under `transform`. The caller's next flush is what puts it on screen,
+		// on top of whatever was flushed before it.
+		//
+		// `width` and `height` are the framebuffer size -- the same values the
+		// game passes to updateWindowMetrics -- and the target follows them.
+		//
+		// An identity transform skips the target entirely and flushes straight
+		// to the screen. That is not an optimisation the caller has to
+		// remember: it keeps the untransformed case pixel-exact, since a round
+		// trip through a same-size target is only byte-identical for opaque
+		// pixels.
+		void flush(Renderer2D &renderer, int width, int height, const LayerTransform &transform);
+
+		// Releases the target. Safe to call twice, and safe never to call.
+		void cleanup();
+
+		// The composed layer. Screen-sized, resized with the window so the
+		// composite is 1:1.
+		FrameBuffer target;
 	};
 
 	// gl2d's Camera. Rotation is accepted but not applied (the game never sets it).

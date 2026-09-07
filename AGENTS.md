@@ -74,19 +74,22 @@ error. Until the target split lands (roadmap R6), hold the line by hand.
   then, new systems go in `gameLayer/` with the mechanism and the policy in
   separate files, so the move is a move.
 
-  `hudShake.cpp` is the standing counter-example: a mechanism worth keeping in
-  the library, named and tuned for one game's HUD. It is being split (R3/R4).
+  `hudShake.cpp` was the standing counter-example: a mechanism worth keeping in
+  the library, named and tuned for one game's HUD. R3/R4 split it — `LayerEffect`
+  in `wgpu2d` is the mechanism, `gameLayer/hud` is the policy.
 - **A feature is a mechanism plus a policy.** The mechanism is parameterized and
   knows nothing about this game; the policy is a struct of constants and the
-  wiring. They go in different files, and usually different homes. `hudShake`,
-  `Camera`, `collisionSystem` and movement are all instances — see **The shape
-  features take** in `docs/roadmap.md`.
+  wiring. They go in different files, and usually different homes. `LayerEffect`
+  / HUD shake, `Camera`, `collisionSystem` and movement are all instances — see
+  **The shape features take** in `docs/roadmap.md`.
 - **Features are self-contained or they are not features.** A HUD element, a
   camera behaviour or a post-process effect should be a pair of files another
   project can take or leave — not a block inlined in `gameLogic`.
 - **The game includes `render/wgpu2d.h` and nothing else from `render/`.**
+  New drawing capabilities (`BlendMode`, `LayerEffect`) go in that header.
+  Matching gl2d is how the port landed, not a ceiling on the API.
   `wgpuContext.h` belongs to the platform layer; `wgpuFrame.h` is internal to
-  the renderer.
+  the renderer; `wgpuImgui.h` / `wgpuMetalLayer.h` are app.
 - Not everything here is meant to travel. Say which of the three homes a change
   lands in before writing it, and if it lands in `render/`, say what makes it
   general.
@@ -135,13 +138,15 @@ out of the commit, and remove it when done.
 
 | File | Role |
 |---|---|
-| `include/render/wgpu2d.h` | gl2d's public shape, WebGPU behind it; the include game files use |
+| `include/render/wgpu2d.h` | the drawing library: sprites, cameras, targets, layer effects |
 | `include/render/wgpuContext.h` | what the platform layer sees: init / begin / end / shutdown, no WebGPU types |
 | `include/render/wgpuFrame.h` | what other render TUs see: device, queue, pass, texture bind groups |
 | `src/render/wgpuContext.cpp` | instance through batch flush |
+| `src/render/layerEffect.cpp` | `LayerEffect` implementation |
 | `src/render/wgpuImgui.cpp` | the hand-written ImGui renderer backend |
 | `src/platform/glfwMain.cpp` | window, frame bracket, ImGui wiring |
 
-`wgpu2d` mirrors gl2d's **signatures** name for name. It does not mirror gl2d's
-implementation: vertices stay in world pixels and the camera is a matrix on the
+`wgpu2d` started by mirroring gl2d's signatures so the game could switch by
+include. New drawing APIs belong in the same header; implementation can stay in
+its own `.cpp`. Vertices stay in world pixels and the camera is a matrix on the
 GPU.

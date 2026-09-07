@@ -4,7 +4,9 @@ A table of contents for the render port. Each section is one concept cluster: Le
 
 The game-facing API is `wgpu2d` (`include/render/wgpu2d.h`). Almost all GPU work lives in `src/render/wgpuContext.cpp`, with the ImGui half in `src/render/wgpuImgui.cpp`. The GLFW loop in `src/platform/glfwMain.cpp` only owns init / begin / end / ImGui.
 
-**The rule the port follows:** mirror gl2d's *signatures* name for name, never its implementation. gl2d transforms every corner on the CPU and hands the shader NDC; here the vertex buffer keeps world pixels and the camera is a matrix on the GPU. That is why the game files changed by an include and a namespace only.
+**The rule the port followed:** mirror gl2d's *signatures* name for name, never its implementation. gl2d transforms every corner on the CPU and hands the shader NDC; here the vertex buffer keeps world pixels and the camera is a matrix on the GPU. That is why the game files changed by an include and a namespace only.
+
+*That was a port tactic and it finished its job at 7, once the game was running on `wgpu2d`. It was never a ceiling on what a 2D drawing library may grow: `BlendMode` in 12 was the first addition past it, `LayerEffect` the second. New drawing capabilities go in `wgpu2d.h` rather than beside it, because one public header is a boundary the build can enforce and a second game-facing render header would need an exception — which is how `hudShake.cpp` came to be a general mechanism in the library with one game's numbers in it.*
 
 Guide: [Learn WebGPU for C++](https://eliemichel.github.io/LearnWebGPU/index.html). Use the **With webgpu.hpp** tab. Our wrapper is compiled in one TU: `src/render/webgpuImpl.cpp`.
 
@@ -138,7 +140,7 @@ Each block is: **concepts → LearnWebGPU chapters → where it landed → commi
 
 ## 7. Atlas, padded loader, mipmaps, game wiring
 
-**Concepts:** Atlas UV math (CPU only). Pixel padding so filtering does not bleed cells. **CPU mipmaps** (WebGPU has no `glGenerateMipmap`; the guide’s GPU version is compute). Game files switched onto `wgpu2d` under gl2d's signatures.
+**Concepts:** Atlas UV math (CPU only). Pixel padding so filtering does not bleed cells. **CPU mipmaps** (WebGPU has no `glGenerateMipmap`; the guide’s GPU version is compute). Game files switched onto `wgpu2d` under gl2d's signatures. *(This is where the signature freeze stopped earning its keep — the switch is what it existed for. See the note at the top.)*
 
 **LearnWebGPU:** [Loading from file](https://eliemichel.github.io/LearnWebGPU/basic-3d-rendering/texturing/loading-from-file.html) (stb_image) · [Mipmap Generation](https://eliemichel.github.io/LearnWebGPU/basic-compute/image-processing/mipmap-generation.html) (CPU half of that chapter, not the compute pass)
 

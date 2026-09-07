@@ -7,9 +7,8 @@
 #include <iostream>
 #include <sstream>
 #include "imfilebrowser.h"
-#include <glui/glui.h>      // layout only (Frame, Box)
 #include <render/wgpu2d.h>
-#include <render/hudShake.h>
+#include <hud.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
@@ -50,9 +49,6 @@ wgpu2d::TextureAtlasPadding bulletsAtlas;
 wgpu2d::Texture backgroundTexture[BACKGROUNDS];
 TiledRenderer tiledRenderer[BACKGROUNDS];
 
-
-wgpu2d::Texture healthBar;
-wgpu2d::Texture health;
 
 Sound shootSound;
 bool soundEffectsEnabled = false;
@@ -97,8 +93,7 @@ bool initGame()
 	(RESOURCES_PATH "spaceShip/stitchedFiles/projectiles.png", 500, true);
 	bulletsAtlas = wgpu2d::TextureAtlasPadding(3, 2, bulletsTexture.GetSize().x, bulletsTexture.GetSize().y);
 
-	healthBar.loadFromFile(RESOURCES_PATH "healthBar.png", true);
-	health.loadFromFile(RESOURCES_PATH "health.png", true);
+	if (!hud::init()) { return false; }
 
 	shootSound = LoadSound(RESOURCES_PATH "shoot.flac");
 	if (shootSound.stream.buffer == nullptr)
@@ -316,7 +311,7 @@ bool gameLogic(float deltaTime)
 					collision::shipHitbox(data.playerPos, shipSize)))
 				{
 					data.health -= 0.1;
-					render::hudShakeTrigger(); // shake the HUD on the hit
+					hud::onDamage(); // shake the HUD on the hit
 
 					data.bullets.erase(data.bullets.begin() + i);
 					i--;
@@ -489,31 +484,7 @@ bool gameLogic(float deltaTime)
 
 #pragma region ui
 
-	renderer.flush(); // the world, before the HUD goes through the shake target
-
-	renderer.pushCamera();
-	{
-
-		glui::Frame f({0,0, w, h});
-
-		glui::Box healthBox = glui::Box().xLeftPerc(0.65).yTopPerc(0.1).
-			xDimensionPercentage(0.3).yAspectRatio(1.f/8.f);
-
-		renderer.renderRectangle(healthBox, healthBar);
-
-		glm::vec4 newRect = healthBox();
-		newRect.z *= data.health;
-
-		glm::vec4 textCoords = {0,1,1,0};
-		textCoords.z *= data.health;
-
-		renderer.renderRectangle(newRect, health, Colors_White, {}, {}, 
-			textCoords);
-
-	}
-	renderer.popCamera();
-
-	render::hudShakeFlush(renderer, w, h); // HUD -> shake target -> one quad
+	hud::draw(renderer, data.health, w, h); // flushes the world, then the HUD
 
 #pragma endregion
 
@@ -567,7 +538,5 @@ bool gameLogic(float deltaTime)
 //This function might not be be called if the program is forced closed
 void closeGame()
 {
-
-
-
+	hud::cleanup();
 }

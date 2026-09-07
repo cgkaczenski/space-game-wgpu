@@ -1,9 +1,9 @@
-#include <render/layerEffect.h>
+#include <render/wgpu2d.h>
 
-namespace render
+namespace wgpu2d
 {
 
-void LayerEffect::flush(wgpu2d::Renderer2D &renderer, int width, int height,
+void LayerEffect::flush(Renderer2D &renderer, int width, int height,
 	const LayerTransform &transform)
 {
 	// No window, or nothing to transform: straight to the screen. Both cases
@@ -39,10 +39,10 @@ void LayerEffect::flush(wgpu2d::Renderer2D &renderer, int width, int height,
 	// Alpha would scale by coverage a second time and the layer would come out
 	// dark -- and only while the effect is active, which is the worst kind of
 	// bug to notice. See outline 12.
-	const wgpu2d::BlendMode previousBlend = renderer.currentBlendMode;
-	renderer.setBlendMode(wgpu2d::BlendMode::Premultiplied);
+	const BlendMode previousBlend = renderer.currentBlendMode;
+	renderer.setBlendMode(BlendMode::Premultiplied);
 	renderer.pushCamera();
-	const wgpu2d::Rect quad = {
+	const Rect quad = {
 		transform.offsetPixels.x, transform.offsetPixels.y, (float)width, (float)height };
 	renderer.renderRectangle(quad, target.texture, Colors_White, {}, transform.rotationDegrees);
 	renderer.popCamera();

@@ -25,10 +25,19 @@ covered.
 ## The standing goal: `wgpu2d` as a library
 
 `wgpu2d` should be liftable out of this repo the way
-[gl2d](https://github.com/meemknight/gl2d) is. It is closer than it looks — a
-survey of the current code found the inward direction already clean: nothing
-under `src/render/` includes anything from `src/gameLayer/`. What stands in the
-way is four specific things, not a general mess:
+[gl2d](https://github.com/meemknight/gl2d) is. **Liftable like gl2d, not
+frozen at gl2d.** Mirroring its signatures was a port tactic — it let the game
+files switch by include and namespace, and that job finished at milestone 7. It
+was never a ceiling on what a 2D drawing library may grow. `BlendMode` (12) was
+the first addition past it and `LayerEffect` (R3) the second; both live in
+`wgpu2d.h`, because one public header is a rule R6 can turn into a link error
+and a second game-facing render header would need an exception. Exceptions are
+how `hudShake.cpp` happened.
+
+It is closer than it looks — a survey of the current code found the inward
+direction already clean: nothing under `src/render/` includes anything from
+`src/gameLayer/`. What stands in the way is four specific things, not a general
+mess:
 
 1. **No target boundary.** `CMakeLists.txt` does `file(GLOB_RECURSE MY_SOURCES
    src/*.cpp)` into one executable. There is no wall, so nothing can be caught
@@ -36,8 +45,10 @@ way is four specific things, not a general mess:
 2. **The library reads the app's resource layout.** `RESOURCES_PATH
    "shaders/quad.wgsl"` (`wgpuContext.cpp:564`) and the same in
    `wgpuImgui.cpp:156`. A library has to carry its own shaders. → **R6**
-3. **A game effect lives in the library folder.** `render/hudShake.h` is the
-   only render header the game includes besides `wgpu2d.h`. → **R3** / **R4**
+3. ~~**A game effect lives in the library folder.**~~ **Done.** R3 split the
+   mechanism into `wgpu2d::LayerEffect` and R4 moved the policy to
+   `gameLayer/hud`. Every include from `gameLayer/` into `render/` is now
+   `render/wgpu2d.h`, which is the state R6 needs to enforce.
 4. **Who owns the device is unsettled.** `wgpuContext.h` takes a `GLFWwindow*`
    and owns instance, surface, device and the frame bracket. gl2d owns none of
    that — it is handed a live context. Deciding this is most of R6's design
@@ -230,11 +241,17 @@ design.
 
 **Lands in:** build
 
-`add_library(wgpu2d)` over `src/render/`, the game links it, and the four
+`add_library(wgpu2d)` over `src/render/`, the game links it, and the remaining
 blockers listed at the top get fixed in the process — shaders embedded rather
-than loaded from `RESOURCES_PATH`, `hudShake` gone (R3/R4), and the device
-ownership question answered. The payoff is that the boundary stops being a rule
+than loaded from `RESOURCES_PATH`, and the device ownership question answered.
+Blocker 3 is already gone. The payoff is that the boundary stops being a rule
 in `AGENTS.md` and becomes a link error.
+
+**What the target exports is `wgpu2d.h` and nothing else.** `wgpuContext.h` is
+the platform layer's, `wgpuFrame.h` is internal, and `wgpuImgui.h` /
+`wgpuMetalLayer.h` are app. That single public header is what makes the wall
+checkable rather than a convention, so a new drawing capability goes into it
+rather than beside it.
 
 Do it after R3–R5, not before: the split is easy once the things that cross the
 line have been moved, and painful while they still do.
