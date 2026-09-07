@@ -107,6 +107,44 @@ namespace wgpu2d
 		}
 	};
 
+	// gl2d's FrameBuffer: a texture the renderer draws into instead of the
+	// screen. `texture` is an ordinary handle, so the result is drawn back
+	// with renderRectangle like any sprite. In WebGPU there is no framebuffer
+	// object at all -- a render pass's color attachment is just a texture
+	// view -- so `fbo` is simply the texture's id, non-zero once created.
+	//
+	// The target's format is the surface's, because a pipeline may only draw
+	// into an attachment matching the format it was built for.
+	struct FrameBuffer
+	{
+		FrameBuffer() {};
+		explicit FrameBuffer(unsigned int w, unsigned int h) { create(w, h); };
+
+		unsigned int fbo = 0;
+		Texture texture = {};
+
+		// `pixelated` is an addition to gl2d's signature (nearest instead of
+		// linear filtering when the result is drawn back), for the
+		// pixel-perfect upscale case. Defaulted, so gl2d call sites compile.
+		void create(unsigned int w, unsigned int h, bool pixelated = false);
+		void resize(unsigned int w, unsigned int h);
+
+		// Releases the texture. Does not touch anything drawn into it.
+		void cleanup();
+
+		// Clears to transparent black. Immediate if a frame is open,
+		// otherwise applied when the target is next drawn into.
+		void clear();
+
+		// Note on translucency: colours here are straight (not
+		// premultiplied) alpha, so a partly transparent draw that goes into a
+		// target and is then composited on screen is multiplied by its
+		// coverage twice and comes out darker than the same draw made
+		// directly. Opaque draws round-trip exactly. Clear the target to an
+		// opaque colour, or keep translucent work on the screen pass, to
+		// avoid it.
+	};
+
 	// gl2d's Camera. Rotation is accepted but not applied (the game never sets it).
 	struct Camera
 	{
@@ -128,8 +166,11 @@ namespace wgpu2d
 		Renderer2D operator=(Renderer2D &other) = delete;
 		Renderer2D operator=(Renderer2D &&other) = delete;
 
-		// The GPU objects are owned by the context; this only reserves batch memory.
+		// The GPU objects are owned by the context; this only reserves batch
+		// memory and records the default target (gl2d's defaultFBO): 0 draws
+		// to the screen, a FrameBuffer's fbo draws into that texture.
 		void create(unsigned int fbo = 0, size_t quadCount = 1000);
+		unsigned int defaultFBO = 0;
 		void cleanup();
 
 		Camera currentCamera = {};
@@ -179,7 +220,12 @@ namespace wgpu2d
 
 		void setCamera(const Camera camera) { currentCamera = camera; }
 
-		// Uploads the accumulated quads and draws them into the current frame.
+		// Uploads the accumulated quads and draws them into the current frame,
+		// into defaultFBO.
 		void flush(bool clearDrawData = true);
+
+		// Same, but into the given render target instead. The camera
+		// projection uses the target's own size.
+		void flushFBO(FrameBuffer frameBuffer, bool clearDrawData = true);
 	};
 }

@@ -68,6 +68,16 @@ namespace
 		Buffer vertexBuffer = nullptr;
 		uint64_t vertexBufferCapacityBytes = 0;
 
+		// 10: how much of the vertex buffer and how many camera slots this
+		// frame has already used. A frame can flush more than once now (a
+		// render target, then the screen), and every draw in the frame reads
+		// these buffers as they are at submit time -- a second flush writing
+		// at offset 0 would silently rewrite what the first pass's draws
+		// point at. So each flush appends instead, and both reset at
+		// wgpuBeginFrame.
+		uint64_t vertexBufferUsedBytes = 0;
+		uint32_t cameraSlotsUsed = 0;
+
 		// 4: created once at init, shared by every texture. Two samplers:
 		// gl2d's "pixelated" (nearest) and its default (linear) filtering.
 		Sampler samplerPixelated = nullptr;
@@ -93,11 +103,49 @@ namespace
 		wgpu::Texture frameTexture = nullptr;
 		TextureView frameView = nullptr;
 		CommandEncoder frameEncoder = nullptr;
-		RenderPassEncoder framePass = nullptr; // begun lazily by the first flush
 		glm::vec4 clearColor = {0, 0, 0, 1};   // recorded by Renderer2D::clearScreen
+
+		// 10: a render pass belongs to one attachment, so the frame no longer
+		// has "the" pass: it has the pass for whichever target was drawn into
+		// last. Switching target ends the open pass and begins another.
+		// framePassTarget is a texture registry id, 0 for the surface.
+		RenderPassEncoder framePass = nullptr; // begun lazily by the first flush
+		uint32_t framePassTarget = 0;
+		bool surfaceCleared = false;     // the frame's first surface pass clears
+		bool scaledCleared = false;      // likewise for the low-res stand-in
+
+		// 10: optional low-resolution rendering. WGPU_RENDER_SCALE=0.25 makes
+		// the game's draws land in a quarter-size target that is upscaled to
+		// the surface at the end of the frame (ImGui still draws to the
+		// surface at native size). The projection keeps using the surface's
+		// dimensions, so the framing, the HUD layout and the mouse mapping
+		// are untouched: only the rasterized resolution changes.
+		float renderScale = 1.f;
+		uint32_t scaledTargetId = 0;     // 0 when rendering straight to the surface
+		bool scaledTargetDrawn = false;  // has content this frame, needs compositing
+		bool compositing = false;        // guard while the composite draws
 	};
 
 	Context g;
+
+	// 10: defined below, needed by the pass bookkeeping above them.
+	void flushBatch(uint32_t target);
+	void compositeScaledTarget();
+
+	// The target a plain flush goes to: the low-res stand-in when that is
+	// enabled, otherwise the surface.
+	uint32_t resolveTarget(uint32_t target)
+	{
+		if (target == 0 && g.scaledTargetId) { return g.scaledTargetId; }
+		return target;
+	}
+
+	// The surface and the low-res stand-in are rebuilt every frame, so their
+	// first pass clears; a user's FrameBuffer keeps its contents like gl2d's.
+	bool isFrameTarget(uint32_t target)
+	{
+		return target == 0 || (g.scaledTargetId != 0 && target == g.scaledTargetId);
+	}
 
 	// One vertex as the GPU reads it: position, color, texture coordinate,
 	// back to back. The pipeline's vertex layout below must describe exactly this.
@@ -124,6 +172,13 @@ namespace
 		BindGroup bindGroup = nullptr; // group 0 for this texture + its sampler
 		int width = 0;
 		int height = 0;
+
+		// 10: render targets can also be drawn into. needsClear makes the
+		// next pass on it clear instead of load, which is how FrameBuffer's
+		// deferred clear and a freshly created (undefined) target work.
+		bool pixelated = false;
+		bool renderTarget = false;
+		bool needsClear = false;
 	};
 
 	std::vector<TextureEntry> textures;
@@ -765,6 +820,139 @@ namespace
 		return handle;
 	}
 
+	// 10: a texture with nothing in it that the renderer may draw into. Two
+	// usages matter: RenderAttachment (a pass may target it) and
+	// TextureBinding (the shader may sample it afterwards). Its format is the
+	// surface's, because the sprite pipeline was built for that format and a
+	// pipeline can only draw into a matching attachment.
+	//
+	// reuseId re-fills an existing registry slot so handles stay valid across
+	// a resize; 0 appends a new one.
+	wgpu2d::Texture createRenderTarget(int width, int height, bool pixelated, const char *label, uint32_t reuseId = 0)
+	{
+		if (!g.device || width <= 0 || height <= 0)
+		{
+			std::cerr << "WebGPU: createRenderTarget with no device or empty size (" << label << ")\n";
+			return wgpu2d::Texture{};
+		}
+
+		TextureEntry entry;
+		entry.width = width;
+		entry.height = height;
+		entry.pixelated = pixelated;
+		entry.renderTarget = true;
+		entry.needsClear = true; // a fresh target's contents are undefined
+
+		TextureDescriptor texDesc = Default;
+		texDesc.label = StringView(label);
+		texDesc.dimension = TextureDimension::_2D;
+		texDesc.size.width = (uint32_t)width;
+		texDesc.size.height = (uint32_t)height;
+		texDesc.size.depthOrArrayLayers = 1;
+		texDesc.format = g.surfaceFormat;
+		texDesc.mipLevelCount = 1;
+		texDesc.sampleCount = 1;
+		texDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
+		texDesc.viewFormatCount = 0;
+		texDesc.viewFormats = nullptr;
+		entry.texture = g.device.createTexture(texDesc);
+		if (!entry.texture)
+		{
+			std::cerr << "WebGPU: createTexture (render target) returned null (" << label << ")\n";
+			return wgpu2d::Texture{};
+		}
+
+		TextureViewDescriptor viewDesc = Default;
+		viewDesc.label = StringView(label);
+		viewDesc.format = g.surfaceFormat;
+		viewDesc.dimension = TextureViewDimension::_2D;
+		viewDesc.baseMipLevel = 0;
+		viewDesc.mipLevelCount = 1;
+		viewDesc.baseArrayLayer = 0;
+		viewDesc.arrayLayerCount = 1;
+		viewDesc.aspect = TextureAspect::All;
+		viewDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
+		entry.view = entry.texture.createView(viewDesc);
+		if (!entry.view)
+		{
+			std::cerr << "WebGPU: createView (render target) returned null (" << label << ")\n";
+			entry.texture.release();
+			return wgpu2d::Texture{};
+		}
+
+		BindGroupEntry bindEntries[2];
+		bindEntries[0] = Default;
+		bindEntries[0].binding = 0;
+		bindEntries[0].textureView = entry.view;
+		bindEntries[0].buffer = nullptr;
+		bindEntries[0].sampler = nullptr;
+		bindEntries[1] = Default;
+		bindEntries[1].binding = 1;
+		bindEntries[1].sampler = pixelated ? g.samplerPixelated : g.samplerLinear;
+		bindEntries[1].buffer = nullptr;
+		bindEntries[1].textureView = nullptr;
+
+		BindGroupDescriptor groupDesc = Default;
+		groupDesc.label = StringView(label);
+		groupDesc.layout = g.textureBindGroupLayout;
+		groupDesc.entryCount = 2;
+		groupDesc.entries = bindEntries;
+		entry.bindGroup = g.device.createBindGroup(groupDesc);
+		if (!entry.bindGroup)
+		{
+			std::cerr << "WebGPU: createBindGroup (render target) returned null (" << label << ")\n";
+			entry.view.release();
+			entry.texture.release();
+			return wgpu2d::Texture{};
+		}
+
+		uint32_t id = reuseId;
+		if (id != 0 && id <= textures.size())
+		{
+			TextureEntry &old = textures[id - 1];
+			if (old.bindGroup) { old.bindGroup.release(); }
+			if (old.view) { old.view.release(); }
+			if (old.texture) { old.texture.release(); }
+			old = entry;
+		}
+		else
+		{
+			textures.push_back(entry);
+			id = (uint32_t)textures.size();
+		}
+
+		std::cout << "WebGPU render target " << id << ": " << width << "x" << height
+			<< (pixelated ? ", nearest" : ", linear") << " (" << label << ")\n";
+		std::cout.flush();
+		wgpu2d::Texture handle;
+		handle.id = id;
+		return handle;
+	}
+
+	// 10: keeps the low-res stand-in matching the surface's current size.
+	void ensureScaledTarget()
+	{
+		if (g.renderScale >= 1.f)
+		{
+			g.scaledTargetId = 0;
+			return;
+		}
+
+		const int w = std::max(1, (int)std::lround(g.surfaceWidth * g.renderScale));
+		const int h = std::max(1, (int)std::lround(g.surfaceHeight * g.renderScale));
+		if (g.scaledTargetId && g.scaledTargetId <= textures.size()
+			&& textures[g.scaledTargetId - 1].width == w
+			&& textures[g.scaledTargetId - 1].height == h)
+		{
+			return;
+		}
+
+		// Nearest filtering on the way back up: this is the pixel-perfect
+		// upscale, not a smooth one.
+		wgpu2d::Texture target = createRenderTarget(w, h, true, "low-res target", g.scaledTargetId);
+		g.scaledTargetId = target.id;
+	}
+
 	// Reads a whole file, like gl2d's loaders do before decoding.
 	bool readBinaryFile(const char *path, std::vector<unsigned char> &out)
 	{
@@ -1007,26 +1195,81 @@ namespace
 		return true;
 	}
 
-	// Begins the frame's single render pass on first use, clearing to the
-	// recorded color. gl2d's glClear at frame start is this load operation.
-	bool ensurePassBegun()
+	// Makes sure the open render pass is the one for `target` (0 = surface,
+	// otherwise a texture registry id), beginning it if needed. Passes cannot
+	// nest and belong to one attachment, so a change of target ends the
+	// current pass and starts another; StoreOp::Store plus LoadOp::Load means
+	// nothing drawn earlier is lost.
+	//
+	// The load operation is where gl2d's glClear went: the surface and the
+	// low-res stand-in clear on their first pass of the frame (to the color
+	// clearScreen recorded), a user's FrameBuffer loads its previous contents
+	// unless it asked to be cleared.
+	bool ensurePassBegun(uint32_t target)
 	{
 		if (!g.frameOpen) { return false; }
-		if (g.framePass) { return true; }
+		if (g.framePass && g.framePassTarget == target) { return true; }
+
+		// Someone wants the surface while the frame is sitting in the low-res
+		// target: upscale it first, so the UI lands on top of the world.
+		if (target == 0 && g.scaledTargetDrawn && !g.compositing)
+		{
+			compositeScaledTarget();
+			if (g.framePass && g.framePassTarget == 0) { return true; }
+		}
+
+		if (g.framePass)
+		{
+			g.framePass.end();
+			g.framePass.release();
+			g.framePass = nullptr;
+		}
+
+		TextureView view = nullptr;
+		bool clear = false;
+		glm::vec4 clearColor = {0, 0, 0, 0};
+		if (target == 0)
+		{
+			view = g.frameView;
+			clear = !g.surfaceCleared;
+			clearColor = g.clearColor;
+			g.surfaceCleared = true;
+		}
+		else if (target <= textures.size())
+		{
+			TextureEntry &entry = textures[target - 1];
+			view = entry.view;
+			if (isFrameTarget(target))
+			{
+				clear = !g.scaledCleared;
+				clearColor = g.clearColor;
+				g.scaledCleared = true;
+			}
+			else
+			{
+				clear = entry.needsClear;
+			}
+			entry.needsClear = false;
+		}
+		if (!view)
+		{
+			std::cerr << "WebGPU: no view for render target " << target << "\n";
+			return false;
+		}
 
 		RenderPassColorAttachment colorAttachment = Default;
-		colorAttachment.view = g.frameView;
+		colorAttachment.view = view;
 		colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED; // required for a 2D target
 		colorAttachment.resolveTarget = nullptr;
-		colorAttachment.loadOp = LoadOp::Clear;
+		colorAttachment.loadOp = clear ? LoadOp::Clear : LoadOp::Load;
 		colorAttachment.storeOp = StoreOp::Store;
-		colorAttachment.clearValue.r = g.clearColor.r;
-		colorAttachment.clearValue.g = g.clearColor.g;
-		colorAttachment.clearValue.b = g.clearColor.b;
-		colorAttachment.clearValue.a = g.clearColor.a;
+		colorAttachment.clearValue.r = clearColor.r;
+		colorAttachment.clearValue.g = clearColor.g;
+		colorAttachment.clearValue.b = clearColor.b;
+		colorAttachment.clearValue.a = clearColor.a;
 
 		RenderPassDescriptor passDesc = Default;
-		passDesc.label = StringView("frame pass");
+		passDesc.label = StringView(target == 0 ? "surface pass" : "render target pass");
 		passDesc.colorAttachmentCount = 1;
 		passDesc.colorAttachments = &colorAttachment;
 		passDesc.depthStencilAttachment = nullptr;
@@ -1034,6 +1277,7 @@ namespace
 		passDesc.timestampWrites = nullptr;
 
 		g.framePass = g.frameEncoder.beginRenderPass(passDesc);
+		g.framePassTarget = target;
 		return (bool)g.framePass;
 	}
 
@@ -1049,31 +1293,58 @@ namespace
 	// consecutive quads that share a texture, extended to also break when
 	// the camera changes. Order is preserved, so overlap and transparency
 	// come out as they do today.
-	void flushBatch()
+	//
+	// `target` is where it lands: 0 for the screen (gl2d's flush), a texture
+	// registry id for a render target (gl2d's flushFBO). The camera
+	// projection uses the surface's dimensions for the screen -- including
+	// when the low-res stand-in is standing in for it, which is what keeps
+	// the framing identical at any render scale -- and a render target's own
+	// dimensions otherwise.
+	void flushBatch(uint32_t target)
 	{
 		if (batchVertices.empty()) { return; }
-		if (!ensurePassBegun()) { return; }
+
+		float projectionWidth = (float)g.surfaceWidth;
+		float projectionHeight = (float)g.surfaceHeight;
+		if (target != 0 && !isFrameTarget(target) && target <= textures.size())
+		{
+			projectionWidth = (float)textures[target - 1].width;
+			projectionHeight = (float)textures[target - 1].height;
+		}
+
+		if (!ensurePassBegun(target)) { return; }
+		if (target != 0) { g.scaledTargetDrawn = g.scaledTargetDrawn || isFrameTarget(target); }
 
 		const uint64_t bytes = batchVertices.size() * sizeof(Vertex);
 		static_assert(sizeof(Vertex) % 4 == 0, "writeBuffer size must be a multiple of 4");
-		if (!ensureVertexBufferCapacity(bytes)) { return; }
+		const uint64_t vertexOffset = g.vertexBufferUsedBytes; // this flush's slice
+		if (!ensureVertexBufferCapacity(vertexOffset + bytes)) { return; }
 
 		// Queue-ordered: the copy lands after last frame's draw has finished
-		// reading this buffer, so one buffer is enough without double buffering.
-		g.queue.writeBuffer(g.vertexBuffer, 0, batchVertices.data(), bytes);
+		// reading this buffer, so one buffer is enough without double
+		// buffering -- as long as this frame's earlier flushes keep their
+		// slices, which is what the offset is for.
+		g.queue.writeBuffer(g.vertexBuffer, vertexOffset, batchVertices.data(), bytes);
+		g.vertexBufferUsedBytes = vertexOffset + bytes;
 
-		// One matrix per camera used this frame, each in its own slot.
-		if (!ensureCameraSlotCapacity((uint32_t)frameCameras.size())) { return; }
+		// One matrix per camera used in this flush, each in its own slot,
+		// after the slots earlier flushes in this frame are still using.
+		const uint32_t cameraSlotBase = g.cameraSlotsUsed;
+		if (!ensureCameraSlotCapacity(cameraSlotBase + (uint32_t)frameCameras.size())) { return; }
 		for (size_t i = 0; i < frameCameras.size(); i++)
 		{
 			CameraUniforms uniforms;
-			uniforms.viewProj = buildViewProj(frameCameras[i], (float)g.surfaceWidth, (float)g.surfaceHeight);
-			g.queue.writeBuffer(g.uniformBuffer, (uint64_t)i * g.cameraSlotStride, &uniforms, sizeof(uniforms));
+			uniforms.viewProj = buildViewProj(frameCameras[i], projectionWidth, projectionHeight);
+			g.queue.writeBuffer(g.uniformBuffer, (uint64_t)(cameraSlotBase + i) * g.cameraSlotStride,
+				&uniforms, sizeof(uniforms));
 		}
+		g.cameraSlotsUsed = cameraSlotBase + (uint32_t)frameCameras.size();
 
 		RenderPassEncoder pass = g.framePass;
 		pass.setPipeline(g.quadPipeline);
-		pass.setVertexBuffer(0, g.vertexBuffer, 0, bytes);
+		// The bound slice starts at this flush's offset, so the per-draw
+		// firstVertex below stays relative to the batch.
+		pass.setVertexBuffer(0, g.vertexBuffer, vertexOffset, bytes);
 
 		const size_t quadCount = batchQuadTextures.size();
 		size_t runStart = 0;
@@ -1085,7 +1356,7 @@ namespace
 				|| batchQuadCameras[i] != batchQuadCameras[runStart];
 			if (!boundary) { continue; }
 
-			const uint32_t dynamicOffset = batchQuadCameras[runStart] * g.cameraSlotStride;
+			const uint32_t dynamicOffset = (cameraSlotBase + batchQuadCameras[runStart]) * g.cameraSlotStride;
 			pass.setBindGroup(0, textures[batchQuadTextures[runStart] - 1].bindGroup, 0, nullptr); // texture + sampler
 			pass.setBindGroup(1, g.cameraBindGroup, 1, &dynamicOffset);                          // camera slot
 			pass.draw((uint32_t)((i - runStart) * 6), 1, (uint32_t)(runStart * 6), 0);
@@ -1165,6 +1436,41 @@ namespace
 			frameCameras.push_back(camera);
 		}
 		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
+	}
+
+	// 10: the upscale. One quad covering the surface, sampling the low-res
+	// target with nearest filtering, drawn through the ordinary sprite path
+	// (the target is a normal texture handle, so no extra pipeline or shader
+	// is needed). Any quads the game has recorded but not flushed are put
+	// aside and restored, so this never eats the caller's batch.
+	void compositeScaledTarget()
+	{
+		if (!g.scaledTargetId || !g.scaledTargetDrawn || g.compositing) { return; }
+		g.compositing = true;
+
+		std::vector<Vertex> keptVertices;
+		std::vector<uint32_t> keptTextures;
+		std::vector<uint32_t> keptCameras;
+		std::vector<wgpu2d::Camera> keptFrameCameras;
+		keptVertices.swap(batchVertices);
+		keptTextures.swap(batchQuadTextures);
+		keptCameras.swap(batchQuadCameras);
+		keptFrameCameras.swap(frameCameras);
+
+		wgpu2d::Texture handle;
+		handle.id = g.scaledTargetId;
+		const glm::vec4 white[4] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
+		pushQuad(wgpu2d::Camera{},
+			glm::vec4{0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight},
+			handle, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
+		g.scaledTargetDrawn = false; // the pass below is the surface's, not the target's
+		flushBatch(0);
+
+		batchVertices.swap(keptVertices);
+		batchQuadTextures.swap(keptTextures);
+		batchQuadCameras.swap(keptCameras);
+		frameCameras.swap(keptFrameCameras);
+		g.compositing = false;
 	}
 
 	void printAdapter(Adapter adapter)
@@ -1418,6 +1724,24 @@ bool wgpuInit(GLFWwindow *window)
 		return false;
 	}
 
+	// 12. Optional low-resolution rendering (milestone 10). Off unless
+	//     WGPU_RENDER_SCALE is set to something below 1.
+	if (const char *scale = getenv("WGPU_RENDER_SCALE"))
+	{
+		g.renderScale = (float)atof(scale);
+		if (!(g.renderScale > 0.f) || g.renderScale > 1.f)
+		{
+			std::cerr << "WebGPU: ignoring WGPU_RENDER_SCALE=" << scale << " (expected 0 < scale <= 1)\n";
+			g.renderScale = 1.f;
+		}
+		else if (g.renderScale < 1.f)
+		{
+			std::cout << "WebGPU render scale: " << g.renderScale
+				<< " (the world is drawn into an offscreen target and upscaled)\n";
+		}
+	}
+	ensureScaledTarget();
+
 	std::cout.flush();
 	return true;
 }
@@ -1438,6 +1762,7 @@ void wgpuBeginFrame()
 		{
 			configureSurface();
 			if (!g.surfaceConfigured) { return; } // minimized: nothing to draw this frame
+			ensureScaledTarget(); // the low-res target follows the surface's size
 		}
 	}
 
@@ -1487,6 +1812,12 @@ void wgpuBeginFrame()
 	g.frameView = texture.createView(viewDesc);
 	g.frameEncoder = g.device.createCommandEncoder(encoderDesc);
 	g.framePass = nullptr;
+	g.framePassTarget = 0;
+	g.surfaceCleared = false;
+	g.scaledCleared = false;
+	g.scaledTargetDrawn = false;
+	g.vertexBufferUsedBytes = 0;
+	g.cameraSlotsUsed = 0;
 	g.clearColor = {0, 0, 0, 1}; // gl2d's glClear default until clearScreen says otherwise
 	g.frameOpen = true;
 }
@@ -1495,13 +1826,18 @@ void wgpuEndFrame()
 {
 	if (!g.frameOpen) { return; }
 
+	// Nothing asked for the surface this frame (no UI, no screen-space draw):
+	// upscale the low-res target now.
+	compositeScaledTarget();
+
 	// A frame with no draws still clears; begin the pass so the load op runs.
-	ensurePassBegun();
+	ensurePassBegun(0);
 	if (g.framePass)
 	{
 		g.framePass.end();
 		g.framePass.release();
 		g.framePass = nullptr;
+		g.framePassTarget = 0;
 	}
 
 	// Seal the recording into a command buffer, submit, present.
@@ -1556,6 +1892,8 @@ void wgpuShutdown()
 		if (t.texture) { t.texture.release(); }
 	}
 	textures.clear();
+	g.scaledTargetId = 0;
+	g.scaledTargetDrawn = false;
 	if (g.quadPipeline) { g.quadPipeline.release(); g.quadPipeline = nullptr; }
 	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
 	if (g.cameraBindGroupLayout) { g.cameraBindGroupLayout.release(); g.cameraBindGroupLayout = nullptr; }
@@ -1600,7 +1938,9 @@ ShaderModule wgpuCreateShaderModuleFromFile(const char *path)
 
 RenderPassEncoder wgpuCurrentRenderPass()
 {
-	if (!ensurePassBegun()) { return nullptr; }
+	// The surface, always: the UI is drawn at native resolution on top of
+	// the composited world, never inside a render target.
+	if (!ensurePassBegun(0)) { return nullptr; }
 	return g.framePass;
 }
 
@@ -1678,6 +2018,53 @@ namespace wgpu2d
 		if (t.view) { t.view.release(); t.view = nullptr; }
 		if (t.texture) { t.texture.release(); t.texture = nullptr; }
 		id = 0;
+	}
+
+	void Renderer2D::flushFBO(FrameBuffer frameBuffer, bool clearDrawData)
+	{
+		if (frameBuffer.fbo == 0)
+		{
+			std::cerr << "wgpu2d: Framebuffer not initialized\n";
+			if (clearDrawData) { clearBatch(); }
+			return;
+		}
+		flushBatch(frameBuffer.fbo);
+		if (clearDrawData) { clearBatch(); }
+	}
+
+	// ---- FrameBuffer ----
+	void FrameBuffer::create(unsigned int w, unsigned int h, bool pixelated)
+	{
+		cleanup();
+		texture = createRenderTarget((int)w, (int)h, pixelated, "framebuffer");
+		fbo = texture.id; // no framebuffer object exists; the texture is the target
+	}
+
+	void FrameBuffer::resize(unsigned int w, unsigned int h)
+	{
+		if (fbo == 0) { create(w, h); return; }
+		if (fbo > textures.size()) { return; }
+		if (textures[fbo - 1].width == (int)w && textures[fbo - 1].height == (int)h) { return; }
+
+		// A texture cannot be resized: the slot is refilled with a new one so
+		// the handles the caller is holding stay valid.
+		texture = createRenderTarget((int)w, (int)h, textures[fbo - 1].pixelated, "framebuffer", fbo);
+		fbo = texture.id;
+	}
+
+	void FrameBuffer::cleanup()
+	{
+		texture.cleanup();
+		fbo = 0;
+	}
+
+	void FrameBuffer::clear()
+	{
+		if (fbo == 0 || fbo > textures.size()) { return; }
+		textures[fbo - 1].needsClear = true;
+		// gl2d clears immediately; do the same when there is a frame to
+		// record into, otherwise the flag makes the next pass clear.
+		if (g.frameOpen) { ensurePassBegun(fbo); }
 	}
 
 	// ---- Atlas math, verbatim from gl2d ----
@@ -1768,12 +2155,13 @@ namespace wgpu2d
 	}
 
 	// ---- Renderer2D ----
-	void Renderer2D::create(unsigned int, size_t quadCount)
+	void Renderer2D::create(unsigned int fbo, size_t quadCount)
 	{
 		batchVertices.reserve(quadCount * 6);
 		batchQuadTextures.reserve(quadCount);
 		batchQuadCameras.reserve(quadCount);
 		currentCamera = Camera{};
+		defaultFBO = fbo; // gl2d's defaultFBO: 0 is the screen
 	}
 
 	void Renderer2D::cleanup()
@@ -1916,7 +2304,7 @@ namespace wgpu2d
 			if (clearDrawData) { clearBatch(); }
 			return;
 		}
-		flushBatch();
+		flushBatch(resolveTarget(defaultFBO));
 		if (clearDrawData) { clearBatch(); }
 	}
 }
