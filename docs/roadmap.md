@@ -15,6 +15,11 @@ That tag is the point of the tagging, not bookkeeping: it forces the question
 "would another project want this?" before the code is written rather than
 after.
 
+**Numbers are stable and never reused.** A gap means the item landed and now
+has a milestone block in the outline instead. R1 (error scopes and debug
+groups) and R2 (the pipeline cache) are gone that way; so is N1, which R1
+covered.
+
 ---
 
 ## The standing goal: `wgpu2d` as a library
@@ -103,67 +108,14 @@ that now:
 
 ## Now — the render track
 
-R1–R6, agreed. Ordered: each unblocks the ones after it. All of it lives under
-`src/render/` and none of it touches gameplay.
+R3–R6. Ordered: each unblocks the ones after it. All of it lives under
+`src/render/`.
 
-### R1. Error scopes, labels, debug groups — **landed**
-
-**Lands in:** library · **Detail:** N1 below
-
-Kept here only until it is written up as a milestone in the outline; the item
-itself is done.
-
-**A correction, because the premise was wrong.** This item was written claiming
-that "`createRenderPipeline returned null` is the whole diagnosis." That was
-not checked before it was written, and it is false. Two of the three parts
-already existed:
-
-- wgpu-native's own logger has been wired since the port —
-  `wgpuSetLogCallback` + `wgpuSetLogLevel(Warn)` in `wgpuInit`.
-- The device's uncaptured-error callback (`onUncapturedError`) prints every
-  validation message with its type.
-- Labels were essentially complete: 27 assignments across both render TUs
-  covering every pipeline, layout, bind group, buffer, texture, view, sampler,
-  pass, encoder and command buffer, plus the device and queue.
-
-So validation *text* already reached stderr. What was genuinely missing was
-`pushErrorScope`/`popErrorScope` and `pushDebugGroup`/`popDebugGroup` — zero
-uses of either — and what they add is **attribution**, not text: the
-uncaptured-error callback cannot say which call produced a message, and it can
-arrive after the null handle it explains.
-
-**What doing it turned up**, both worth carrying into R2:
-
-1. **A rejected pipeline is not null.** `createRenderPipeline` returns a live
-   handle in an invalid state, so the existing `if (!g.quadPipeline)` check
-   passed and the failure only showed up as a per-frame cascade
-   (`setPipeline` → invalid, then `draw` → no pipeline set). Only the scope
-   could tell the difference. Both pipelines now fail properly.
-2. **A wrong `colorTarget.format` is not a creation error.** The pipeline is
-   created happily and the mismatch is caught when it meets an attachment
-   inside a pass. Milestone 10's note that a wrong format "is a validation
-   error, not a wrong picture" is right about *what* but not about *when* — R2
-   builds pipelines per target format, so this is the failure mode it has to
-   design around.
-
-### R2. A pipeline cache, and a third component on the run key
-
-**Lands in:** library
-
-Today there is exactly one pipeline. `flushBatch` does `pass.setPipeline(g.quadPipeline)`
-once, and the run boundary breaks on two things: texture and camera. Blend mode,
-target format, sample count and vertex layout are all baked into
-`createQuadPipeline` as constants.
-
-Six items below need a second pipeline — F1 (blend), N5 (vertex layout), N6
-(sample count), N7 (depth state), N8 (attachment count), N9 (target format).
-Milestone 10 already met the edge of this and recorded it as a constraint: a
-render target must use the surface format because the one pipeline was built for
-it.
-
-So: a small cache keyed on (shader, blend, target format, sample count, vertex
-layout), and `pipeline` added to the run key beside texture and camera. Roughly
-100 lines, done once, instead of six half-versions done under pressure.
+R1 and R2 have landed (outline milestones 11 and 12), and R2 came with a
+correctness fix its machinery made cheap: render targets are now composited
+with `BlendMode::Premultiplied`, so a translucent target no longer has its
+coverage applied twice. That changes R3 below — the shake's round trip is
+already correct, so generalizing it is purely a factoring job now.
 
 ### R3. Generalize the shake into a layer effect
 
@@ -224,7 +176,7 @@ than loaded from `RESOURCES_PATH`, `hudShake` gone (R3/R4), and the device
 ownership question answered. The payoff is that the boundary stops being a rule
 in `AGENTS.md` and becomes a link error.
 
-Do it after R1–R5, not before: the split is easy once the things that cross the
+Do it after R3–R5, not before: the split is easy once the things that cross the
 line have been moved, and painful while they still do.
 
 ---
@@ -351,34 +303,10 @@ device is created with `requiredFeatureCount = 0` and `requiredLimits = nullptr`
 (`wgpuInit`), so anything needing a feature or a raised limit starts by changing
 that call.
 
-**Order, once R1–R6 are done:** N2 → F1 → N5 → N3 → N4 → F5. Instrumentation
-before optimisation. F1 is early because after R2 it is an hour of work, and it
-is the smallest thing that proves the pipeline cache was built right.
-
----
-
-### N1. Error scopes, labels, debug groups
-
-**Concepts:** `pushErrorScope` / `popErrorScope` around object creation, so a
-failure reports the validation message instead of a null handle. Debug groups
-and markers (`pushDebugGroup`, `insertDebugMarker`) and labels on buffers,
-passes and pipelines, which is what a GPU capture shows.
-
-**LearnWebGPU:** [Debugging](https://eliemichel.github.io/LearnWebGPU/appendices/debugging.html) (the chapter is still WIP; error scopes are covered, the capture-tool half is thin)
-
-**Would land:** `createQuadPipeline`, `createTextureFromPixels`,
-`createRenderTarget`, `flushBatch`, `wgpuImguiRender`.
-
-**Why first:** the cheapest item here, and the one that pays back given the
-constraint in `AGENTS.md` — the window cannot be looked at from an agent
-session. Named passes and groups also make an Xcode Metal frame capture
-legible: "batch -> surface", "composite scaled target", "imgui" instead of
-anonymous draws. Everything below is easier to debug once this exists.
-
-**Corrected:** an earlier version of this block claimed the diagnosis today is
-just a null handle. It is not — see the correction under R1. The logger, the
-uncaptured-error callback and the labels were already in place; scopes and
-groups were the gap.
+**Order, once R3–R6 are done:** N2 → F1 → N5 → N3 → N4 → F5. Instrumentation
+before optimisation. F1 is now the cheapest thing on this page: R2 already
+built `BlendMode::Additive` and the run splitting, so all that is left is the
+game choosing it.
 
 ---
 
@@ -416,8 +344,10 @@ present, a texture as the only attachment.
 **Would land:** a capture entry point in `wgpuContext.cpp` next to
 `compositeScaledTarget`; a key binding in `glfwMain.cpp`.
 
-**Why it earns its place:** this was already written once as throwaway
-scaffolding for the milestone-7 parity check. Making it permanent turns the
+**Why it earns its place:** this has now been written twice as throwaway
+scaffolding — for the milestone-7 parity check, and again for milestone 12's
+blend numbers. The second time also needed `CopySrc` added to render targets,
+which this item should make permanent. Making it permanent turns the
 verification norm in `AGENTS.md` into a committed tool — a fixed, time-independent
 scene rendered headless to a PNG is a regression harness, not a demo.
 
@@ -577,11 +507,11 @@ from a new angle, and none of them needs a chapter that is not already read.
 These are where the library/game line gets tested in practice, so each says
 which side it falls on.
 
-**F1. A second pipeline that differs only in blend state.** *(library)* Additive blending
-for bullets and explosions. The point is not the look: it forces the run loop in
-`flushBatch` to split on *pipeline* as well as texture and camera, which is the
-moment "a pipeline is immutable baked state" stops being a slogan. Smallest
-change on this page with the largest effect on how milestone 6b reads.
+**F1. Additive bullets and explosions.** *(game)* Mostly done: R2 built
+`BlendMode::Additive`, the pipeline variant and the run splitting, and outline
+12 records what that taught. What remains is the game calling `setBlendMode`
+where it wants light to add — which is a gameplay-side judgement about which
+sprites those are, not render work.
 
 **F2. A post-process chain on the world target.** *(library mechanism, game policy — the split R3 makes)* Milestone 10 built the
 machinery and then used it twice (render scale, HUD shake). A damage vignette, a
