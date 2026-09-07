@@ -222,16 +222,24 @@ namespace wgpu2d
 		FrameBuffer target;
 	};
 
-	// gl2d's Camera. Rotation is accepted but not applied (the game never sets it).
+	// A camera is a transform: where the view sits and how far it is zoomed.
+	// buildViewProj turns those into the matrix the vertex shader applies.
+	//
+	// It used to carry two things it should not have. `follow` chased a point
+	// and drew nothing, so it is a behaviour and now lives in the game (see
+	// gameLayer/cameraFollow.h, and roadmap R7 for where it goes next).
+	// `rotation` was accepted and applied by nothing at all -- and `sameCamera`
+	// did not compare it either, so implementing it without also fixing the
+	// batch's run key would have let two cameras differing only in roll share
+	// a uniform slot and silently render with the wrong matrix. A roll can be
+	// added when something wants one, in buildViewProj and sameCamera
+	// together, checked numerically the way milestone 5 checked this matrix.
 	struct Camera
 	{
 		glm::vec2 position = {};
-		float rotation = 0.f;
 		float zoom = 1.0;
 
 		void setDefault() { *this = Camera{}; }
-
-		void follow(glm::vec2 pos, float speed, float min, float max, float w, float h);
 	};
 
 	struct Renderer2D

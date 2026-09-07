@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <raudio.h>
 #include <collisionSystem.h>
+#include <cameraFollow.h>
 
 struct GameplayData
 {
@@ -73,8 +74,11 @@ float gameSpeedMultiplier()
 void restartGame()
 {
 	data = {};
-	renderer.currentCamera.follow(data.playerPos
-		, 550, 0, 0, renderer.windowW, renderer.windowH);
+	// Zero dead zone and zero leash: snap straight onto the player.
+	renderer.currentCamera.position = camera::follow(
+		renderer.currentCamera.position, data.playerPos,
+		{(float)renderer.windowW, (float)renderer.windowH},
+		{550.f, 0.f, 0.f});
 }
 
 bool initGame()
@@ -206,8 +210,9 @@ bool gameLogic(float deltaTime)
 
 #pragma region follow
 
-	renderer.currentCamera.follow(data.playerPos
-		, deltaTime * 550, 1, 150, w, h);
+	renderer.currentCamera.position = camera::follow(
+		renderer.currentCamera.position, data.playerPos, {(float)w, (float)h},
+		{deltaTime * 550.f, 1.f, 150.f});
 
 #pragma endregion
 
