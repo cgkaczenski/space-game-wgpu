@@ -7,7 +7,7 @@ a block describing it appears in the outline in its place. Nothing on this page
 is built.
 
 Every item says where it **lands**: *library* (`src/render/`), *engine*
-(`src/engine/`, created in R7), *game* (`src/gameLayer/`) or *app*
+(`src/engine/`), *game* (`src/gameLayer/`) or *app*
 (`src/platform/`). See **The shape features take** below for what each one
 means and what the test is.
 
@@ -16,55 +16,31 @@ That tag is the point of the tagging, not bookkeeping: it forces the question
 after.
 
 **Numbers are stable and never reused.** A gap means the item landed and now
-has a milestone block in the outline instead. R1 (error scopes and debug
-groups) and R2 (the pipeline cache) are gone that way; so is N1, which R1
-covered.
+has a milestone block in the outline instead. R1–R7 and N1 are gone that way;
+outline 11, 12 and 13 are where they went.
 
 ---
 
-## The standing goal: `wgpu2d` as a library
+## The standing goal: `wgpu2d` as a library — reached
 
-`wgpu2d` should be liftable out of this repo the way
-[gl2d](https://github.com/meemknight/gl2d) is. **Liftable like gl2d, not
-frozen at gl2d.** Mirroring its signatures was a port tactic — it let the game
-files switch by include and namespace, and that job finished at milestone 7. It
-was never a ceiling on what a 2D drawing library may grow. `BlendMode` (12) was
-the first addition past it and `LayerEffect` (R3) the second; both live in
-`wgpu2d.h`. That header is the only one the *game* includes from `render/`.
-The library still has a second public header for a different consumer:
-`wgpuContext.h`, which the platform includes for init / begin / end. WebGPU
-has no implicit current context, so gl2d's one-header shape does not carry.
+`wgpu2d` is a CMake target that links `webgpu`, `glm` and `stb_image`, knows
+nothing about GLFW, carries its own shader, and cannot include this game's
+headers. All four blockers are gone: the glob, `RESOURCES_PATH`, the game
+effect in the library folder, and the window dependency. **Liftable like gl2d,
+not frozen at gl2d** — mirroring its signatures was a port tactic that finished
+at milestone 7; `BlendMode` and `LayerEffect` are additions past it, and new
+drawing capabilities go in `wgpu2d.h` rather than beside it.
 
-It is closer than it looks — a survey of the current code found the inward
-direction already clean: nothing under `src/render/` includes anything from
-`src/gameLayer/`. What stands in the way is four specific things, not a general
-mess:
-
-1. **No target boundary.** `CMakeLists.txt` does `file(GLOB_RECURSE MY_SOURCES
-   src/*.cpp)` into one executable. There is no wall, so nothing can be caught
-   leaning on it. → **R6**
-2. **The library reads the app's resource layout.** Only
-   `wgpuContext.cpp:1983` loading `quad.wgsl` is actually the library's
-   problem. `wgpuImgui.cpp:165` becomes app code when that file moves (R6).
-   A library has to carry its own shaders. → **R6**
-3. ~~**A game effect lives in the library folder.**~~ **Done.** R3 split the
-   mechanism into `wgpu2d::LayerEffect` and R4 moved the policy to
-   `gameLayer/hud`. Every include from `gameLayer/` into `render/` is now
-   `render/wgpu2d.h`, which is the state R6 needs to enforce.
-4. **GLFW, which is bigger than "who owns the device."** The library includes
-   `glfw3webgpu.h`, calls `glfwCreateWindowWGPUSurface`, stores a
-   `GLFWwindow*`, and polls `glfwGetFramebufferSize` every frame in
-   `wgpuBeginFrame`. That is the dependency that blocks reuse — a project on
-   SDL could not link this. Device ownership is the other half of the same
-   question, and it is worth deciding before N2/N4 add features and limits to
-   device creation. → **R6**
+Two limits worth stating so nobody assumes more than is true. The wall is
+one-directional: a library cannot see the game, but `engine` and `wgpu2d` can
+see each other, because both sit under one `include/` root. And nothing has
+actually built `wgpu2d` against a second application, which is the only real
+test of a library — until something does, "liftable" is a claim.
 
 **Not everything here should travel.** The HUD, the ships, the tuning constants
 and the game's ImGui panels are this game's. The renderer, the camera, the
-batch, the target and post-process machinery are the library's. The ImGui
-*backend* is a third thing — reusable, but not part of a 2D drawing API — and
-moves to `platform/` in R6 rather than into a third CMake target in the same
-milestone.
+batch, the target and post-process machinery are the library's. Reusable
+gameplay systems that draw nothing are `engine`'s.
 
 ---
 
@@ -106,8 +82,7 @@ pieces, not two.
 
 Two things follow from that, and both are cautions against inventing work:
 
-- **There is no HUD system for `engine/` to own.** R3 and R4 already cut it
-  correctly; the middle column is `glui`, which is a separate CMake target
+- **There is no HUD system for `engine/` to own.** R3 and R4 cut it that way; the middle column is `glui`, which is a separate CMake target
   under `thirdparty/` and included only by `gameLayer.cpp`. Moving it into
   `src/engine/` would mean vendoring a third-party library into our own tree,
   which is worse than leaving it. It moves if and when something in-tree wants
@@ -128,13 +103,13 @@ the wrong place. Copy its shape, not its file layout.
 `AGENTS.md` describes three homes because three folders exist. Movement,
 inventory, combat, enemy AI and in-game UI fit none of them: they are not
 drawing, so `render/` is wrong, and burying them in `gameLayer/` welds them to
-this game, which is the thing the whole exercise is trying to avoid. They need a
-fourth home, created in R7.
+this game, which is the thing the whole exercise is trying to avoid. That is why
+`src/engine/` exists.
 
 | Home | Holds | Travels? |
 |---|---|---|
-| `src/render/` | `wgpu2d` — the drawing library | yes, one day (R6) |
-| `src/engine/` *(created in R7)* | movement, collision, inventory, combat resolution, AI behaviours, UI widgets | maybe, later |
+| `src/render/` | `wgpu2d` — the drawing library | yes — a CMake target since R6 |
+| `src/engine/` | collision and camera behaviours today; movement, inventory, combat, AI next | maybe, later |
 | `src/gameLayer/` | ships, enemy types, tuning numbers, HUD content, composition | no — this *is* the game |
 | `src/platform/` | window, input backend, loop, ImGui wiring | no |
 
@@ -161,201 +136,42 @@ that now:
 
 ---
 
-## Now — the render track
+## The render track: done
 
-R3–R6. Ordered: each unblocks the ones after it. R3–R5 live under
-`src/render/` (and R4 under `gameLayer/`); R6 is the target split, plus moving
-ImGui and the Metal-layer pin into `platform/`.
+R1–R6 have landed, plus R7 from the game track, which came with them because
+the boundary work needed the fourth home to exist. Outline milestones 11, 12
+and 13 are the write-ups.
 
-R1 and R2 have landed (outline milestones 11 and 12), and R2 came with a
-correctness fix its machinery made cheap: render targets are now composited
-with `BlendMode::Premultiplied`, so a translucent target no longer has its
-coverage applied twice. That changes R3 below — the shake's round trip is
-already correct, so generalizing it is purely a factoring job now.
+What that bought, in one line each: validation errors now name the operation
+that caused them; a pipeline is chosen per (target format, blend) instead of
+there being exactly one; render targets composite correctly instead of
+darkening translucent layers; `hudShake` is a general layer effect plus this
+game's numbers in `gameLayer/hud`; `Camera` is a transform and `follow` is a
+behaviour; and `wgpu2d` is a CMake target that cannot see the game.
 
-### R3. Generalize the shake into a layer effect
+**Two things it did not buy, both recorded rather than fixed:**
 
-**Lands in:** library
-
-`hudShake.cpp` is two things wearing one name: a **mechanism** (flush the
-pending batch through a render target, draw the target back through a transform)
-and a **policy** (decay 10/s, 9px, 19 and 24 Hz, 1.4°, triggered by taking
-damage). The mechanism is general and belongs in the library; the policy is this
-game's HUD.
-
-Split it so the library exposes "flush a layer through a target and draw it back
-transformed" and the caller supplies the transform. F2's vignette, hit flash and
-death warp are the same move with a different transform, which is why this is
-not speculative generality — it has three known second users.
-
-### R4. A HUD module
-
-**Lands in:** game
-
-The HUD content has no home. The healthbar's layout, textures and two draws are
-inline at `gameLayer.cpp:490-518`, inside a `gameLogic()` that runs from line 155
-to 566 across ten `#pragma region`s. New HUD elements have nowhere to go except
-further into that function.
-
-`src/gameLayer/hud.{h,cpp}` owns the layout, the textures, the draws, the shake
-policy from R3 and the damage trigger. `gameLogic` calls it once. The test for
-whether this worked: adding a second HUD element touches one file.
-
-**Stop there.** R3 and R4 are the whole cut — there is no third, general "HUD
-system" for `engine/` to own. The only travelling piece is layout, and that is
-already `glui`, already out of tree. Another game wants a layer effect; it does
-not want a health bar.
-
-### R5. Strip the camera down to a transform
-
-**Lands in:** library (and, for now, game)
-
-`wgpu2d::Camera` is a position, a zoom, a rotation that is accepted and
-ignored, and a `follow()` that has no business being a method on it. Milestone
-6b already built the hard part underneath — several cameras per frame in
-dynamic-offset uniform slots.
-
-**The item is one sentence: `Camera` becomes a transform, and `follow` stops
-being a method.** What is left on the struct is position, zoom, rotation,
-`viewProj` and the slot machinery — how sprites get on screen, which is what a
-drawing library is for. `follow` is a behaviour that never draws.
-
-**Where `follow` goes, and the trap.** Its home is `engine/`, which R7 creates.
-Until then it becomes a free function in `gameLayer/`, and R7 moves it in
-alongside collision. It must **not** be parked somewhere in `render/` in the
-meantime under a different name — that is precisely how `hudShake.cpp` came to
-be a general drawing mechanism sitting in the library with one game's numbers
-compiled into it. This is also what `AGENTS.md` already prescribes: until
-`engine/` exists, a system goes in `gameLayer/` with mechanism and policy in
-separate files, so the move is a move.
-
-**Signature matters here.** `follow` must not take a `Camera&`, or `engine/`
-ends up including `wgpu2d.h` and the boundary is lost on day one. It takes and
-returns plain maths — roughly `nextPosition = follow(current, target, params,
-viewSize)` — and the game assigns the result into `currentCamera.position`.
-Verified as safe: `follow` is called only from `gameLayer.cpp:80` and `:214`,
-and nothing under `src/render/` uses it, so removing it from the library breaks
-nothing inside the library.
-
-Rotation is a separate decision in the same file: implement it or delete the
-field. Carrying an ignored one is worse than either.
-
-F3 (parallax layers) is the first real consumer and the honest test of the
-design.
-
-### R6. Split the library out as its own target
-
-**Lands in:** build (and a file move into `platform/`)
-
-`add_library(wgpu2d)` over the drawing sources, the game links it, and the
-remaining blockers at the top get fixed in the process. The payoff is that the
-inward boundary (`render/` must not use `gameLayer/`) stops being a rule in
-`AGENTS.md` and becomes a link error. The other direction — game or platform
-including `wgpuFrame.h` — still compiles; that include rule stays a rule, not
-a wall.
-
-Do it after R3–R5, not before: the split is easy once the things that cross the
-line have been moved, and painful while they still do.
-
-#### Where each file lands
-
-| File | Home | Why |
-|---|---|---|
-| `wgpu2d.h` | library, the only *game-facing* header | sprites, cameras, targets, `LayerEffect`. New drawing capabilities go here. |
-| `wgpuContext.h` | library, public to the *platform* | init / begin / end / shutdown. WebGPU has no implicit current context, so this cannot hide inside `wgpu2d.h` without putting `Surface` on the game include. |
-| `wgpuFrame.h` | library, internal to library TUs — and, after the ImGui move, the named backend hook | device, queue, pass, texture bind groups. `gameLayer` never includes it. |
-| `wgpuContext.cpp`, `layerEffect.cpp`, `webgpuImpl.cpp` | library | |
-| `wgpuImgui.{h,cpp}` | moves to `platform/` | an ImGui backend is not a 2D drawing API — it is the third thing the standing goal already flagged. A separate `wgpu_imgui` CMake target can wait. |
-| `wgpuMetalLayer.{h,mm}` | moves to `platform/` | takes a `GLFWwindow*`; it is window plumbing. The app calls it after creating the window, not `wgpuInit`. |
-
-#### The blockers, restated from the code
-
-1. **The glob.** `file(GLOB_RECURSE src/*.cpp)` into one executable. Straightforward: `add_library(wgpu2d)`, the game links it. The library links `webgpu`, `glm`, and `stb_image`, and does **not** link `glfw` or `glfw3webgpu`.
-
-2. **`RESOURCES_PATH` — only one of the two sites is actually a problem.** `wgpuImgui.cpp:165` becomes app code by the move above, so it may keep reading files. Only `wgpuContext.cpp:1983` loading `quad.wgsl` is the library reaching into an app's resource layout. Generate a header from the `.wgsl` at build time rather than inlining a raw string — it keeps `resources/shaders/quad.wgsl` an editable, highlighted file, which matters here since the shader is a teaching artifact.
-
-3. **hudShake** — gone in R3/R4.
-
-4. **GLFW, which is bigger than "who owns the device."** The library currently includes `glfw3webgpu.h`, calls `glfwCreateWindowWGPUSurface`, stores a `GLFWwindow*`, and polls `glfwGetFramebufferSize` every frame in `wgpuBeginFrame`. That is the dependency that actually blocks reuse — a project on SDL could not link this. Acceptance test: `grep -i glfw src/render/` returns nothing.
-
-#### The fork (take A)
-
-**Option A — the app owns the window and the surface; the library owns instance, adapter, device, and the frame bracket.** GLFW leaves the library entirely. Resize becomes `wgpuResize(w, h)` pushed by the app instead of the library polling GLFW every frame. `glfwMain` already has the window-size callback and already reads framebuffer size; Metal still will not report `Outdated`, so the app may push every frame. That is fine.
-
-**Option B — the app owns instance, adapter, device and surface, and hands them all in.** Closer to gl2d, which is handed a live context. But it pushes WebGPU bring-up — adapter callbacks, device descriptors, required features and limits — into the platform layer of every consumer, and N2 (timestamp queries) and N4 (compute) both add to device creation. Under B those additions land in app code.
-
-Take A. B copies the wrong part of gl2d: gl2d is handed a live context because *the context is thread-global*. WebGPU has no current device. This library *is* the WebGPU bring-up for a 2D game, not a guest in someone else's pass.
-
-**The hole in A as first written.** `glfwCreateWindowWGPUSurface` takes an **instance**. Bring-up is instance → surface from instance + window → adapter with `compatibleSurface` → device → configure. So `wgpuInit(WGPUSurface, w, h)` cannot be the first call. Put the instance with the library: it is "the library itself, no GPU yet" (log callback, `processEvents` for adapter/device requests and error scopes). N2/N4 add *device* features and limits, which stay in the library under A — that is the point of A.
-
-App sequence:
-
-```
-wgpuInitInstance()                              // library: instance + logging
-surface = glfwCreateWindowWGPUSurface(...)      // app
-pinMetalLayerColorSpaceToSRGB(window)           // app; no-op off Apple
-wgpuInit(surface, fbW, fbH)                     // library: adapter, device, pipelines
-// each frame:
-wgpuResize(fbW, fbH)                            // app pushes
-wgpuBeginFrame()
-...
-wgpuEndFrame()
-wgpuShutdown()                                  // library unconfigures the surface, releases instance
-wgpuSurfaceRelease(surface)                     // app: we created it
-```
-
-`wgpuContext.h` will name a WebGPU surface type. The current "no WebGPU types in this header" rule was to keep `glfwMain.cpp` free of WebGPU. After A, platform already has WebGPU in order to create a surface, so that rule retires. `wgpu2d.h` still names none.
-
-#### Three gaps, none blocking
-
-1. **Teardown ownership — decided: app creates the surface, app releases it.** The library-takes-ownership version was the unique-ownership story, and it is the one that bites: a second consumer pairs `glfwCreateWindowWGPUSurface` with `wgpuSurfaceRelease` because they created it, and double-frees. Failed `wgpuInit` is the other hole — the surface is stored and then several `return false` paths would leave ownership transferred on a call that failed. Holding for the process lifetime is not owning; that is how the library used to hold a `GLFWwindow*`. So: `wgpuShutdown` unconfigures and drops the pointer (`forgetSurface`). It does not `release`. `glfwMain` calls `wgpuSurfaceRelease` after shutdown, next to `glfwDestroyWindow`. Failed init nulls the pointer without releasing (a destructor guard on the success flag), so the application still has the handle. Instance stays library-complete: create and destroy. Surface matches the window: create and destroy.
-
-2. **The library's link line is more than `webgpu` and `glm`.** `wgpuContext.cpp` uses `stb_image` for `Texture::loadFromFile`, so `stb_image` comes with the library. (The glob item above already names it.)
-
-3. **`webgpuImpl.cpp` needs a second look now that platform includes `webgpu.hpp`.** Exactly one TU may define `WEBGPU_CPP_IMPLEMENTATION`, and that TU is in the library (`webgpuImpl.cpp` already says so). Once `glfwMain.cpp` includes the wrapper to create a surface, it gets declarations and must resolve the bodies from the static library. That should work, but it is the kind of thing that fails at link time with a wall of undefined symbols, so it is the first thing to verify rather than the last.
-
-**Metal pin, no `#ifdef` in `glfwMain`.** The pin needs the GLFW window, so it lives in `platform/`, not in the drawing library — putting it back in `render/` reimports GLFW for a colour-space workaround. A platform `main` that knows which OS it is on is not a regression (`glfwMain` already has `#ifdef _WIN32` for the debug console). What was off was an `#ifdef __APPLE__` at the *call site*. `wgpuMetalLayer.h` is a no-op that returns true everywhere except Apple; the `.mm` is the real implementation and owns the log. `glfwMain` always calls `pinMetalLayerColorSpaceToSRGB(wind)`.
-
-**What R6 does not do.** Fold `wgpuInit` into `wgpu2d.h` just to have one public header. Inline `quad.wgsl` as a raw string. A third CMake target for ImGui in the same milestone.
+- **The sideways wall does not exist.** `engine` including `render/wgpu2d.h`
+  compiles and links, because both sit under one `include/` root and the
+  executable links both libraries. Only library-to-game is enforced. Fixing it
+  means per-library include roots — headers under `src/render/include/render/…`
+  and `src/engine/include/engine/…`, each target exposing only its own. A
+  repo-shape change touching every header, deliberately not folded into R6.
+- **There is nowhere to keep a test.** Four numeric harnesses have now been
+  written and thrown away: the milestone-5 matrix parity check, the blend
+  readback in 12, the `follow` equivalence check in R5, and `separation()` in
+  R7. Each one caught something or confirmed something worth confirming — the
+  `follow` one caught a silent one-ulp change to the camera's easing — and none
+  of them survives. N3 is the item that would give the render half of this a
+  home; the maths half needs somewhere too.
 
 ---
 
 ## Now — the game track
 
-R7–R11. Independent of the render track: different folders, no shared files, so
-the two can be interleaved in any order. R7 comes first within this track
-because it decides where everything after it lives.
-
-### R7. A fourth home, and collision as its first tenant
-
-**Lands in:** engine (new)
-
-Create `src/engine/`, and move `collisionSystem` into it — splitting the policy
-out on the way. `ICollisionSystem`, the overlap dispatch and the `Hitbox`
-variant are engine; `shipHitboxRadius()` and `shipHitbox()` go to `gameLayer`,
-because a ship is not a general concept.
-
-Doing this first, with code that already exists and already works, means the
-pattern is established and demonstrated before anything new is written against
-it. It is a move, not a design.
-
-**Second tenant, in the same item:** `follow`, which R5 will have already
-detached from `wgpu2d::Camera` and parked in `gameLayer/`. It arrives here
-already shaped — plain maths in, plain maths out — so this is a file move, not
-a redesign either.
-
-**Ordering note.** R5 and R7 look like they contradict each other: R5 is on the
-render track and `follow`'s home is a folder R7 has not created yet. They do
-not, because R5 does not try to land `follow` in its final home — it only takes
-it off the struct. The alternative, running R7 before R5 so `follow` moves once
-instead of twice, works too and costs one fewer move; it was not taken because
-it couples the two tracks, and the render track should stay about drawing. A
-free function moving between two files is the cheapest thing on this page.
-
-While in there: `separation()` is declared on the interface, implemented, and
-called from nowhere in the repo. Either wire it up to the ship-ship resolution
-its comment describes, or delete it — an untested virtual on an interface is a
-design claim that nothing has checked.
+R8–R11. R7 landed early, alongside the render track, because the boundary work
+needed `src/engine/` to exist; it is outline 13. Everything below now has a
+home to go to.
 
 ### R8. Movement as a feature with options
 

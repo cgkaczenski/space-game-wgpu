@@ -48,31 +48,31 @@ it, is in `docs/roadmap.md`.
   - `build/_deps/webgpu-distribution-src/wgpu-native/include/webgpu/webgpu.hpp`
 - **When something is broken, list candidate causes before proposing a fix.**
 
-## The boundary: `wgpu2d` is a library in waiting
+## The boundary: four homes
 
-The goal is that `wgpu2d` could be lifted out of this repo and used by another
-project, the way [gl2d](https://github.com/meemknight/gl2d) is. It is not there
-yet, and **nothing enforces it**: `CMakeLists.txt` globs `src/*.cpp` into a
-single executable, so a leak from the game into the renderer is not even a link
-error. Until the target split lands (roadmap R6), hold the line by hand.
+`wgpu2d` can be lifted out of this repo and used by another project, the way
+[gl2d](https://github.com/meemknight/gl2d) is: it is a CMake target with its
+own shader, no window library, and no way to include this game's headers. What
+is still only a rule is stated per-bullet below.
 
-- **Nothing in `src/render/` may know what this game is.** No ships, no health,
-  no enemies, no `RESOURCES_PATH`. As of today `render/` includes nothing from
-  `gameLayer/` — that direction is clean, keep it clean.
+- **Nothing in `src/render/` or `src/engine/` may know what this game is.** No
+  ships, no health, no enemies, no `RESOURCES_PATH`. This one is enforced: the
+  targets do not carry `include/gameLayer/`, so trying fails to compile.
 - **Ask of every new file: would another game want this?** There are four
   homes, and the answer picks one:
 
   | Home | Holds | Test |
   |---|---|---|
   | `src/render/` | the drawing library | generic, reusable, game-agnostic |
-  | `src/engine/` *(planned, roadmap R7)* | reusable gameplay systems | could another game use it unedited? |
+  | `src/engine/` | reusable gameplay systems | could another game use it unedited? |
   | `src/gameLayer/` | this game | ships, HUD content, tuning constants |
   | `src/platform/` | the app shell | window, loop, ImGui wiring |
 
-  `src/engine/` does not exist yet — movement, collision, inventory, combat and
-  AI belong there rather than in either neighbour, and R7 creates it. Until
-  then, new systems go in `gameLayer/` with the mechanism and the policy in
-  separate files, so the move is a move.
+  `src/render/` and `src/engine/` are CMake targets, not just folders, and
+  neither can include this game's headers — that fails to compile. The
+  sideways direction is not enforced: they can include each other's, because
+  both sit under one `include/` root. Movement, inventory, combat and AI belong
+  in `engine/` beside collision and `cameraFollow`.
 
   `hudShake.cpp` was the standing counter-example: a mechanism worth keeping in
   the library, named and tuned for one game's HUD. R3/R4 split it — `LayerEffect`
@@ -143,6 +143,8 @@ out of the commit, and remove it when done.
 | `include/render/wgpuFrame.h` | what other render TUs see: device, queue, pass, texture bind groups |
 | `src/render/wgpuContext.cpp` | instance through batch flush |
 | `src/render/layerEffect.cpp` | `LayerEffect` implementation |
+| `src/engine/` | reusable gameplay systems: collision, camera behaviours |
+| `src/gameLayer/hud.{h,cpp}` | this game's HUD, including the shake's feel |
 | `src/render/wgpuImgui.cpp` | the hand-written ImGui renderer backend |
 | `src/platform/glfwMain.cpp` | window, frame bracket, ImGui wiring |
 

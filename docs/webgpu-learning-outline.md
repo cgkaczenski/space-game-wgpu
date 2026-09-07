@@ -247,6 +247,32 @@ Predicted `0.25 → 64` and `0.125 → 32`. Exactly half, which is the double mu
 
 ---
 
+## 13. Extracting the library
+
+**Concepts:** Most of this cluster is architecture rather than WebGPU, and it lives in `AGENTS.md` and `docs/roadmap.md` rather than here. What belongs in this file is the part that is WebGPU's fault — the places where the API's shape decided the design.
+
+**WebGPU has no current context, so bring-up cannot be one call.** gl2d is handed a live GL context because a GL context is thread-global; there is no equivalent to be handed. Creating a surface needs an instance, and only the application knows what a window is, so bring-up splits: the library makes the instance, the application makes the surface from it (`glfwCreateWindowWGPUSurface(instance, window)`), and hands it back to `wgpuInit(surface, w, h)`. The adapter request then needs the surface too — `options.compatibleSurface` — which fixes the order as instance → surface → adapter → device → configure.
+
+**Borrowing is not owning.** The library used to hold a `GLFWwindow*`; when GLFW left, it held a `WGPUSurface` the same way. Holding something for the process lifetime is not owning it. `wgpuShutdown` now `unconfigure`s the surface and drops the pointer without releasing, and the application releases it beside `glfwDestroyWindow`. The unconfigure has to happen before the device is released. A destructor guard covers every `return false` in `wgpuInit` at once, rather than auditing each one for a leaked ownership transfer.
+
+**A library cannot read an application's resource layout.** `RESOURCES_PATH` is the app's. The sprite shader is now compiled in — CMake reads `resources/shaders/quad.wgsl` and generates a raw-string header — while `createShaderModuleFromFile` survives for the application, which legitimately has a resource layout and uses it for the ImGui shader. Watch the newline: the WGSL must follow `R"WGSL(` with nothing between, or every compile error reports one line past the file it came from.
+
+**The C header is enough at the seam.** `wgpuContext.h` names `WGPUInstance` and `WGPUSurface`, not the C++ wrapper's types, so the application never compiles `webgpu.hpp` — which also sidesteps the one-TU `WEBGPU_CPP_IMPLEMENTATION` rule entirely.
+
+**What the CMake targets do and do not enforce.** `wgpu2d` and `engine` are libraries, and a library cannot see the game: `#include <hud.h>` from either fails to *compile*, because neither target carries `include/gameLayer/` on its include path. That is stronger than a link error and arrives sooner. What is **not** enforced is the sideways direction — `engine` can include `render/wgpu2d.h`, use its symbols, and link, because both headers sit under one `include/` root and the executable links both libraries. Making that a wall as well needs per-library include roots. Tested in both directions rather than assumed; the asymmetry is real and the claim "a target is a wall" is only half true.
+
+**Where things went:** the drawing library kept sprites, cameras, targets and layer effects. The ImGui backend and the macOS colour-space pin are the application's — an ImGui backend is not a 2D drawing API, and the pin needs a window. Reusable gameplay systems that draw nothing got a fourth home in `src/engine/`.
+
+**Also settled here:** `wgpu2d` is not frozen at gl2d's signatures. That was a port tactic so the game could switch by include and namespace, and it finished its job at 7. `BlendMode` (12) and `LayerEffect` were the first two additions past it.
+
+**LearnWebGPU:** no chapter — the guide builds one program and never asks where the seam goes.
+
+**Code:** `wgpuInitInstance` / `wgpuInit(surface, w, h)` / `wgpuResize` / `forgetSurface` · `include/render/wgpuContext.h` · `wgpu2d::LayerEffect` · `src/gameLayer/hud.{h,cpp}` · `src/engine/` · the `wgpu2d` and `engine` targets and the shader generator in `CMakeLists.txt`
+
+**Commits:** `e6fec09` layer effect · `0d73c53` HUD module, and gl2d unfrozen · `cb2348c` camera as transform · `cfc5755` a NaN guard · `cfdf6c2` the library target · `7e0ec55` the engine home
+
+---
+
 ## This machine, and what it does differently
 
 Facts established while porting, all specific to an Intel Mac with an AMD Radeon Pro 560X on Metal via wgpu-native. None of them are bugs in the renderer; each one cost time before it was understood.
