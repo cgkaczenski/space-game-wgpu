@@ -11,6 +11,7 @@
 #include <hud.h>
 #include <shipThruster.h>
 #include <shipShield.h>
+#include <bulletGlow.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
@@ -103,6 +104,7 @@ bool initGame()
 	if (!hud::init()) { return false; }
 	if (!thruster::init()) { return false; }
 	if (!shield::init()) { return false; }
+	if (!bulletGlow::init()) { return false; }
 
 	shootSound = LoadSound(RESOURCES_PATH "shoot.flac");
 	if (shootSound.stream.buffer == nullptr)
@@ -430,6 +432,17 @@ bool gameLogic(float deltaTime)
 
 #pragma region render bullets
 
+	// Two passes, glows then sprites, rather than both per bullet. The batch
+	// breaks a run wherever the blend mode changes, so doing it this way costs
+	// two run breaks a frame instead of two per bullet -- and it is the right
+	// layering anyway, since every glow belongs under every sprite.
+	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+	for (auto &b : data.bullets)
+	{
+		bulletGlow::draw(renderer, b.position, b.fireDirection, b.isEnemy);
+	}
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+
 	for (auto &b : data.bullets)
 	{
 		b.render(renderer, bulletsTexture, bulletsAtlas);
@@ -563,4 +576,5 @@ void closeGame()
 	hud::cleanup();
 	thruster::cleanup();
 	shield::cleanup();
+	bulletGlow::cleanup();
 }
