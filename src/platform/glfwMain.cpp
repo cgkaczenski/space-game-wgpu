@@ -1,5 +1,6 @@
 #include <GLFW/glfw3.h>
 #include <stb_image/stb_image.h>
+#include <stb_image/stb_image_write.h>
 #include <stb_truetype/stb_truetype.h>
 #include <iostream>
 #include <ctime>
@@ -12,6 +13,9 @@
 #include <glfw3webgpu.h>   // glfwCreateWindowWGPUSurface: the app owns the window
 #include <platform/wgpuMetalLayer.h>
 #include <fstream>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
 #include <chrono>
 
 #define REMOVE_IMGUI 0
@@ -311,6 +315,21 @@ int main()
 	// No OpenGL context: WebGPU drives the window's Metal layer through a surface.
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
+	// WGPU_OFFSCREEN=1 runs with the window hidden. With WGPU_SCREENSHOT_FRAME
+	// that is a scriptable capture of a real frame -- the whole pipeline, ImGui
+	// included -- without a window appearing.
+	//
+	// This is not a *surfaceless* headless context, which is the other half of
+	// roadmap N3 and a much larger change: the renderer's eight uses of the
+	// surface would each need an offscreen branch, and more to the point the
+	// application would need to run with no window at all, which means stubbing
+	// the GLFW input callbacks the game reads through platform:: and bypassing
+	// the ImGui GLFW backend. A hidden window buys nearly all of the practical
+	// value for one hint. The remaining gap is a machine with no window system
+	// at all, which this project does not have.
+	const bool offscreen = getenv("WGPU_OFFSCREEN") != nullptr;
+	if (offscreen) { glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); }
+
 
 	int w = 500;
 	int h = 500;
@@ -419,6 +438,27 @@ int main()
 	#pragma endregion
 
 	#pragma region frame start
+			// F12: ask the renderer for this frame. The request is fulfilled
+			// inside wgpuEndFrame and collected after it -- the library hands
+			// back pixels, and turning them into a file is our job, not its.
+			// Edge-detected here rather than added to platformInput, because
+			// this is a developer tool and not a game input.
+			{
+				static bool screenshotHeld = false;
+				const bool down = glfwGetKey(wind, GLFW_KEY_F12) == GLFW_PRESS;
+				if (down && !screenshotHeld) { render::wgpuRequestFrameCapture(); }
+				screenshotHeld = down;
+
+				// WGPU_SCREENSHOT_FRAME=N shoots frame N and needs no keyboard,
+				// which is what makes this usable from a script or an agent
+				// session -- the verification norm in AGENTS.md wants a fixed
+				// scene rendered to a PNG, and a key binding cannot provide it.
+				static long long frameIndex = 0;
+				static const char *shotAt = getenv("WGPU_SCREENSHOT_FRAME");
+				++frameIndex;
+				if (shotAt && frameIndex == atoll(shotAt)) { render::wgpuRequestFrameCapture(); }
+			}
+
 			// Push the framebuffer size before acquiring anything. The
 			// library no longer asks the window for it, and on Metal the
 			// surface never reports itself Outdated, so this has to be told
@@ -516,6 +556,31 @@ int main()
 			render::wgpuImguiRenderDrawData(); // on top of the game, same pass
 		#endif
 		render::wgpuEndFrame(); // end pass, submit, present
+
+		// Collect a screenshot if one was asked for. The renderer hands over
+		// tightly packed RGBA and nothing else -- no path, no format, no
+		// encoder -- so the policy about where files go lives here.
+		{
+			std::vector<unsigned char> pixels;
+			int shotW = 0, shotH = 0;
+			if (render::wgpuTakeFrameCapture(pixels, shotW, shotH))
+			{
+				char name[64] = {};
+				std::snprintf(name, sizeof(name), "screenshot-%lld.png",
+					(long long)std::chrono::duration_cast<std::chrono::seconds>(
+						std::chrono::system_clock::now().time_since_epoch()).count());
+				if (stbi_write_png(name, shotW, shotH, 4, pixels.data(), shotW * 4))
+				{
+					std::cout << "screenshot: " << name << " (" << shotW << "x" << shotH << ")\n";
+				}
+				else
+				{
+					std::cerr << "screenshot: stbi_write_png failed for " << name << "\n";
+				}
+				std::cout.flush();
+			}
+		}
+
 		glfwPollEvents();
 
 	#pragma endregion

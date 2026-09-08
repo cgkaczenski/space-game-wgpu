@@ -448,7 +448,8 @@ namespace
 		SurfaceConfiguration config = Default;
 		config.device = g.device;
 		config.format = g.surfaceFormat;
-		config.usage = TextureUsage::RenderAttachment;
+		// CopySrc so a finished frame can be read back (see wgpuRequestFrameCapture).
+		config.usage = TextureUsage::RenderAttachment | TextureUsage::CopySrc;
 		config.width = (uint32_t)w;
 		config.height = (uint32_t)h;
 		config.viewFormatCount = 0;
@@ -1068,7 +1069,11 @@ namespace
 		entry.format = texDesc.format;
 		texDesc.mipLevelCount = 1;
 		texDesc.sampleCount = 1;
-		texDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
+		// CopySrc for the same reason the surface has it: a render target is a
+		// frame too, and reading one back is how milestone 12's blend numbers
+		// were measured.
+		texDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding
+			| TextureUsage::CopySrc;
 		texDesc.viewFormatCount = 0;
 		texDesc.viewFormats = nullptr;
 		entry.texture = g.device.createTexture(texDesc);
@@ -1747,6 +1752,157 @@ namespace
 		g.compositing = false;
 	}
 
+	// ---------------------------------------------------------------------
+	// Frame capture
+	// ---------------------------------------------------------------------
+	//
+	// Three steps, split across the frame because the GPU is not synchronous:
+	// record a copy from the frame's texture into a buffer (before submit),
+	// submit, then map the buffer and read it (after submit). The map is
+	// asynchronous like every other WebGPU callback, and is drained with the
+	// same bounded pump the error scopes use.
+	//
+	// Two rules the copy imposes, and both are the caller's problem if they
+	// leak: bytesPerRow must be a multiple of 256, so the buffer's rows are
+	// padded and unpadded here; and the surface is BGRA on this backend, so
+	// the channels are swizzled here. What comes out is tightly packed RGBA.
+	struct FrameCapture
+	{
+		bool requested = false;
+		bool copied = false;
+		bool ready = false;
+		Buffer buffer = nullptr;
+		uint64_t bufferBytes = 0;
+		uint32_t rowBytes = 0;
+		int width = 0;
+		int height = 0;
+		std::vector<unsigned char> pixels;
+		bool mapDone = false;
+	};
+	FrameCapture capture;
+
+	// Records the copy. Called from wgpuEndFrame after the pass has ended and
+	// before the encoder is finished -- a copy cannot be recorded inside a
+	// render pass.
+	void captureRecordCopy()
+	{
+		if (!capture.requested || !g.frameTexture || g.surfaceWidth <= 0 || g.surfaceHeight <= 0)
+		{
+			return;
+		}
+
+		capture.width = g.surfaceWidth;
+		capture.height = g.surfaceHeight;
+		capture.rowBytes = ceilToNextMultiple((uint32_t)capture.width * 4, 256);
+		const uint64_t needed = (uint64_t)capture.rowBytes * capture.height;
+
+		if (!capture.buffer || capture.bufferBytes < needed)
+		{
+			if (capture.buffer) { capture.buffer.release(); }
+			BufferDescriptor desc = Default;
+			desc.label = StringView("frame capture");
+			desc.usage = BufferUsage::CopyDst | BufferUsage::MapRead;
+			desc.size = needed;
+			desc.mappedAtCreation = false;
+
+			ErrorScope scope("frame capture buffer");
+			capture.buffer = g.device.createBuffer(desc);
+			if (!capture.buffer || scope.failed())
+			{
+				std::cerr << "WebGPU: frame capture buffer could not be created\n";
+				capture.requested = false;
+				return;
+			}
+			capture.bufferBytes = needed;
+		}
+
+		TexelCopyTextureInfo source = Default;
+		source.texture = g.frameTexture;
+		source.mipLevel = 0;
+		source.origin = { 0, 0, 0 };
+		source.aspect = TextureAspect::All;
+
+		TexelCopyBufferInfo destination = Default;
+		destination.buffer = capture.buffer;
+		destination.layout.offset = 0;
+		destination.layout.bytesPerRow = capture.rowBytes;
+		destination.layout.rowsPerImage = (uint32_t)capture.height;
+
+		Extent3D size = { (uint32_t)capture.width, (uint32_t)capture.height, 1 };
+		g.frameEncoder.copyTextureToBuffer(source, destination, size);
+		capture.copied = true;
+	}
+
+	void onCaptureMapped(WGPUMapAsyncStatus status, WGPUStringView message, void *userdata1, void *)
+	{
+		*static_cast<bool *>(userdata1) = true;
+		if (status != MapAsyncStatus::Success)
+		{
+			std::cerr << "WebGPU: frame capture mapAsync failed: " << StringView(message) << "\n";
+		}
+	}
+
+	// Maps the buffer and unpacks it. Called from wgpuEndFrame after submit.
+	// This blocks, which is why a capture is a one-off the application asks
+	// for rather than something that happens every frame.
+	void captureResolve()
+	{
+		if (!capture.copied) { return; }
+		capture.copied = false;
+		capture.requested = false;
+
+		const size_t total = (size_t)capture.bufferBytes;
+		capture.mapDone = false;
+
+		BufferMapCallbackInfo info = Default;
+		info.mode = CallbackMode::AllowProcessEvents;
+		info.callback = onCaptureMapped;
+		info.userdata1 = &capture.mapDone;
+		info.userdata2 = nullptr;
+		capture.buffer.mapAsync(MapMode::Read, 0, total, info);
+
+		for (int i = 0; !capture.mapDone && i < 3000; i++)
+		{
+			g.instance.processEvents();
+			if (!capture.mapDone) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+		}
+		if (!capture.mapDone)
+		{
+			std::cerr << "WebGPU: frame capture never mapped\n";
+			return;
+		}
+
+		const unsigned char *src = static_cast<const unsigned char *>(
+			capture.buffer.getConstMappedRange(0, total));
+		if (!src)
+		{
+			std::cerr << "WebGPU: frame capture mapped range was null\n";
+			capture.buffer.unmap();
+			return;
+		}
+
+		capture.pixels.resize((size_t)capture.width * capture.height * 4);
+		const bool bgra = (g.surfaceFormat == TextureFormat::BGRA8Unorm
+			|| g.surfaceFormat == TextureFormat::BGRA8UnormSrgb);
+		for (int y = 0; y < capture.height; y++)
+		{
+			const unsigned char *row = src + (size_t)y * capture.rowBytes;
+			unsigned char *out = capture.pixels.data() + (size_t)y * capture.width * 4;
+			for (int x = 0; x < capture.width; x++)
+			{
+				const unsigned char *p = row + (size_t)x * 4;
+				unsigned char *q = out + (size_t)x * 4;
+				q[0] = bgra ? p[2] : p[0];
+				q[1] = p[1];
+				q[2] = bgra ? p[0] : p[2];
+				q[3] = 255; // the surface has no meaningful alpha to hand on
+			}
+		}
+
+		capture.buffer.unmap();
+		capture.ready = true;
+	}
+
 	void printAdapter(Adapter adapter)
 	{
 		AdapterInfo info = Default;
@@ -2059,6 +2215,23 @@ bool wgpuInit(WGPUSurface surface, int width, int height)
 	return true;
 }
 
+void wgpuRequestFrameCapture()
+{
+	capture.requested = true;
+	capture.ready = false;
+}
+
+bool wgpuTakeFrameCapture(std::vector<unsigned char> &rgba, int &width, int &height)
+{
+	if (!capture.ready) { return false; }
+	capture.ready = false;
+	rgba = std::move(capture.pixels);
+	capture.pixels.clear();
+	width = capture.width;
+	height = capture.height;
+	return true;
+}
+
 void wgpuResize(int width, int height)
 {
 	if (!g.surface) { return; }
@@ -2162,6 +2335,8 @@ void wgpuEndFrame()
 		g.framePassTarget = 0;
 	}
 
+	captureRecordCopy(); // before finish(): a copy cannot go inside a pass
+
 	// Seal the recording into a command buffer, submit, present.
 	CommandBufferDescriptor cmdDesc = Default;
 	cmdDesc.label = StringView("frame commands");
@@ -2171,6 +2346,8 @@ void wgpuEndFrame()
 
 	g.queue.submit(1, &commands);
 	commands.release();
+
+	captureResolve(); // after submit: the copy has to have run
 
 	g.surface.present(); // this is glfwSwapBuffers
 
@@ -2227,6 +2404,7 @@ void wgpuShutdown()
 	if (g.textureBindGroupLayout) { g.textureBindGroupLayout.release(); g.textureBindGroupLayout = nullptr; }
 	if (g.samplerPixelated) { g.samplerPixelated.release(); g.samplerPixelated = nullptr; }
 	if (g.samplerLinear) { g.samplerLinear.release(); g.samplerLinear = nullptr; }
+	if (capture.buffer) { capture.buffer.release(); capture.buffer = nullptr; capture.bufferBytes = 0; }
 	forgetSurface();
 	if (g.queue) { g.queue.release(); g.queue = nullptr; }
 	if (g.device) { g.device.release(); g.device = nullptr; }

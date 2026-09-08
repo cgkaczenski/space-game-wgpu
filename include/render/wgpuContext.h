@@ -24,6 +24,8 @@
 
 #include <webgpu/webgpu.h>
 
+#include <vector>
+
 namespace render
 {
 	// Creates the WebGPU instance and installs wgpu-native's log callback
@@ -56,6 +58,32 @@ namespace render
 	// wgpuEndFrame ends the pass, submits, and presents.
 	void wgpuBeginFrame();
 	void wgpuEndFrame();
+
+	// ---- Frame capture ---------------------------------------------------
+	//
+	// Copies a finished frame back to the CPU. The pixels come back as bytes;
+	// writing a file is the application's job, because a drawing library has
+	// no business owning an image encoder or a path -- the same reason its
+	// shaders are compiled in rather than read from RESOURCES_PATH.
+	//
+	// The surface and every render target carry CopySrc so this is always
+	// available. That is a deliberate, permanent cost: the capability has been
+	// rebuilt as throwaway scaffolding five times in this project, and the
+	// verification norm in AGENTS.md depends on having it.
+
+	// Ask for the frame currently being recorded. Fulfilled inside
+	// wgpuEndFrame; one request at a time, and a second before the first is
+	// taken replaces it.
+	void wgpuRequestFrameCapture();
+
+	// Hands over the pixels once a request has been fulfilled, and clears it.
+	// False if nothing is ready.
+	//
+	// Tightly packed RGBA8, top row first: `width * height * 4` bytes with no
+	// padding. The 256-byte row alignment the copy requires is undone here
+	// rather than leaked to the caller, and the surface's BGRA order is
+	// swizzled here too, so what comes out is what an image file wants.
+	bool wgpuTakeFrameCapture(std::vector<unsigned char> &rgba, int &width, int &height);
 
 	// Releases everything the two init calls created, in reverse order, except
 	// the surface -- that is the application's, released after this returns.

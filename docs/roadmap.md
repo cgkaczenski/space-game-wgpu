@@ -157,13 +157,16 @@ behaviour; and `wgpu2d` is a CMake target that cannot see the game.
   means per-library include roots — headers under `src/render/include/render/…`
   and `src/engine/include/engine/…`, each target exposing only its own. A
   repo-shape change touching every header, deliberately not folded into R6.
-- **There is nowhere to keep a test.** Four numeric harnesses have now been
-  written and thrown away: the milestone-5 matrix parity check, the blend
-  readback in 12, the `follow` equivalence check in R5, and `separation()` in
-  R7. Each one caught something or confirmed something worth confirming — the
-  `follow` one caught a silent one-ulp change to the camera's easing — and none
-  of them survives. N3 is the item that would give the render half of this a
-  home; the maths half needs somewhere too.
+- **There is nowhere to keep a test — half fixed.** Five harnesses were
+  written and thrown away before N3 landed the capture path: the milestone-5
+  matrix parity check, the blend readback in 12, the `follow` equivalence check
+  in R5, `separation()` in R7, and the frame-capture probe rebuilt four times
+  over the graphics features. Each caught or confirmed something worth having —
+  the `follow` one caught a silent one-ulp change to the camera's easing.
+  **Pixels now have a home**: `WGPU_SCREENSHOT_FRAME` plus `WGPU_OFFSCREEN`
+  makes a scripted capture a committed tool. **Numbers still do not.** The
+  arithmetic checks — matrix parity, blend sums, `follow`, `separation` — have
+  no test target to live in, and each one is still written and deleted.
 
 ---
 
@@ -300,24 +303,41 @@ about cost, and without this they are guesses.
 
 ---
 
-### N3. Screen capture, and a headless context
+### N3. A headless context — *(capture half landed)*
 
-**Concepts:** `copyTextureToBuffer` with the 256-byte `bytesPerRow` alignment
-rule, `mapAsync` and the map-callback lifetime, `RenderAttachment | CopySrc`
-usage flags. Headless is the same thing with no surface at all: no window, no
-present, a texture as the only attachment.
+**Landed: screen capture.** `wgpuRequestFrameCapture` / `wgpuTakeFrameCapture`
+on `wgpuContext.h`, `CopySrc` permanent on the surface and on render targets,
+F12 for a human and `WGPU_SCREENSHOT_FRAME=N` for everything else. The library
+hands back tightly packed RGBA and nothing else — no path, no encoder — with
+the 256-byte row padding undone and the BGRA swizzle applied, because both are
+the copy's rules and not the caller's problem.
+
+That retires the debt this item was really about: the capability had been
+rebuilt as throwaway scaffolding five times, and the fifth time it was lost
+mid-task to a cleared scratchpad and had to be rewritten before the work could
+continue.
+
+**Substituted, deliberately: `WGPU_OFFSCREEN=1` hides the window** rather than
+removing it. With the frame trigger that is a scriptable capture of a real
+frame, ImGui included, with nothing appearing on screen — which is what the
+verification norm in `AGENTS.md` actually needs.
+
+**What remains is a genuinely surfaceless context, and it is not mostly
+renderer work.** The renderer half is tractable: eight uses of `g.surface`,
+each with an obvious offscreen branch — no `getCurrentTexture`, no `present`, a
+texture as the only attachment. The application half is the real cost.
+`glfwMain` is built around a window, ImGui's GLFW backend requires one, and the
+game reads input through `platform::`, which is wired to GLFW callbacks. Doing
+this means stubbing input and bypassing ImGui: app restructuring on top of a
+renderer change.
+
+**So the honest question before starting it is what it buys that a hidden
+window does not**, and the answer is one thing: running on a machine with no
+window system — CI, a container, a remote box. This project has no such
+machine today. Until it does, this is a solution without a problem, and the
+comment in `glfwMain.cpp` records the gap so nobody assumes it was finished.
 
 **LearnWebGPU:** [Screen capture](https://eliemichel.github.io/LearnWebGPU/advanced-techniques/screen-capture.html) (WIP) · [Headless context](https://eliemichel.github.io/LearnWebGPU/advanced-techniques/headless.html)
-
-**Would land:** a capture entry point in `wgpuContext.cpp` next to
-`compositeScaledTarget`; a key binding in `glfwMain.cpp`.
-
-**Why it earns its place:** this has now been written twice as throwaway
-scaffolding — for the milestone-7 parity check, and again for milestone 12's
-blend numbers. The second time also needed `CopySrc` added to render targets,
-which this item should make permanent. Making it permanent turns the
-verification norm in `AGENTS.md` into a committed tool — a fixed, time-independent
-scene rendered headless to a PNG is a regression harness, not a demo.
 
 ---
 
