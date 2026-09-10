@@ -193,15 +193,20 @@ jitter it targeted might still be there.
 
 **Candidates, ranked by what the code can actually do:**
 
-1. **A failed pipeline build retried forever.** `getQuadPipeline` does not cache
-   a failure — it returns null and `flushBatch` skips the run — so a variant
-   that cannot be built is re-attempted on *every draw run of every frame*: up
-   to 14 `createRenderPipeline` calls a frame, each with a blocking error-scope
-   drain. That alone reaches the right order of magnitude.
-2. **A spuriously failed build.** `createQuadPipelineVariant`'s error scope
-   catches any validation error open during its window, not only its own, so an
-   unrelated error can make a good pipeline be discarded and rebuilt forever.
-   Same storm, different trigger.
+1. ~~**A failed pipeline build retried forever.**~~ **Fixed, and measured — and
+   it was almost certainly not this.** The retry loop was real: with a variant
+   forced to fail, the old code rebuilt it **783 times** in eleven seconds
+   against **1** after caching the failure. But two predictions about it were
+   wrong. The rate is ~1 rebuild per frame, not the 14 estimated, because the
+   draws needing the missing variant are contiguous and form a single run. And
+   the cost is near zero — the frame rate held at 75 throughout, with no slow
+   frames in either run, because Metal caches pipeline compilation. Worth
+   fixing on its own merits; not an explanation for a 15 fps collapse.
+2. ~~**A spuriously failed build.**~~ **Not real.** On reading rather than
+   remembering: `createQuadPipelineVariant`'s error scope brackets exactly one
+   call, `createRenderPipeline`, and claims only `ErrorFilter::Validation`, so
+   out-of-memory and internal errors never land in it. There is nothing here to
+   narrow.
 3. **A mid-frame stall** — a texture or render target allocated during a frame,
    or an error scope draining with 1 ms sleeps.
 4. **Outside the process** — thermal throttling, GPU contention, another
@@ -215,12 +220,16 @@ means the device complained, `blocked` means it sat draining a callback,
 `textures` means an allocation. **All zeros means 4**, which is worth as much,
 because it eliminates the rest.
 
-**Deliberately not fixed yet: candidates 1 and 2 are real defects visible by
-reading.** Patching them now would destroy the evidence — if one of them is the
-bug, the recorder proves it on first recurrence; if they are patched blind and
-the stall never returns, nothing is learned and nobody knows whether it is
-gone. They are worth fixing on their own merits *after* the question is
-settled, not before.
+**Candidate 1 was fixed in a way that keeps the evidence**, which turned out to
+be better than leaving it: the failure is now cached and reported once, loudly,
+by name. A recurrence is a single named line in the log instead of a silent
+rebuild loop — more observable than before, not less — and the frame-rate cliff
+it might have caused is gone either way.
+
+**That leaves 3 and 4, and 4 is now the front-runner** — thermal throttling,
+GPU contention, or another application. The measurements above removed the two
+in-process suspects that could be examined by reading. If the recorder ever
+fires with every counter at zero, that is the answer.
 
 Run with `2>&1 | tee` so the report survives the session.
 

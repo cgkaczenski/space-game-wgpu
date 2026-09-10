@@ -58,6 +58,12 @@ namespace
 	struct PipelineEntry
 	{
 		PipelineKey key;
+		// Null means this variant was tried and could not be built. That is
+		// cached deliberately: flushBatch asks for a pipeline per *draw run*,
+		// so a failure that is not remembered becomes a fresh
+		// createRenderPipeline on every run of every frame -- a handful of
+		// pipeline compiles per frame, each with a blocking error-scope drain,
+		// which is enough to take a 13 ms frame past 50.
 		RenderPipeline pipeline = nullptr;
 		std::string label; // owns the text; useful in logs after creation
 	};
@@ -890,23 +896,35 @@ namespace
 		entry.key = key;
 		entry.label = std::string("quad pipeline (") + formatName(key.format) + ", "
 			+ blendName(key.blend) + ")";
-		// Counted because compiling a pipeline mid-frame is expensive, and
-		// because a *failed* build is not cached -- so a variant that cannot
-		// be built is retried on every draw run of every frame, which would
-		// show up here as a large number rather than a 1.
+
+		// Counted because compiling a pipeline mid-frame is expensive. With
+		// the failure cached below, this should read 1 for a variant's first
+		// frame and 0 thereafter -- anything larger means something is asking
+		// for keys that keep changing.
 		++framePerf.pipelineBuilds;
 		entry.pipeline = createQuadPipelineVariant(key, entry.label.c_str());
-		if (!entry.pipeline)
+		const bool built = (entry.pipeline != nullptr);
+
+		if (!built)
 		{
 			++framePerf.pipelineFailures;
-			return nullptr;
+			// Once, loudly, and then never again: the entry is cached either
+			// way, so this cannot become a per-frame message any more than it
+			// can become a per-frame compile.
+			std::cerr << "WebGPU: " << entry.label << " could not be built."
+				<< " Draws needing it are skipped for the rest of this run.\n";
+			std::cerr.flush();
 		}
 
 		g.quadPipelines.push_back(std::move(entry));
-		std::cout << "WebGPU " << g.quadPipelines.back().label << " created ("
-			<< g.quadPipelines.size() << " variant"
-			<< (g.quadPipelines.size() == 1 ? "" : "s") << " cached)\n";
-		std::cout.flush();
+		if (built)
+		{
+			int usable = 0;
+			for (const PipelineEntry &e : g.quadPipelines) { if (e.pipeline) { ++usable; } }
+			std::cout << "WebGPU " << g.quadPipelines.back().label << " created ("
+				<< usable << " variant" << (usable == 1 ? "" : "s") << " cached)\n";
+			std::cout.flush();
+		}
 		return g.quadPipelines.back().pipeline;
 	}
 
@@ -2464,7 +2482,11 @@ void wgpuEndFrame()
 	// here, which is why gpuMillis lags by a frame or two.
 	g.instance.processEvents();
 
-	statsInProgress.pipelineVariants = (int)g.quadPipelines.size();
+	statsInProgress.pipelineVariants = 0;
+	for (const PipelineEntry &e : g.quadPipelines)
+	{
+		if (e.pipeline) { ++statsInProgress.pipelineVariants; } // known-bad entries do not count
+	}
 	statsInProgress.gpuMillis = lastGpuMillis;
 	statsInProgress.pipelineBuilds = framePerf.pipelineBuilds;
 	statsInProgress.pipelineFailures = framePerf.pipelineFailures;
