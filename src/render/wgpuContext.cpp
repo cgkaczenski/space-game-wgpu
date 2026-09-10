@@ -49,9 +49,21 @@ namespace
 		TextureFormat format = TextureFormat::Undefined;
 		wgpu2d::BlendMode blend = wgpu2d::BlendMode::Alpha;
 
+		// F2: which shader this pipeline runs. 0 is the sprite shader that
+		// every ordinary draw uses; higher values index registered effects.
+		//
+		// This is the field outline 14 said would arrive with the first effect
+		// that needs its own WGSL, and it is why the key was left at two
+		// fields rather than guessed wider: a shader is a genuinely different
+		// pipeline, and until something needed one there was nothing to key
+		// on. Sample count (N6), depth state (N7) and the vertex layout (N5)
+		// are still absent for the same reason.
+		uint32_t shader = 0;
+
 		bool operator==(const PipelineKey &other) const
 		{
-			return format == other.format && blend == other.blend;
+			return format == other.format && blend == other.blend
+				&& shader == other.shader;
 		}
 	};
 
@@ -732,6 +744,31 @@ namespace
 	// The render pipeline: every configurable stage of the GPU's fixed
 	// triangle pipeline, baked into one immutable object. Selected per pass
 	// with setPipeline; never mutated.
+	// Shader 0 is the sprite shader; anything else is an effect the
+	// application registered. Modules live for the process, because a pipeline
+	// built from one keeps needing it and the cache keeps the pipeline.
+	struct ShaderEntry
+	{
+		ShaderModule module = nullptr;
+		std::string name;
+	};
+	std::vector<ShaderEntry> shaderRegistry;
+
+	ShaderModule shaderModuleFor(uint32_t index)
+	{
+		if (index == 0) { return g.quadShaderModule; }
+		const size_t at = (size_t)index - 1;
+		if (at >= shaderRegistry.size()) { return nullptr; }
+		return shaderRegistry[at].module;
+	}
+
+	const char *shaderNameFor(uint32_t index)
+	{
+		if (index == 0) { return "sprite"; }
+		const size_t at = (size_t)index - 1;
+		return at < shaderRegistry.size() ? shaderRegistry[at].name.c_str() : "?";
+	}
+
 	const char *blendName(wgpu2d::BlendMode mode)
 	{
 		switch (mode)
@@ -747,8 +784,14 @@ namespace
 	// makes the key as small as it is.
 	RenderPipeline createQuadPipelineVariant(const PipelineKey &key, const char *label)
 	{
-		if (!g.quadShaderModule) { return nullptr; }
-		ShaderModule module = g.quadShaderModule;
+		// Vertex and fragment come from separate modules, which is what lets an
+		// effect be a *fragment function only*. Every effect inherits the
+		// sprite vertex stage, so it inherits the vertex layout and the camera
+		// transform for free and its author writes one function rather than a
+		// whole pipeline's worth of WGSL.
+		ShaderModule vertexModule = g.quadShaderModule;
+		ShaderModule fragmentModule = shaderModuleFor(key.shader);
+		if (!vertexModule || !fragmentModule) { return nullptr; }
 
 		RenderPipelineDescriptor desc = Default;
 		desc.label = StringView(label);
@@ -776,7 +819,7 @@ namespace
 		vertexLayout.attributeCount = 3;
 		vertexLayout.attributes = attributes;
 
-		desc.vertex.module = module;
+		desc.vertex.module = vertexModule;
 		desc.vertex.entryPoint = StringView("vs_main");
 		desc.vertex.constantCount = 0;
 		desc.vertex.constants = nullptr;
@@ -836,7 +879,7 @@ namespace
 		colorTarget.writeMask = ColorWriteMask::All;
 
 		FragmentState fragment = Default;
-		fragment.module = module;
+		fragment.module = fragmentModule;
 		fragment.entryPoint = StringView("fs_main");
 		fragment.constantCount = 0;
 		fragment.constants = nullptr;
@@ -869,8 +912,9 @@ namespace
 			invalid = scope.failed();
 		}
 
-		// The module is not released here: it is g.quadShaderModule and every
-		// other variant is built from it. wgpuShutdown owns its lifetime.
+		// Neither module is released here: the vertex one is g.quadShaderModule
+		// and the fragment one belongs to the shader registry. Both outlive
+		// every pipeline built from them, and wgpuShutdown owns their ends.
 
 		if (!pipeline || invalid)
 		{
@@ -894,8 +938,8 @@ namespace
 		// capture show, so it names both halves of the key.
 		PipelineEntry entry;
 		entry.key = key;
-		entry.label = std::string("quad pipeline (") + formatName(key.format) + ", "
-			+ blendName(key.blend) + ")";
+		entry.label = std::string("pipeline (") + shaderNameFor(key.shader) + ", "
+			+ formatName(key.format) + ", " + blendName(key.blend) + ")";
 
 		// Counted because compiling a pipeline mid-frame is expensive. With
 		// the failure cached below, this should read 1 for a variant's first
