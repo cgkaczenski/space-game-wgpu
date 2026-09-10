@@ -66,6 +66,38 @@ namespace wgpu2d
 	#define Colors_Gray (wgpu2d::Color4f{ (float)0x7F / 255.0f, (float)0x7F / 255.0f, (float)0x7F / 255.0f, 1 })
 	#define Colors_Transparent (wgpu2d::Color4f{ 0,0,0,0 })
 
+	// What the last completed frame cost, for a debug readout.
+	//
+	// The counts are the renderer's own and are exact. `gpuMillis` is not: it
+	// is the wall time from submitting the frame to the queue reporting that
+	// work done, so it includes queue waits and whatever the presentation
+	// engine did, and it is a lower bound on frame latency rather than a
+	// measure of GPU work. Real per-pass GPU timing wants timestamp queries,
+	// which this adapter does not support -- see roadmap N2.
+	struct FrameStats
+	{
+		int quads = 0;
+		int drawRuns = 0;
+		int cameras = 0;
+		int flushes = 0;
+		int pipelineVariants = 0;
+		float gpuMillis = -1.f; // negative until the first callback lands
+
+		// Diagnostics for a frame that took much longer than its neighbours.
+		// Every one of these should be 0 in a steady frame; a non-zero value
+		// names what the frame did that a normal one does not.
+		int pipelineBuilds = 0;    // variants compiled this frame (expensive)
+		int pipelineFailures = 0;  // builds that were rejected and discarded
+		int validationErrors = 0;  // uncaptured errors reported this frame
+		int texturesCreated = 0;   // textures or render targets allocated
+		float blockedMs = 0.f;     // time spent draining async callbacks
+	};
+
+	// The frame before this one. Reading it mid-frame gives a complete number
+	// instead of a partial one, which is what a debug panel wants -- the panel
+	// itself is drawn before the frame it is part of has finished.
+	FrameStats frameStats();
+
 	// A copyable handle like gl2d's Texture { GLuint id }; 0 means invalid.
 	struct Texture
 	{

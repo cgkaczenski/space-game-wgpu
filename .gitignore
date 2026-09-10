@@ -10,3 +10,7 @@ Makefile
 .cache/
 imgui.ini
 errorLogs.txt
+
+# F12 / WGPU_SCREENSHOT_FRAME writes these next to the binary
+screenshot-*.png
+*.gputrace

@@ -208,5 +208,5 @@ if(APPLE)
 		LANGUAGE CXX
 		COMPILE_OPTIONS "-x;objective-c++")
 	target_sources("${CMAKE_PROJECT_NAME}" PRIVATE "${WGPU_METAL_LAYER_SRC}")
-	target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE "-framework QuartzCore" "-framework CoreGraphics")
+	target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE "-framework QuartzCore" "-framework CoreGraphics" "-framework Metal")
 endif()

@@ -10,6 +10,7 @@
 #include "otherPlatformFunctions.h"
 #include "gameLayer.h"
 #include <render/wgpuContext.h>
+#include <render/wgpu2d.h>
 #include <glfw3webgpu.h>   // glfwCreateWindowWGPUSurface: the app owns the window
 #include <platform/wgpuMetalLayer.h>
 #include <fstream>
@@ -457,6 +458,35 @@ int main()
 				static const char *shotAt = getenv("WGPU_SCREENSHOT_FRAME");
 				++frameIndex;
 				if (shotAt && frameIndex == atoll(shotAt)) { render::wgpuRequestFrameCapture(); }
+
+				// F11, or WGPU_GPUTRACE_FRAME=N: record one frame as a Metal
+				// GPU trace. This is what stands in for timestamp queries,
+				// which this adapter does not support -- Xcode's trace gives
+				// per-pass GPU timings, and R1's labels and debug groups are
+				// what make it readable. Needs MTL_CAPTURE_ENABLED=1 in the
+				// environment; without it the call reports why and does
+				// nothing.
+				static bool traceHeld = false;
+				static long long traceEndsAt = 0;
+				static const char *traceAt = getenv("WGPU_GPUTRACE_FRAME");
+				const bool traceDown = glfwGetKey(wind, GLFW_KEY_F11) == GLFW_PRESS;
+				const bool traceAsked = (traceDown && !traceHeld)
+					|| (traceAt && frameIndex == atoll(traceAt));
+				traceHeld = traceDown;
+
+				if (traceAsked && traceEndsAt == 0)
+				{
+					char path[64] = {};
+					std::snprintf(path, sizeof(path), "frame-%lld.gputrace", (long long)time(nullptr));
+					// One frame is the whole point: a trace of many frames is
+					// harder to read and much larger.
+					if (render::metalCaptureBegin(path)) { traceEndsAt = frameIndex + 1; }
+				}
+				else if (traceEndsAt != 0 && frameIndex >= traceEndsAt)
+				{
+					render::metalCaptureEnd();
+					traceEndsAt = 0;
+				}
 			}
 
 			// Push the framebuffer size before acquiring anything. The
@@ -556,6 +586,68 @@ int main()
 			render::wgpuImguiRenderDrawData(); // on top of the game, same pass
 		#endif
 		render::wgpuEndFrame(); // end pass, submit, present
+
+		// ---- Slow-frame recorder -------------------------------------------
+		//
+		// A frame-rate collapse that cannot be reproduced on demand has to be
+		// caught when it happens rather than hunted for. This watches the
+		// frame clock and, when a frame costs far more than its neighbours,
+		// prints that frame's counters and the run-up to it.
+		//
+		// Every counter is zero in a steady frame, so whichever one is not
+		// zero names the cause: pipelineBuilds means a variant was compiled
+		// mid-frame (and a large number means a failed build being retried,
+		// since failures are not cached); validationErrors means the device
+		// complained; blockedMs means the frame sat draining an async
+		// callback; texturesCreated means an allocation. If a slow frame shows
+		// all zeros, the cost was outside this process -- thermal throttling,
+		// another application, or the GPU itself -- and that is worth knowing
+		// too, because it rules out everything above.
+		{
+			static float emaMs = 0.f;
+			static float history[8] = {};
+			static int historyAt = 0;
+			static long long slowFrames = 0;
+			static int warmup = 30; // startup frames are slow and uninteresting
+			const float frameMs = deltaTime * 1000.f;
+
+			history[historyAt] = frameMs;
+			historyAt = (historyAt + 1) % 8;
+			if (warmup > 0) { --warmup; }
+
+			// A frame is suspicious if it is both far above the running
+			// average and slow in absolute terms -- the second test stops
+			// startup and a paused window from tripping it.
+			const bool suspicious = warmup == 0 && emaMs > 0.f
+				&& frameMs > emaMs * 3.f && frameMs > 25.f;
+			if (suspicious && slowFrames < 200) // bounded: a sustained stall must not spam
+			{
+				++slowFrames;
+				const wgpu2d::FrameStats st = wgpu2d::frameStats();
+				std::cout << "SLOW FRAME " << frameMs << " ms (avg " << emaMs << ")"
+					<< "  builds=" << st.pipelineBuilds
+					<< " failures=" << st.pipelineFailures
+					<< " errors=" << st.validationErrors
+					<< " textures=" << st.texturesCreated
+					<< " blocked=" << st.blockedMs << "ms"
+					<< " | quads=" << st.quads
+					<< " runs=" << st.drawRuns
+					<< " flushes=" << st.flushes
+					<< " variants=" << st.pipelineVariants
+					<< " submit->done=" << st.gpuMillis << "ms"
+					<< "\n  previous 8 frames (ms):";
+				for (int i = 0; i < 8; i++)
+				{
+					std::cout << " " << history[(historyAt + i) % 8];
+				}
+				std::cout << "\n";
+				std::cout.flush();
+			}
+
+			// Updated after the test so one bad frame does not raise the bar
+			// for the next -- a sustained stall should keep reporting.
+			emaMs += (frameMs - emaMs) * (emaMs > 0.f ? 0.05f : 1.f);
+		}
 
 		// Collect a screenshot if one was asked for. The renderer hands over
 		// tightly packed RGBA and nothing else -- no path, no format, no

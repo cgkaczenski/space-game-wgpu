@@ -154,6 +154,21 @@ namespace
 
 	Context g;
 
+	// Per-frame diagnostic counters. Reset in wgpuBeginFrame, folded into
+	// FrameStats at the end. These exist to answer one question after the
+	// fact: when a frame took five times as long as its neighbours, what did
+	// it do that a normal frame does not?
+	struct FramePerf
+	{
+		int pipelineBuilds = 0;
+		int pipelineFailures = 0;
+		int validationErrors = 0;
+		int texturesCreated = 0;
+		float blockedMs = 0.f;
+	};
+	FramePerf framePerf;
+
+
 	// 10: defined below, needed by the pass bookkeeping above them.
 	void flushBatch(uint32_t target);
 	void compositeScaledTarget();
@@ -221,6 +236,26 @@ namespace
 	std::vector<uint32_t> batchQuadTextures;
 	std::vector<uint32_t> batchQuadCameras;   // index into frameCameras
 	std::vector<wgpu2d::BlendMode> batchQuadBlends; // R2: the third run key
+
+	// N2a: what the frame cost. Accumulated as it is recorded, snapshotted at
+	// the end so a reader mid-frame sees a whole frame rather than a partial.
+	wgpu2d::FrameStats statsInProgress;
+	wgpu2d::FrameStats statsLastFrame;
+
+	// N2b: submit-to-work-done, the closest this adapter offers to a GPU
+	// figure. One outstanding at a time; a frame that submits while the last
+	// is still pending simply does not measure itself.
+	std::chrono::steady_clock::time_point submitAt;
+	bool workDonePending = false;
+	float lastGpuMillis = -1.f;
+
+	void onQueueWorkDone(WGPUQueueWorkDoneStatus status, void *, void *)
+	{
+		workDonePending = false;
+		if (status != QueueWorkDoneStatus::Success) { return; }
+		const auto now = std::chrono::steady_clock::now();
+		lastGpuMillis = std::chrono::duration<float, std::milli>(now - submitAt).count();
+	}
 	std::vector<wgpu2d::Camera> frameCameras; // every distinct camera used this frame, in order
 	wgpu2d::Texture white1pxSquareTexture;    // gl2d's untextured path samples this
 
@@ -353,6 +388,7 @@ namespace
 			: type == ErrorType::OutOfMemory ? "out of memory"
 			: type == ErrorType::Internal ? "internal" : "unknown";
 		std::cerr << "WebGPU " << kind << " error: " << StringView(message) << "\n";
+		++framePerf.validationErrors;
 	}
 
 	// ---------------------------------------------------------------------
@@ -854,8 +890,17 @@ namespace
 		entry.key = key;
 		entry.label = std::string("quad pipeline (") + formatName(key.format) + ", "
 			+ blendName(key.blend) + ")";
+		// Counted because compiling a pipeline mid-frame is expensive, and
+		// because a *failed* build is not cached -- so a variant that cannot
+		// be built is retried on every draw run of every frame, which would
+		// show up here as a large number rather than a 1.
+		++framePerf.pipelineBuilds;
 		entry.pipeline = createQuadPipelineVariant(key, entry.label.c_str());
-		if (!entry.pipeline) { return nullptr; }
+		if (!entry.pipeline)
+		{
+			++framePerf.pipelineFailures;
+			return nullptr;
+		}
 
 		g.quadPipelines.push_back(std::move(entry));
 		std::cout << "WebGPU " << g.quadPipelines.back().label << " created ("
@@ -942,6 +987,7 @@ namespace
 		texDesc.size.depthOrArrayLayers = 1;
 		texDesc.format = TextureFormat::RGBA8Unorm;
 		entry.format = texDesc.format;
+		++framePerf.texturesCreated;
 		texDesc.mipLevelCount = (uint32_t)levels.size();
 		texDesc.sampleCount = 1;
 		texDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
@@ -1067,6 +1113,7 @@ namespace
 		texDesc.size.depthOrArrayLayers = 1;
 		texDesc.format = g.surfaceFormat;
 		entry.format = texDesc.format;
+		++framePerf.texturesCreated;
 		texDesc.mipLevelCount = 1;
 		texDesc.sampleCount = 1;
 		// CopySrc for the same reason the surface has it: a render target is a
@@ -1636,6 +1683,11 @@ namespace
 			runStart = i;
 		}
 
+		statsInProgress.quads += (int)quadCount;
+		statsInProgress.drawRuns += (int)runs;
+		statsInProgress.cameras += (int)frameCameras.size();
+		statsInProgress.flushes += 1;
+
 		if (!g.runStatsPrinted)
 		{
 			g.runStatsPrinted = true;
@@ -1903,6 +1955,30 @@ namespace
 		capture.ready = true;
 	}
 
+	// Adapter features are printed by name, not just counted: whether a
+	// machine has TimestampQuery decides whether GPU timing is possible at
+	// all, and that is worth knowing from a run's own output rather than from
+	// a one-off probe. Unknown values print as numbers -- wgpu-native has its
+	// own beyond the spec's list.
+	const char *featureName(WGPUFeatureName f)
+	{
+		switch (f)
+		{
+			case WGPUFeatureName_DepthClipControl: return "DepthClipControl";
+			case WGPUFeatureName_Depth32FloatStencil8: return "Depth32FloatStencil8";
+			case WGPUFeatureName_TimestampQuery: return "TimestampQuery";
+			case WGPUFeatureName_TextureCompressionBC: return "TextureCompressionBC";
+			case WGPUFeatureName_TextureCompressionETC2: return "TextureCompressionETC2";
+			case WGPUFeatureName_TextureCompressionASTC: return "TextureCompressionASTC";
+			case WGPUFeatureName_IndirectFirstInstance: return "IndirectFirstInstance";
+			case WGPUFeatureName_ShaderF16: return "ShaderF16";
+			case WGPUFeatureName_RG11B10UfloatRenderable: return "RG11B10UfloatRenderable";
+			case WGPUFeatureName_BGRA8UnormStorage: return "BGRA8UnormStorage";
+			case WGPUFeatureName_Float32Filterable: return "Float32Filterable";
+			default: return nullptr;
+		}
+	}
+
 	void printAdapter(Adapter adapter)
 	{
 		AdapterInfo info = Default;
@@ -1945,6 +2021,15 @@ namespace
 		SupportedFeatures features = Default;
 		adapter.getFeatures(&features);
 		std::cout << "  features: " << features.featureCount << "\n";
+		for (size_t i = 0; i < features.featureCount; i++)
+		{
+			const WGPUFeatureName f = features.features[i];
+			const char *name = featureName(f);
+			std::cout << "    ";
+			if (name) { std::cout << name; }
+			else { std::cout << "0x" << std::hex << (uint32_t)f << std::dec; }
+			std::cout << "\n";
+		}
 		features.freeMembers();
 
 		// Flush so the report survives even if the process is killed while the
@@ -2247,6 +2332,8 @@ void wgpuResize(int width, int height)
 void wgpuBeginFrame()
 {
 	g.frameOpen = false;
+	statsInProgress = wgpu2d::FrameStats{};
+	framePerf = FramePerf{};
 
 	// The surface must have been configured, which wgpuResize does. It is the
 	// application's job to call that with the current framebuffer size --
@@ -2347,6 +2434,21 @@ void wgpuEndFrame()
 	g.queue.submit(1, &commands);
 	commands.release();
 
+	// N2b. Only one in flight: if the previous frame's work has not been
+	// reported yet, this frame goes unmeasured rather than overwriting the
+	// start time out from under it.
+	if (!workDonePending)
+	{
+		QueueWorkDoneCallbackInfo workInfo = Default;
+		workInfo.mode = CallbackMode::AllowProcessEvents;
+		workInfo.callback = onQueueWorkDone;
+		workInfo.userdata1 = nullptr;
+		workInfo.userdata2 = nullptr;
+		submitAt = std::chrono::steady_clock::now();
+		workDonePending = true;
+		g.queue.onSubmittedWorkDone(workInfo);
+	}
+
 	captureResolve(); // after submit: the copy has to have run
 
 	g.surface.present(); // this is glfwSwapBuffers
@@ -2357,8 +2459,19 @@ void wgpuEndFrame()
 	g.frameTexture = nullptr;
 	g.frameOpen = false;
 
-	// Let pending callbacks (errors, device lost) run once per frame.
+	// Let pending callbacks (errors, device lost, queue work done) run once
+	// per frame. The work-done callback for an earlier frame usually lands
+	// here, which is why gpuMillis lags by a frame or two.
 	g.instance.processEvents();
+
+	statsInProgress.pipelineVariants = (int)g.quadPipelines.size();
+	statsInProgress.gpuMillis = lastGpuMillis;
+	statsInProgress.pipelineBuilds = framePerf.pipelineBuilds;
+	statsInProgress.pipelineFailures = framePerf.pipelineFailures;
+	statsInProgress.validationErrors = framePerf.validationErrors;
+	statsInProgress.texturesCreated = framePerf.texturesCreated;
+	statsInProgress.blockedMs = framePerf.blockedMs;
+	statsLastFrame = statsInProgress;
 
 	if (!g.firstFramePresented)
 	{
@@ -2475,6 +2588,12 @@ bool wgpuEndErrorScope()
 
 	// The same bounded pump the adapter and device requests use in wgpuInit.
 	// Bounded because a scope that never resolves must not hang the game.
+	//
+	// This blocks, and the time is counted: a scope drained mid-frame is one
+	// of the few things that can make a single frame cost tens of
+	// milliseconds, so a slow frame should be able to say how much of itself
+	// went here.
+	const auto blockStart = std::chrono::steady_clock::now();
 	for (int i = 0; !result.done && i < 1000; i++)
 	{
 		g.instance.processEvents();
@@ -2483,6 +2602,8 @@ bool wgpuEndErrorScope()
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 	}
+	framePerf.blockedMs += std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - blockStart).count();
 	if (!result.done)
 	{
 		std::cerr << "WebGPU: error scope for " << result.what << " never completed\n";
@@ -2498,6 +2619,8 @@ bool wgpuEndErrorScope()
 namespace wgpu2d
 {
 	using namespace render;
+
+	FrameStats frameStats() { return render::statsLastFrame; }
 
 	void init()
 	{

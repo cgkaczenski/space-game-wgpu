@@ -531,6 +531,32 @@ bool gameLogic(float deltaTime)
 
 	ImGui::Begin("debug");
 
+	// N2a: what the last frame cost. The counts are the renderer's and exact;
+	// the CPU figure is this loop's own delta, smoothed so it can be read.
+	// There is no true GPU timing here -- this adapter has no TimestampQuery
+	// (roadmap N2) -- so the "gpu" line is submit-to-work-done, which is a
+	// latency bound rather than a measure of GPU work. It is labelled that way
+	// on purpose; a number called "gpu" that is not one is worse than none.
+	{
+		static float smoothedMs = 0.f;
+		const float frameMs = deltaTime * 1000.f;
+		smoothedMs += (frameMs - smoothedMs) * 0.1f;
+
+		const wgpu2d::FrameStats stats = wgpu2d::frameStats();
+		ImGui::Text("cpu %.2f ms (%.0f fps)", smoothedMs, smoothedMs > 0.f ? 1000.f / smoothedMs : 0.f);
+		if (stats.gpuMillis >= 0.f)
+		{
+			ImGui::Text("submit->done %.2f ms", stats.gpuMillis);
+		}
+		else
+		{
+			ImGui::TextDisabled("submit->done  --");
+		}
+		ImGui::Text("%d quads  %d runs  %d flushes", stats.quads, stats.drawRuns, stats.flushes);
+		ImGui::Text("%d cameras  %d pipelines", stats.cameras, stats.pipelineVariants);
+		ImGui::Separator();
+	}
+
 	ImGui::Text("Bullets count: %d", (int)data.bullets.size());
 	ImGui::Text("Enemies count: %d", (int)data.enemies.size());
 
