@@ -12,6 +12,7 @@
 #include <shipThruster.h>
 #include <shipShield.h>
 #include <bulletGlow.h>
+#include <cloak.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
@@ -105,6 +106,7 @@ bool initGame()
 	if (!thruster::init()) { return false; }
 	if (!shield::init()) { return false; }
 	if (!bulletGlow::init()) { return false; }
+	if (!cloak::init()) { return false; }
 
 	shootSound = LoadSound(RESOURCES_PATH "shoot.flac");
 	if (shootSound.stream.buffer == nullptr)
@@ -422,8 +424,12 @@ bool gameLogic(float deltaTime)
 	thruster::draw(renderer, data.playerPos, shipSize, mouseDirection,
 		playerThrottle, deltaTime * gameSpeedMultiplier());
 
+	// Faded by the cloak. The hull going nearly transparent is half the
+	// effect; the other half is the world bending around it, which happens
+	// below when the world goes through the cloak's shader.
 	renderSpaceShip(renderer, data.playerPos, shipSize,
-		spaceShipsTexture, spaceShipsAtlas.get(3, 0), mouseDirection);
+		spaceShipsTexture, spaceShipsAtlas.get(3, 0), mouseDirection,
+		{1.f, 1.f, 1.f, cloak::shipAlpha()});
 
 	// After the hull, so the rim reads as being in front of it.
 	shield::draw(renderer, data.playerPos, shipSize, deltaTime * gameSpeedMultiplier());
@@ -517,6 +523,12 @@ bool gameLogic(float deltaTime)
 
 #pragma region ui
 
+	// The world's flush, routed through the cloak. Down, this is exactly
+	// renderer.flush(); up, the world goes into a target and comes back
+	// through the shader. hud::draw flushes again straight after, which is a
+	// no-op on an empty batch.
+	cloak::flushWorld(renderer, data.playerPos, shipSize, w, h, deltaTime * gameSpeedMultiplier());
+
 	hud::draw(renderer, data.health, w, h); // flushes the world, then the HUD
 
 #pragma endregion
@@ -579,6 +591,7 @@ bool gameLogic(float deltaTime)
 	ImGui::Checkbox("Hitboxes", &showHitboxes);
 
 	shield::debugUi(); // the feature owns its own controls (roadmap R11)
+	cloak::debugUi();
 
 	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
 	{
@@ -603,4 +616,5 @@ void closeGame()
 	thruster::cleanup();
 	shield::cleanup();
 	bulletGlow::cleanup();
+	cloak::cleanup();
 }

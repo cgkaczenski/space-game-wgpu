@@ -91,12 +91,75 @@ namespace wgpu2d
 		int validationErrors = 0;  // uncaptured errors reported this frame
 		int texturesCreated = 0;   // textures or render targets allocated
 		float blockedMs = 0.f;     // time spent draining async callbacks
+
+		// Where a frame's wall time went outside our own work. Both are pure
+		// waiting: acquire blocks until a drawable is free, present blocks
+		// until the swapchain accepts one. A frame that is slow with both of
+		// these near zero was slow doing something; a frame that is slow with
+		// one of them large was slow *waiting*, and no amount of drawing less
+		// would have helped.
+		float acquireMs = 0.f;
+		float presentMs = 0.f;
 	};
 
 	// The frame before this one. Reading it mid-frame gives a complete number
 	// instead of a partial one, which is what a debug panel wants -- the panel
 	// itself is drawn before the frame it is part of has finished.
 	FrameStats frameStats();
+
+	// ---- Effects (F2) ---------------------------------------------------
+	//
+	// An effect is a fragment shader the application supplies, run in place of
+	// the sprite shader when a texture is drawn across the screen. It is how a
+	// post-process happens: render the world into a FrameBuffer, then draw
+	// that FrameBuffer back through an effect.
+	//
+	// **An effect is a fragment stage only.** The vertex stage is the sprite
+	// one, so an effect inherits the vertex layout and the camera transform
+	// and its author writes a single function. The WGSL it supplies must
+	// declare exactly this much and then `fs_main`:
+	//
+	//     struct VertexOutput {
+	//         @builtin(position) position: vec4f,
+	//         @location(0) color: vec4f,
+	//         @location(1) uv: vec2f,
+	//     };
+	//     @group(0) @binding(0) var spriteTexture: texture_2d<f32>;
+	//     @group(0) @binding(1) var spriteSampler: sampler;
+	//     struct EffectUniforms {
+	//         resolution: vec4f,  // xy = pixels, zw = 1 / pixels
+	//         time: vec4f,        // x = seconds since init
+	//         a: vec4f,           // whatever this effect wants
+	//         b: vec4f,
+	//     };
+	//     @group(2) @binding(0) var<uniform> effect: EffectUniforms;
+	//
+	//     @fragment
+	//     fn fs_main(in: VertexOutput) -> @location(0) vec4f { ... }
+	//
+	// Group 1 is the camera and an effect will not normally touch it. A shader
+	// may declare fewer groups than its pipeline layout has.
+	struct Effect
+	{
+		uint32_t id = 0; // 0 means "no effect": the sprite shader
+	};
+
+	// Compiles WGSL into an effect. `name` is what a validation message and a
+	// GPU capture will call it. Returns id 0 if the source does not compile,
+	// and the compile error arrives on the error callback naming `name`.
+	Effect createEffect(const char *wgslFragmentSource, const char *name);
+
+	// The two free vec4s an effect reads. Resolution and time are filled in by
+	// the renderer, so they are not here.
+	//
+	// One set per draw, which is all a post-process needs: it is one draw by
+	// nature. Per-*quad* parameters -- an impact point that differs per shield
+	// -- are a harder problem and are roadmap F6.
+	struct EffectParams
+	{
+		glm::vec4 a = {};
+		glm::vec4 b = {};
+	};
 
 	// A copyable handle like gl2d's Texture { GLuint id }; 0 means invalid.
 	struct Texture
@@ -350,5 +413,18 @@ namespace wgpu2d
 		// Same, but into the given render target instead. The camera
 		// projection uses the target's own size.
 		void flushFBO(FrameBuffer frameBuffer, bool clearDrawData = true);
+
+		// Draws `source` across the whole screen through `effect`, with
+		// `params` in the effect's uniform block. This is the post-process
+		// entry point.
+		//
+		// It is a single draw and does not go through the batch: the batch's
+		// run key knows about texture, camera and blend, not shaders, and
+		// teaching it would be F6's problem rather than this one's. Anything
+		// pending is flushed first, so the effect lands on top of it.
+		//
+		// Drawn with BlendMode::Premultiplied, because a render target's
+		// contents are already scaled by their own coverage (outline 12).
+		void drawFullscreenEffect(Texture source, Effect effect, const EffectParams &params);
 	};
 }

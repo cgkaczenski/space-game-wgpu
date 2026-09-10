@@ -44,6 +44,18 @@ namespace
 	// Deliberately narrow. Sample count (N6), depth state (N7) and the vertex
 	// layout (N5) all belong here eventually; adding a field then is a few
 	// lines, and guessing at four futures now is how the wrong key gets built.
+	// What an effect fragment shader can read. One block per effect draw.
+	// std140-ish by construction: four vec4s, 16-byte aligned throughout, so
+	// the WGSL struct and this one cannot drift apart silently.
+	struct EffectUniforms
+	{
+		float resolution[4] = {}; // xy = target pixels, zw = 1 / pixels
+		float time[4] = {};       // x = seconds since init
+		float a[4] = {};          // whatever the effect wants
+		float b[4] = {};
+	};
+	static_assert(sizeof(EffectUniforms) == 64, "effect uniforms must stay 4 x vec4");
+
 	struct PipelineKey
 	{
 		TextureFormat format = TextureFormat::Undefined;
@@ -135,6 +147,12 @@ namespace
 		// offset. Buffer and bind group are recreated together when the slot
 		// count grows.
 		BindGroupLayout cameraBindGroupLayout = nullptr; // group 1: uniform buffer, dynamic offset
+		BindGroupLayout effectBindGroupLayout = nullptr; // group 2: effect parameters, dynamic offset
+		Buffer effectBuffer = nullptr;
+		BindGroup effectBindGroup = nullptr;
+		uint32_t effectSlotStride = 0;
+		uint32_t effectSlotCapacity = 0;
+		uint32_t effectSlotsUsed = 0;
 		Buffer uniformBuffer = nullptr;
 		BindGroup cameraBindGroup = nullptr;
 		uint32_t cameraSlotStride = 256;
@@ -183,12 +201,19 @@ namespace
 		int validationErrors = 0;
 		int texturesCreated = 0;
 		float blockedMs = 0.f;
+		float acquireMs = 0.f;
+		float presentMs = 0.f;
 	};
 	FramePerf framePerf;
 
+	// Wall clock since init, for the effect uniform's time. Wall rather than
+	// game time: an effect is a property of the picture, and the debug speed
+	// slider should not slow a shimmer down.
+	std::chrono::steady_clock::time_point startedAt;
+
 
 	// 10: defined below, needed by the pass bookkeeping above them.
-	void flushBatch(uint32_t target);
+	void flushBatch(uint32_t target, uint32_t shaderOverride = 0, uint32_t effectSlot = 0);
 	void compositeScaledTarget();
 
 	// The target a plain flush goes to: the low-res stand-in when that is
@@ -668,10 +693,45 @@ namespace
 			return false;
 		}
 
+		// Group 2: the effect parameter block. Dynamic offset for the same
+		// reason the camera has one -- writeBuffer is ordered against the
+		// submit, not against the recorded draws, so two effect draws sharing
+		// one slot would both read whatever was written last. Milestone 10
+		// records that bug being found the hard way with the vertex buffer;
+		// this is the same trap and the same answer.
+		//
+		// Visible to the fragment stage, because that is where an effect runs.
+		BindGroupLayoutEntry effectEntry = Default;
+		effectEntry.binding = 0;
+		effectEntry.visibility = ShaderStage::Fragment;
+		effectEntry.buffer.type = BufferBindingType::Uniform;
+		effectEntry.buffer.hasDynamicOffset = true;
+		effectEntry.buffer.minBindingSize = sizeof(EffectUniforms);
+		effectEntry.sampler.type = SamplerBindingType::BindingNotUsed;
+		effectEntry.texture.sampleType = TextureSampleType::BindingNotUsed;
+		effectEntry.storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		BindGroupLayoutDescriptor effectLayoutDesc = Default;
+		effectLayoutDesc.label = StringView("effect bind group layout");
+		effectLayoutDesc.entryCount = 1;
+		effectLayoutDesc.entries = &effectEntry;
+		g.effectBindGroupLayout = g.device.createBindGroupLayout(effectLayoutDesc);
+		if (!g.effectBindGroupLayout)
+		{
+			std::cerr << "WebGPU: createBindGroupLayout (effect) returned null\n";
+			return false;
+		}
+
+		// Three groups in one layout, shared by every pipeline. The sprite
+		// shader never declares group 2 -- a shader may use fewer groups than
+		// its layout declares -- but every draw must still *bind* it, so
+		// flushBatch binds slot 0 unconditionally and sprite draws simply
+		// ignore what is in it.
 		PipelineLayoutDescriptor pipelineLayoutDesc = Default;
 		pipelineLayoutDesc.label = StringView("quad pipeline layout");
-		pipelineLayoutDesc.bindGroupLayoutCount = 2;
-		WGPUBindGroupLayout layouts[2] = { g.textureBindGroupLayout, g.cameraBindGroupLayout };
+		pipelineLayoutDesc.bindGroupLayoutCount = 3;
+		WGPUBindGroupLayout layouts[3] = { g.textureBindGroupLayout, g.cameraBindGroupLayout,
+			g.effectBindGroupLayout };
 		pipelineLayoutDesc.bindGroupLayouts = layouts;
 		g.pipelineLayout = g.device.createPipelineLayout(pipelineLayoutDesc);
 		if (!g.pipelineLayout)
@@ -782,6 +842,77 @@ namespace
 	// One pipeline for one (format, blend) pair. Everything the descriptor
 	// sets other than those two is identical across variants, which is what
 	// makes the key as small as it is.
+	// The effect slot buffer, grown the way the camera's is: doubling, never
+	// shrinking, one slot per effect draw in a frame at the alignment the
+	// device demands.
+	bool ensureEffectSlotCapacity(uint32_t slots)
+	{
+		if (g.effectBuffer && slots <= g.effectSlotCapacity) { return true; }
+
+		g.effectSlotStride = ceilToNextMultiple((uint32_t)sizeof(EffectUniforms),
+			g.minUniformBufferOffsetAlignment);
+		uint32_t capacity = g.effectSlotCapacity ? g.effectSlotCapacity : 4;
+		while (capacity < slots) { capacity *= 2; }
+
+		ErrorScope scope("effect uniform buffer");
+
+		BufferDescriptor desc = Default;
+		desc.label = StringView("effect uniforms");
+		desc.usage = BufferUsage::Uniform | BufferUsage::CopyDst;
+		desc.size = (uint64_t)g.effectSlotStride * capacity;
+		desc.mappedAtCreation = false;
+		Buffer newBuffer = g.device.createBuffer(desc);
+		if (!newBuffer) { return false; }
+
+		BindGroupEntry entry = Default;
+		entry.binding = 0;
+		entry.buffer = newBuffer;
+		entry.offset = 0;
+		entry.size = sizeof(EffectUniforms);
+		entry.sampler = nullptr;
+		entry.textureView = nullptr;
+
+		BindGroupDescriptor groupDesc = Default;
+		groupDesc.label = StringView("effect bind group");
+		groupDesc.layout = g.effectBindGroupLayout;
+		groupDesc.entryCount = 1;
+		groupDesc.entries = &entry;
+		BindGroup newGroup = g.device.createBindGroup(groupDesc);
+		if (!newGroup) { newBuffer.release(); return false; }
+
+		if (g.effectBindGroup) { g.effectBindGroup.release(); }
+		if (g.effectBuffer) { g.effectBuffer.release(); }
+		g.effectBindGroup = newGroup;
+		g.effectBuffer = newBuffer;
+		g.effectSlotCapacity = capacity;
+		return true;
+	}
+
+	// Compiles an effect's fragment stage and gives it an index. Index 0 is
+	// reserved for the sprite shader, so a registered effect is its position
+	// plus one -- which also makes 0 a usable "no effect" value.
+	uint32_t registerEffectShader(const char *wgsl, const char *name)
+	{
+		if (!g.device || !wgsl || !name) { return 0; }
+
+		ShaderModule module = createShaderModule(wgsl, name);
+		if (!module)
+		{
+			std::cerr << "WebGPU: effect '" << name << "' did not compile\n";
+			return 0;
+		}
+
+		ShaderEntry entry;
+		entry.module = module;
+		entry.name = name;
+		shaderRegistry.push_back(std::move(entry));
+
+		std::cout << "WebGPU effect '" << name << "' registered as shader "
+			<< shaderRegistry.size() << "\n";
+		std::cout.flush();
+		return (uint32_t)shaderRegistry.size();
+	}
+
 	RenderPipeline createQuadPipelineVariant(const PipelineKey &key, const char *label)
 	{
 		// Vertex and fragment come from separate modules, which is what lets an
@@ -1636,7 +1767,10 @@ namespace
 	// when the low-res stand-in is standing in for it, which is what keeps
 	// the framing identical at any render scale -- and a render target's own
 	// dimensions otherwise.
-	void flushBatch(uint32_t target)
+	// `shaderOverride` names a registered effect to run instead of the sprite
+	// shader, and `effectSlot` the parameter slot it reads. Both are 0 for an
+	// ordinary flush, which is what every draw in the game uses.
+	void flushBatch(uint32_t target, uint32_t shaderOverride, uint32_t effectSlot)
 	{
 		if (batchVertices.empty()) { return; }
 
@@ -1722,7 +1856,8 @@ namespace
 				|| batchQuadBlends[i] != batchQuadBlends[runStart];
 			if (!boundary) { continue; }
 
-			RenderPipeline pipeline = getQuadPipeline(PipelineKey{ targetFormat, batchQuadBlends[runStart] });
+			RenderPipeline pipeline = getQuadPipeline(
+				PipelineKey{ targetFormat, batchQuadBlends[runStart], shaderOverride });
 			if (!pipeline)
 			{
 				// The variant could not be built. Skipping the run loses those
@@ -1740,6 +1875,11 @@ namespace
 			const uint32_t dynamicOffset = (cameraSlotBase + batchQuadCameras[runStart]) * g.cameraSlotStride;
 			pass.setBindGroup(0, textures[batchQuadTextures[runStart] - 1].bindGroup, 0, nullptr); // texture + sampler
 			pass.setBindGroup(1, g.cameraBindGroup, 1, &dynamicOffset);                          // camera slot
+			// Group 2 is bound on every draw, not only effect draws: a draw
+			// must bind every group its pipeline layout declares, and the
+			// layout is shared. Sprite shaders never read it.
+			const uint32_t effectOffset = effectSlot * g.effectSlotStride;
+			pass.setBindGroup(2, g.effectBindGroup, 1, &effectOffset);
 			pass.draw((uint32_t)((i - runStart) * 6), 1, (uint32_t)(runStart * 6), 0);
 			runs++;
 			runStart = i;
@@ -2130,6 +2270,8 @@ WGPUInstance wgpuInitInstance()
 	// The instance is the library itself: no GPU, no window. It exists before
 	// wgpuInit because creating a surface needs it, and creating a surface is
 	// the application's job -- only the application knows what a window is.
+	startedAt = std::chrono::steady_clock::now();
+
 	InstanceDescriptor instanceDesc = Default;
 	g.instance = createInstance(instanceDesc);
 	if (!g.instance)
@@ -2320,6 +2462,14 @@ bool wgpuInit(WGPUSurface surface, int width, int height)
 	{
 		return false;
 	}
+	// One effect slot exists from the start: every draw must bind group 2 even
+	// though the sprite shader ignores it, so there has to be something there.
+	if (!ensureEffectSlotCapacity(1))
+	{
+		std::cerr << "WebGPU: effect uniform buffer could not be created\n";
+		return false;
+	}
+
 	if (!getQuadPipeline(PipelineKey{ g.surfaceFormat, wgpu2d::BlendMode::Alpha }))
 	{
 		return false;
@@ -2396,6 +2546,7 @@ void wgpuBeginFrame()
 	g.frameOpen = false;
 	statsInProgress = wgpu2d::FrameStats{};
 	framePerf = FramePerf{};
+	g.effectSlotsUsed = 0;
 
 	// The surface must have been configured, which wgpuResize does. It is the
 	// application's job to call that with the current framebuffer size --
@@ -2406,9 +2557,14 @@ void wgpuBeginFrame()
 	// that do report it.
 	if (!g.surfaceConfigured) { return; } // minimized, or resize not pushed yet
 
-	// Acquire: the texture that will next go on screen.
+	// Acquire: the texture that will next go on screen. Timed, because this
+	// is one of the two places a frame can spend its time waiting rather than
+	// working -- it blocks until the presentation engine frees a drawable.
 	SurfaceTexture surfaceTexture = Default;
+	const auto acquireStart = std::chrono::steady_clock::now();
 	g.surface.getCurrentTexture(&surfaceTexture);
+	framePerf.acquireMs = std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - acquireStart).count();
 	wgpu::Texture texture = surfaceTexture.texture;
 
 	switch (surfaceTexture.status)
@@ -2513,7 +2669,12 @@ void wgpuEndFrame()
 
 	captureResolve(); // after submit: the copy has to have run
 
+	// The other waiting place. With Fifo this is where a frame that arrived
+	// early sits until its vsync.
+	const auto presentStart = std::chrono::steady_clock::now();
 	g.surface.present(); // this is glfwSwapBuffers
+	framePerf.presentMs = std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - presentStart).count();
 
 	g.frameView.release();
 	g.frameView = nullptr;
@@ -2537,6 +2698,8 @@ void wgpuEndFrame()
 	statsInProgress.validationErrors = framePerf.validationErrors;
 	statsInProgress.texturesCreated = framePerf.texturesCreated;
 	statsInProgress.blockedMs = framePerf.blockedMs;
+	statsInProgress.acquireMs = framePerf.acquireMs;
+	statsInProgress.presentMs = framePerf.presentMs;
 	statsLastFrame = statsInProgress;
 
 	if (!g.firstFramePresented)
@@ -2560,6 +2723,9 @@ void wgpuShutdown()
 		g.frameOpen = false;
 	}
 	clearBatch();
+	if (g.effectBindGroup) { g.effectBindGroup.release(); g.effectBindGroup = nullptr; }
+	if (g.effectBuffer) { g.effectBuffer.release(); g.effectBuffer = nullptr; g.effectSlotCapacity = 0; }
+	if (g.effectBindGroupLayout) { g.effectBindGroupLayout.release(); g.effectBindGroupLayout = nullptr; }
 	if (g.cameraBindGroup) { g.cameraBindGroup.release(); g.cameraBindGroup = nullptr; }
 	if (g.uniformBuffer) { g.uniformBuffer.release(); g.uniformBuffer = nullptr; g.cameraSlotCapacity = 0; }
 	if (g.vertexBuffer) { g.vertexBuffer.release(); g.vertexBuffer = nullptr; g.vertexBufferCapacityBytes = 0; }
@@ -2577,6 +2743,8 @@ void wgpuShutdown()
 		if (entry.pipeline) { entry.pipeline.release(); }
 	}
 	g.quadPipelines.clear();
+	for (ShaderEntry &e : shaderRegistry) { if (e.module) { e.module.release(); } }
+	shaderRegistry.clear();
 	if (g.quadShaderModule) { g.quadShaderModule.release(); g.quadShaderModule = nullptr; }
 	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
 	if (g.cameraBindGroupLayout) { g.cameraBindGroupLayout.release(); g.cameraBindGroupLayout = nullptr; }
@@ -2685,6 +2853,67 @@ bool wgpuEndErrorScope()
 namespace wgpu2d
 {
 	using namespace render;
+
+	Effect createEffect(const char *wgslFragmentSource, const char *name)
+	{
+		Effect effect;
+		effect.id = render::registerEffectShader(wgslFragmentSource, name);
+		return effect;
+	}
+
+	void Renderer2D::drawFullscreenEffect(Texture source, Effect effect, const EffectParams &params)
+	{
+		using namespace render;
+		if (effect.id == 0 || source.id == 0) { return; }
+		if (g.surfaceWidth <= 0 || g.surfaceHeight <= 0) { return; }
+
+		// Whatever is pending belongs underneath, so it goes out first.
+		flush();
+
+		if (!ensureEffectSlotCapacity(g.effectSlotsUsed + 1)) { return; }
+		const uint32_t slot = g.effectSlotsUsed++;
+
+		EffectUniforms uniforms;
+		uniforms.resolution[0] = (float)g.surfaceWidth;
+		uniforms.resolution[1] = (float)g.surfaceHeight;
+		uniforms.resolution[2] = 1.f / (float)g.surfaceWidth;
+		uniforms.resolution[3] = 1.f / (float)g.surfaceHeight;
+		uniforms.time[0] = std::chrono::duration<float>(
+			std::chrono::steady_clock::now() - startedAt).count();
+		for (int i = 0; i < 4; i++)
+		{
+			uniforms.a[i] = params.a[i];
+			uniforms.b[i] = params.b[i];
+		}
+		g.queue.writeBuffer(g.effectBuffer, (uint64_t)slot * g.effectSlotStride,
+			&uniforms, sizeof(uniforms));
+
+		// The same swap compositeScaledTarget uses: the batch is the caller's,
+		// and this borrows it for exactly one quad rather than adding a second
+		// vertex buffer that would be idle most of the time.
+		std::vector<Vertex> keptVertices;
+		std::vector<uint32_t> keptTextures;
+		std::vector<uint32_t> keptCameras;
+		std::vector<wgpu2d::BlendMode> keptBlends;
+		std::vector<wgpu2d::Camera> keptFrameCameras;
+		keptVertices.swap(batchVertices);
+		keptTextures.swap(batchQuadTextures);
+		keptCameras.swap(batchQuadCameras);
+		keptBlends.swap(batchQuadBlends);
+		keptFrameCameras.swap(frameCameras);
+
+		const glm::vec4 white[4] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
+		pushQuad(Camera{}, BlendMode::Premultiplied,
+			glm::vec4{ 0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight },
+			source, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
+		flushBatch(0, effect.id, slot);
+
+		batchVertices.swap(keptVertices);
+		batchQuadTextures.swap(keptTextures);
+		batchQuadCameras.swap(keptCameras);
+		batchQuadBlends.swap(keptBlends);
+		frameCameras.swap(keptFrameCameras);
+	}
 
 	FrameStats frameStats() { return render::statsLastFrame; }
 

@@ -32,12 +32,13 @@ void TiledRenderer::render(wgpu2d::Renderer2D &renderer)
 
 void renderSpaceShip(wgpu2d::Renderer2D &renderer,
 	glm::vec2 position, float size,
-	wgpu2d::Texture texture, glm::vec4 uvs, glm::vec2 viewDirection)
+	wgpu2d::Texture texture, glm::vec4 uvs, glm::vec2 viewDirection,
+	wgpu2d::Color4f tint)
 {
 	float spaceShipAngle = atan2(viewDirection.y, -viewDirection.x);
 
 	renderer.renderRectangle({position - glm::vec2(size / 2, size/ 2)
 	, size,size}, texture,
-		Colors_White, {}, glm::degrees(spaceShipAngle) + 90.f,
+		tint, {}, glm::degrees(spaceShipAngle) + 90.f,
 		uvs);
 }

@@ -14,6 +14,7 @@
 #include <glfw3webgpu.h>   // glfwCreateWindowWGPUSurface: the app owns the window
 #include <platform/wgpuMetalLayer.h>
 #include <fstream>
+#include <sstream>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -608,8 +609,35 @@ int main()
 			static float history[8] = {};
 			static int historyAt = 0;
 			static long long slowFrames = 0;
+			static long long frameNumber = 0;
+			static long long lastReportFrame = 0;
 			static int warmup = 30; // startup frames are slow and uninteresting
+			static std::chrono::steady_clock::time_point sessionStart =
+				std::chrono::steady_clock::now();
+
+			// Reports go to a file as well as the terminal, and this is the
+			// whole reason: the first time this fired for real, the output was
+			// in a terminal that had scrolled and there was nothing left to
+			// read. A diagnostic for an intermittent fault is worthless if it
+			// depends on the operator having piped it somewhere beforehand.
+			//
+			// Opened once, appended, and flushed after every report -- stdout
+			// is fully buffered when redirected and a killed process loses its
+			// tail, which AGENTS.md already records as a trap here.
+			static std::ofstream slowLog("slow-frames.log", std::ios::app);
+			static bool loggedHeader = false;
+			if (!loggedHeader)
+			{
+				loggedHeader = true;
+				int fw = 0, fh = 0;
+				glfwGetFramebufferSize(wind, &fw, &fh);
+				slowLog << "\n=== session " << (long long)time(nullptr)
+					<< "  framebuffer " << fw << "x" << fh << " ===\n";
+				slowLog.flush();
+			}
+
 			const float frameMs = deltaTime * 1000.f;
+			++frameNumber;
 
 			history[historyAt] = frameMs;
 			historyAt = (historyAt + 1) % 8;
@@ -624,24 +652,41 @@ int main()
 			{
 				++slowFrames;
 				const wgpu2d::FrameStats st = wgpu2d::frameStats();
-				std::cout << "SLOW FRAME " << frameMs << " ms (avg " << emaMs << ")"
-					<< "  builds=" << st.pipelineBuilds
+				const float elapsed = std::chrono::duration<float>(
+					std::chrono::steady_clock::now() - sessionStart).count();
+
+				std::ostringstream line;
+				line << "SLOW FRAME " << frameMs << " ms (avg " << emaMs << ")"
+					<< "  at " << elapsed << "s"
+					<< " frame " << frameNumber
+					<< " (+" << (frameNumber - lastReportFrame) << " since last)"
+					// Where the time went outside our own work. These two are
+					// the ones that matter: a slow frame with a large acquire
+					// or present was waiting, not working, and drawing less
+					// would not have helped it.
+					<< "\n  waiting: acquire=" << st.acquireMs << "ms"
+					<< " present=" << st.presentMs << "ms"
+					<< " submit->done=" << st.gpuMillis << "ms"
+					<< "\n  doing:   builds=" << st.pipelineBuilds
 					<< " failures=" << st.pipelineFailures
 					<< " errors=" << st.validationErrors
 					<< " textures=" << st.texturesCreated
 					<< " blocked=" << st.blockedMs << "ms"
-					<< " | quads=" << st.quads
+					<< "\n  drawing: quads=" << st.quads
 					<< " runs=" << st.drawRuns
 					<< " flushes=" << st.flushes
 					<< " variants=" << st.pipelineVariants
-					<< " submit->done=" << st.gpuMillis << "ms"
 					<< "\n  previous 8 frames (ms):";
 				for (int i = 0; i < 8; i++)
 				{
-					std::cout << " " << history[(historyAt + i) % 8];
+					line << " " << history[(historyAt + i) % 8];
 				}
-				std::cout << "\n";
+
+				std::cout << line.str() << "\n";
 				std::cout.flush();
+				slowLog << line.str() << "\n";
+				slowLog.flush();
+				lastReportFrame = frameNumber;
 			}
 
 			// Updated after the test so one bad frame does not raise the bar
