@@ -170,6 +170,62 @@ behaviour; and `wgpu2d` is a CMake target that cannot see the game.
 
 ---
 
+## The unreproduced stall
+
+**Open.** A single observation: the frame rate fell from its usual 75 to about
+15, with visible camera jitter, and did not recur across minutes of play after
+a restart. No reproduction yet, so nothing has been changed to "fix" it.
+
+Two things narrow it before any code moves.
+
+**15 fps is exactly 75/5.** `PresentMode::Fifo` quantises to divisors of the
+refresh rate, so a frame was taking between 53 and 67 ms — a large, specific
+budget, not a small regression.
+
+**The jitter is a symptom, not a second bug.** `camera::follow` can never keep
+up while a direction is held: at 75 fps the player moves 26.7 px per frame and
+the camera 7.3, so it rides the leash and snaps to exactly 150 behind. On a
+turn, the distance dips under the leash for one frame and the *eased* branch
+runs instead. Those two branches differ by 19 px at 75 fps and by 96 px at 15.
+Same alternation, five times more visible — and gl2d had a disabled
+anti-jitter block at exactly that spot, which R5 removed while noting the
+jitter it targeted might still be there.
+
+**Candidates, ranked by what the code can actually do:**
+
+1. **A failed pipeline build retried forever.** `getQuadPipeline` does not cache
+   a failure — it returns null and `flushBatch` skips the run — so a variant
+   that cannot be built is re-attempted on *every draw run of every frame*: up
+   to 14 `createRenderPipeline` calls a frame, each with a blocking error-scope
+   drain. That alone reaches the right order of magnitude.
+2. **A spuriously failed build.** `createQuadPipelineVariant`'s error scope
+   catches any validation error open during its window, not only its own, so an
+   unrelated error can make a good pipeline be discarded and rebuilt forever.
+   Same storm, different trigger.
+3. **A mid-frame stall** — a texture or render target allocated during a frame,
+   or an error scope draining with 1 ms sleeps.
+4. **Outside the process** — thermal throttling, GPU contention, another
+   application.
+
+**What was built instead of a fix: a slow-frame recorder** (`glfwMain`). A
+frame over three times the running average *and* over 25 ms prints its counters
+and the previous eight frames. Every counter is zero in a steady frame, so
+whichever is not zero names the cause: `builds` large means 1 or 2, `errors`
+means the device complained, `blocked` means it sat draining a callback,
+`textures` means an allocation. **All zeros means 4**, which is worth as much,
+because it eliminates the rest.
+
+**Deliberately not fixed yet: candidates 1 and 2 are real defects visible by
+reading.** Patching them now would destroy the evidence — if one of them is the
+bug, the recorder proves it on first recurrence; if they are patched blind and
+the stall never returns, nothing is learned and nobody knows whether it is
+gone. They are worth fixing on their own merits *after* the question is
+settled, not before.
+
+Run with `2>&1 | tee` so the report survives the session.
+
+---
+
 ## Now — the game track
 
 R8–R11. R7 landed early, alongside the render track, because the boundary work
@@ -281,25 +337,81 @@ game choosing it.
 
 ---
 
-### N2. Timestamp queries — a GPU frame time
+### N2. ~~Timestamp queries~~ — **not possible on this adapter**
 
-**Concepts:** `QuerySet`, `timestampWrites` on the render pass descriptor,
-`resolveQuerySet` into a buffer, a mapped readback buffer to get the numbers to
-the CPU, and the frame of latency that implies (read last frame's result, not
-this one's). First real use of `requiredFeatures` at device creation.
+**Checked before building, and the answer was no.** `printAdapter` now lists
+features by name rather than counting them, and this AMD Radeon Pro 560X on
+Metal via wgpu-native v24 reports 22 features without the one this item needs:
 
-**LearnWebGPU:** [Benchmarking / Time](https://eliemichel.github.io/LearnWebGPU/advanced-techniques/benchmarking/time.html)
+```
+DepthClipControl, Depth32FloatStencil8, TextureCompressionBC,
+IndirectFirstInstance, ShaderF16, RG11B10UfloatRenderable,
+BGRA8UnormStorage, Float32Filterable, DualSourceBlending
++ 13 wgpu-native extensions (push constants, subgroups, binding arrays, ...)
+```
 
-**Would land:** a small timing module beside `hudShake`, read out in the
-existing ImGui debug window; `deviceDesc.requiredFeatures` in `wgpuInit`.
+`TimestampQuery` (0x3) is absent, and so are wgpu-native's own
+`TimestampQueryInsideEncoders` (0x30024) and `TimestampQueryInsidePasses`
+(0x30025). A feature that is not advertised cannot be requested at device
+creation, so `QuerySet`, `timestampWrites` and `resolveQuerySet` are all
+unreachable. This is a refusal, not a difficulty.
 
-**Check first:** `printAdapter` already lists `adapter.getFeatures`. Confirm
-`TimestampQuery` is in the list on this AMD/Metal adapter before planning
-around it; wgpu-native does not offer it everywhere, and it must be requested as
-a required feature, not just be present.
+**The consequence, and it matters for later items:** N4 and N5 both make claims
+about cost, and those claims cannot be settled by GPU timing on this machine.
+Anything that says "measured A/B" about GPU work has to mean one of the three
+below, or it is guessing.
 
-**Why early:** it is the measuring instrument. N4, N5, N6 and N9 are all claims
-about cost, and without this they are guesses.
+#### What was built instead — all three, and they work
+
+**N2a. Frame stats in the debug panel.** *(library + app)* **Landed.** The data
+mostly existed and none of it was surfaced. `glfwMain` already computes `deltaTime` and
+passes it to `gameLogic` without ever showing it; the renderer counts quads,
+cameras and draw runs but prints them **once**, to stdout, on the first flush.
+Making those live — CPU frame time, quads, runs, pipeline variants — would
+catch regressions in the batch, the uploads and the run splitting, which is
+where this renderer's cost actually sits. It measures the CPU side only, and
+should say so.
+
+**N2b. `wgpuQueueOnSubmittedWorkDone`.** *(library)* **Landed**, and the first
+reading justified the label: `submit->done` came back at 8.56 ms against a CPU
+frame of 8.30 ms, so it is tracking frame pacing rather than GPU work. The
+panel says `submit->done` and not "gpu" for that reason -- a number called
+"gpu" that is not one is worse than no number. Timing submit to callback gives a rough GPU-completion figure. It
+includes queue waits and vsync, so it is not clean GPU work — but it is real
+signal and it is the closest the API offers here.
+
+**N2c. A Metal frame-capture trigger.** *(app, macOS)* **Landed, and the risky
+part paid off.** wgpu-native exposes no `MTLDevice` -- there is no HAL escape
+hatch in `wgpu.h` -- so the capture targets `MTLCreateSystemDefaultDevice()`
+and bets that Metal device objects are per-GPU singletons and wgpu took the
+default. Verified rather than assumed: the trace came back at 16 MB, and
+`MTLBuffer-1098-0` is exactly 32768 bytes, which is what the renderer's own log
+reports for the ImGui vertex buffer capacity. Those are our resources. A
+capture of the wrong device would be empty.
+
+One limit that could not be checked from here: the command stream lives in a
+compressed `store0`, so whether R1's labels and debug groups actually render as
+a readable tree can only be confirmed by opening the trace in Xcode.
+
+The item whose groundwork was already paid for: R1 added 28 object labels and the debug groups a capture needs to be
+readable, so a trace would already show "batch -> surface", "composite scaled
+target", "imgui" rather than anonymous draws. What is missing is a way to
+*start* one — today capturing means launching the CMake binary under Xcode.
+`MTLCaptureManager` can start a capture programmatically into a `.gputrace`,
+and `src/platform/wgpuMetalLayer.mm` is already an Objective-C++ TU with Cocoa
+and QuartzCore linked, so the hook has a home and a key binding is the rest.
+
+**All three are in.** `MTL_CAPTURE_ENABLED=1` plus `F11` or
+`WGPU_GPUTRACE_FRAME=N` records one frame; the panel carries the CPU and
+submit-to-done figures and the batch counters.
+
+**And a fourth thing came out of using them.** A frame-rate collapse from 75 to
+15 fps was reported once and has not reproduced. Rather than guess, the frame
+counters were extended into a **slow-frame recorder**: when a frame exceeds
+three times the running average and 25 ms, it prints that frame's counters and
+the previous eight frames. Every counter is zero in a steady frame, so whichever
+is not zero names the cause — and all zeros means the cost was outside this
+process, which eliminates the rest. See **The unreproduced stall** below.
 
 ---
 
@@ -495,11 +607,19 @@ from a new angle, and none of them needs a chapter that is not already read.
 These are where the library/game line gets tested in practice, so each says
 which side it falls on.
 
-**F1. Additive bullets and explosions.** _(game)_ Mostly done: R2 built
-`BlendMode::Additive`, the pipeline variant and the run splitting, and outline
-12 records what that taught. What remains is the game calling `setBlendMode`
-where it wants light to add — which is a gameplay-side judgement about which
-sprites those are, not render work.
+**F1. ~~Additive bullets~~ — landed, and not the way this was written.** _(game)_
+Making the bullet *sprite* additive was built, looked at, and reverted: it
+replaced the art rather than lighting it, and `Bullet::render`'s five
+overlapping trail quads summed to 4x and clipped the sprite into a featureless
+white blob. What shipped instead is a generated capsule glow drawn *underneath*
+the sprite, which stays in alpha and stays crisp — plasma for the player, ice
+for the enemy, which land almost exactly on the existing atlas art.
+
+The lesson generalised into outline 14: additive is nearly invisible on this
+game's existing art, because every texture in it is binary alpha — 0% partially
+transparent pixels — so re-blending only changes which equation a fully opaque
+pixel goes through. Additive earns its place on soft-edged, overlapping content
+over a dark ground, which had to be *generated* because none existed.
 
 **F2. A post-process chain on the world target.** _(library mechanism, game policy — the split R3 made)_ Milestone 10 built the
 machinery and then used it twice (render scale, HUD shake). A damage vignette, a
@@ -535,6 +655,19 @@ whether that camera design is general or just rearranged.
 Switching Fifo / Immediate / Mailbox at runtime and watching what it does to
 N2's numbers is a few lines, and it is the clearest way to learn what the
 surface actually is.
+
+**Landed outside this list, on request:** the engine plume
+(`gameLayer/shipThruster`), the shield bubble (`gameLayer/shipShield`) and the
+bullet glow (`gameLayer/bulletGlow`). None were roadmap items; all three are
+the same pattern, which is worth naming because a fourth would be too. Each
+generates its own gradient texture at init rather than loading art — a radial
+disc, a fresnel sphere plus a ring, a capsule distance field — and each puts
+the shape in the texture's alpha and the intensity in the vertex colour.
+
+**Three modules now hand-roll a gradient generator.** A `wgpu2d` helper for
+generated textures would serve all three, and is the obvious refactor when a
+fourth arrives. Not done: three is where a pattern becomes visible, four is
+where extracting it stops being speculative.
 
 **F6. Effect shaders, with parameters.** _(library)_ The renderer can draw a
 textured quad tinted by one colour. That is the whole vocabulary: `quad.wgsl`

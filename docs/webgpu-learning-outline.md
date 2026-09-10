@@ -321,11 +321,74 @@ What genuinely needs a new pipeline is a change to something else the descriptor
 
 **Where the plume put that to work:** four gradient quads behind the hull, sizes and intensities tapering, summing into a hot core — which no single quad can do, because a single quad has one colour per pixel and this needs an accumulation. Its colours are deliberately below 1 per channel, which is the bullets' lesson applied.
 
+### The art has to be built for it
+
+Three effects were added on top of this — an engine plume, a shield bubble, a bullet glow — and all three had to **generate** their textures, because none of the game's existing art suits additive at all. Measured across every texture in the project: 0% partially transparent pixels. Every one is fully opaque or fully clear, so re-blending existing sprites only changes which equation a fully opaque pixel goes through, and the visible difference is almost nothing. Additive lives on soft-edged, overlapping content over a dark ground.
+
+So each of them is a formula: a radial disc for the plume, a fresnel sphere plus a ring for the shield, a capsule distance field for the bullet glow — with the shape in the texture's alpha and the intensity in the vertex colour, which is what lets one white texture serve every colour. **Three modules now hand-roll a gradient generator**, which is a pattern becoming visible rather than a duplication worth extracting yet.
+
+Two things they taught that the blending theory does not:
+
+- **Under additive, "too bright" does not look brighter — it looks thicker.** Making the shield's rim narrower barely moved it, because the rim was clipping: a wide plateau reads as solid white however narrow the gradient underneath is. Reweighting so the peak just reaches 1 took the clipped plateau from 12 px to 0 and made the falloff visible. Clipping spreads a shape outward instead of intensifying it.
+- **Physical correctness and legibility are different targets, and screen size decides which you get.** The shield's fresnel exponent wants to be 4 or 5. At 4 the curve is still under 0.1 at r = 0.92, so nearly all the brightness sits in the outermost 5% of the radius — on a bubble 110 px across, about three pixels. Correct and invisible. The exponent is 2.
+
 **LearnWebGPU:** no chapter. The guide sets a blend state once in [Hello Triangle](https://eliemichel.github.io/LearnWebGPU/basic-3d-rendering/hello-triangle.html) and never needs a second one, so the consequences for batching never come up.
 
 **Code:** `createQuadPipelineVariant`'s `switch (key.blend)` · the run boundary in `flushBatch` · `include/gameLayer/shipThruster.h` · `src/gameLayer/shipThruster.cpp`
 
 **Commit:** `fce9991`
+
+---
+
+## 15. Reading a frame back
+
+**Concepts:** A rendered frame lives in a texture the GPU owns. Getting it to the CPU is `copyTextureToBuffer` into a buffer created with `MapRead`, then `mapAsync` and `getConstMappedRange`. Three steps that cannot happen together, because the GPU is not synchronous: **record** the copy after the pass ends and before the encoder is finished — a copy cannot be recorded *inside* a render pass — then **submit**, then **map**, which is asynchronous like every other WebGPU callback and is drained with the same bounded pump the error scopes use.
+
+**Two rules the copy imposes, and both belong to the copy rather than the caller.** `bytesPerRow` must be a multiple of 256, so the buffer's rows are padded and have to be unpadded on the way out; and the surface is `BGRA8Unorm` here, so the channels are swizzled. `wgpuTakeFrameCapture` absorbs both and hands back tightly packed RGBA, because a caller that had to know either would be a caller that leaks the GPU's constraints into an image file.
+
+**Where the boundary went:** the library returns pixels, the application writes the file. A drawing library has no business owning an image encoder or a path — the same reason its shaders are compiled in rather than read from `RESOURCES_PATH` (13). `stb_image_write` joined the existing `stb_image` target so the encoder is a normal dependency.
+
+**`CopySrc` is now permanent** on the surface and on every render target. That is a deliberate standing cost, and the justification is history rather than principle: this capability had been rebuilt as throwaway scaffolding **five times** — the milestone-7 parity check, milestone 12's blend numbers, and three times over the visual features — and the fifth time it was lost mid-task to a cleared scratchpad and had to be rewritten before the work could continue.
+
+**A key binding is not enough.** `F12` serves a human; `WGPU_SCREENSHOT_FRAME=N` is what makes this usable from a script or an agent session, which is what the verification norm in `AGENTS.md` actually asks for — a fixed scene rendered to a PNG with nobody at the keyboard.
+
+**Headless was substituted, not built.** A surfaceless context is tractable in the renderer — eight uses of `g.surface`, each with an obvious offscreen branch, no `getCurrentTexture`, no `present`. The application half is the real cost: `glfwMain` is built around a window, ImGui's GLFW backend needs one, and the game reads input through `platform::`, which is wired to GLFW callbacks. `WGPU_OFFSCREEN=1` hides the window instead — one hint — and what a surfaceless context would add over that is exactly one thing: running where there is no window system at all.
+
+**LearnWebGPU:** [Screen capture](https://eliemichel.github.io/LearnWebGPU/advanced-techniques/screen-capture.html) (WIP) · [Headless context](https://eliemichel.github.io/LearnWebGPU/advanced-techniques/headless.html)
+
+**Code:** `wgpuRequestFrameCapture` / `wgpuTakeFrameCapture` / `captureRecordCopy` / `captureResolve` · `include/render/wgpuContext.h` · the PNG write and both triggers in `src/platform/glfwMain.cpp`
+
+**Commit:** `78bd845`
+
+---
+
+## 16. Measuring, when the hardware will not let you
+
+**The plan was timestamp queries, and the plan was checked before it was built.** `printAdapter` now lists adapter features by name rather than counting them, and this machine reports 22 without the one that mattered: `TimestampQuery` is absent, and so are wgpu-native's `TimestampQueryInsideEncoders` and `TimestampQueryInsidePasses`. A feature that is not advertised cannot be requested at device creation, so `QuerySet`, `timestampWrites` and `resolveQuerySet` are all unreachable. **This is a refusal, not a difficulty**, and it is the reason the guide's Benchmarking chapter cannot be followed here.
+
+**The general lesson is the cheap one:** check the feature list before designing around a feature. The check cost one function; designing around it and discovering this at the end would have cost the item.
+
+**What replaced it, and what each is honestly worth:**
+
+- **Frame stats in the debug panel.** The counts are the renderer's own and exact — quads, draw runs, flushes, cameras, pipeline variants. Most of the data already existed and none of it was surfaced: `glfwMain` computed `deltaTime` and never showed it, and the batch counted its runs but printed them once, to stdout, on the first flush.
+- **`wgpuQueueOnSubmittedWorkDone`.** Wall time from submit to the queue reporting done. The first reading settled what it is: 8.56 ms against a CPU frame of 8.30 ms, which is frame pacing and not GPU work. The panel says `submit->done` rather than "gpu" for that reason. **A number that is mislabelled is worse than no number.**
+- **A Metal frame capture.** The one that gives genuine per-pass GPU timings. `F11` or `WGPU_GPUTRACE_FRAME=N` writes a `.gputrace` for Xcode, and it needs `MTL_CAPTURE_ENABLED=1` because macOS refuses programmatic capture that was not enabled before Metal started.
+
+**The capture has a bet in it, and the bet is documented.** wgpu-native exposes no `MTLDevice` — there is no HAL escape hatch anywhere in `wgpu.h` — so the capture targets `MTLCreateSystemDefaultDevice()` and relies on Metal device objects being per-GPU singletons *and* on wgpu having taken the default GPU. Verified rather than assumed: the trace came back at 16 MB, and one of its buffers is exactly 32768 bytes, which is what the renderer's own log reports for the ImGui vertex buffer. Those are our resources. If wgpu ever picks a non-default GPU the trace will come back empty, and the header says so.
+
+**This is also where R1 paid off.** Its 28 object labels and two debug groups are what make a trace readable — "batch -> surface", "composite scaled target", "imgui" instead of anonymous draws — and until this item there was no way to *start* a capture, so that investment sat idle. Groundwork and trigger were two separate halves and only one had been built.
+
+### What a frame rate tells you about a frame
+
+`PresentMode::Fifo` does not degrade smoothly. It quantises to divisors of the refresh rate, so on a 75 Hz panel the only rates available are 75, 37.5, 25, 18.75, 15 — and a reported **15 fps means a frame took between 53 and 67 ms**, not "a bit over 13". Reading a frame rate as a budget rather than a speed narrows a performance question enormously before any profiling starts.
+
+**And a slow frame should be able to describe itself.** The per-frame counters exist so that a frame far above its neighbours can say what it did that a normal one does not: a pipeline compiled mid-frame, a validation error, an allocation, or time spent blocking in an async drain. Every counter is zero in a steady frame, so a non-zero one names the cause — and **all zeros is a result too**, because it puts the cost outside the process.
+
+**LearnWebGPU:** [Benchmarking / Time](https://eliemichel.github.io/LearnWebGPU/advanced-techniques/benchmarking/time.html) — written, and not applicable on this adapter.
+
+**Code:** `featureName` and `printAdapter` · `wgpu2d::FrameStats` / `frameStats` · `FramePerf` and its counters · `onQueueWorkDone` · `metalCaptureBegin` / `metalCaptureEnd` in `src/platform/wgpuMetalLayer.mm` · the panel in `gameLayer.cpp` and the slow-frame recorder in `glfwMain.cpp`
+
+**Commit:** `97ed2de`
 
 ---
 
@@ -340,6 +403,9 @@ Facts established while porting, all specific to an Intel Mac with an AMD Radeon
 | Surface never reports `Outdated` after a resize; the layer stretches the old drawable | Metal keeps presenting the configured size — compare `glfwGetFramebufferSize` every frame (see 5) |
 | Surface formats offered: `BGRA8UnormSrgb`, `BGRA8Unorm`, two 10/16-bit ones | The port picks `BGRA8Unorm` so nothing gamma-corrects behind gl2d's back |
 | Fullscreen on one secondary monitor looks slightly lighter until the menu bar is revealed | That monitor's profile on macOS's direct-to-display path. Pinning the `CAMetalLayer` color space (`095afaf`) did not change it; the OpenGL build is always composited, so it never shows it. **Run parity screenshots windowed on the main display.** |
+| `TimestampQuery` is not advertised, nor either of wgpu-native's timestamp extensions | No GPU timing on this adapter at all. The guide's Benchmarking chapter cannot be followed here; see 16 for what replaces it |
+| The panel refreshes at 75 Hz, and `PresentMode::Fifo` quantises to divisors of it | The only frame rates available are 75, 37.5, 25, 18.75, 15. A reported 15 fps means a frame cost 53–67 ms, not "a bit over 13" |
+| wgpu-native exposes no `MTLDevice`, and `wgpu.h` has no HAL escape hatch | A Metal capture has to target `MTLCreateSystemDefaultDevice()` and rely on device objects being per-GPU singletons (16) |
 | Redirecting the binary's output loses the last lines | stdout is fully buffered when redirected — the reports flush explicitly. macOS has no `timeout`; `perl -e 'alarm N; exec @ARGV' ./spaceGame` works |
 
 ---
