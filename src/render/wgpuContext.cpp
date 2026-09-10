@@ -213,7 +213,7 @@ namespace
 
 
 	// 10: defined below, needed by the pass bookkeeping above them.
-	void flushBatch(uint32_t target, uint32_t shaderOverride = 0, uint32_t effectSlot = 0);
+	void flushBatch(uint32_t target);
 	void compositeScaledTarget();
 
 	// The target a plain flush goes to: the low-res stand-in when that is
@@ -280,6 +280,12 @@ namespace
 	std::vector<uint32_t> batchQuadCameras;   // index into frameCameras
 	std::vector<wgpu2d::BlendMode> batchQuadBlends; // R2: the third run key
 
+	// F6: which shader each quad runs, and which parameter block it reads.
+	// Both join the run key -- a shader is a different pipeline and a slot is
+	// a different dynamic offset, and neither can change inside a draw.
+	std::vector<uint32_t> batchQuadShaders;
+	std::vector<uint32_t> batchQuadEffectSlots; // index into frameEffectParams
+
 	// N2a: what the frame cost. Accumulated as it is recorded, snapshotted at
 	// the end so a reader mid-frame sees a whole frame rather than a partial.
 	wgpu2d::FrameStats statsInProgress;
@@ -300,6 +306,17 @@ namespace
 		lastGpuMillis = std::chrono::duration<float, std::milli>(now - submitAt).count();
 	}
 	std::vector<wgpu2d::Camera> frameCameras; // every distinct camera used this frame, in order
+
+	// Every distinct effect parameter block used this frame, deduped the same
+	// way frameCameras is: a new slot only when the values changed since the
+	// last recorded one. A hundred quads sharing one set of parameters cost
+	// one slot, which is the common case.
+	std::vector<wgpu2d::EffectParams> frameEffectParams;
+
+	bool sameEffectParams(const wgpu2d::EffectParams &a, const wgpu2d::EffectParams &b)
+	{
+		return a.a == b.a && a.b == b.b;
+	}
 	wgpu2d::Texture white1pxSquareTexture;    // gl2d's untextured path samples this
 
 	// ---------------------------------------------------------------------
@@ -1753,6 +1770,9 @@ namespace
 		batchQuadTextures.clear();
 		batchQuadCameras.clear();
 		batchQuadBlends.clear();
+		batchQuadShaders.clear();
+		batchQuadEffectSlots.clear();
+		frameEffectParams.clear();
 		frameCameras.clear();
 	}
 
@@ -1767,10 +1787,7 @@ namespace
 	// when the low-res stand-in is standing in for it, which is what keeps
 	// the framing identical at any render scale -- and a render target's own
 	// dimensions otherwise.
-	// `shaderOverride` names a registered effect to run instead of the sprite
-	// shader, and `effectSlot` the parameter slot it reads. Both are 0 for an
-	// ordinary flush, which is what every draw in the game uses.
-	void flushBatch(uint32_t target, uint32_t shaderOverride, uint32_t effectSlot)
+	void flushBatch(uint32_t target)
 	{
 		if (batchVertices.empty()) { return; }
 
@@ -1809,6 +1826,32 @@ namespace
 				&uniforms, sizeof(uniforms));
 		}
 		g.cameraSlotsUsed = cameraSlotBase + (uint32_t)frameCameras.size();
+
+		// The effect slots for this flush, after whatever earlier flushes in
+		// this frame are still using -- same reasoning as the camera slots and
+		// the vertex buffer's slices (milestone 10): writeBuffer is ordered
+		// against the submit, not against the recorded draws.
+		const uint32_t effectSlotBase = g.effectSlotsUsed;
+		if (frameEffectParams.empty()) { frameEffectParams.push_back(wgpu2d::EffectParams{}); }
+		if (!ensureEffectSlotCapacity(effectSlotBase + (uint32_t)frameEffectParams.size())) { return; }
+		for (size_t i = 0; i < frameEffectParams.size(); i++)
+		{
+			EffectUniforms uniforms;
+			uniforms.resolution[0] = projectionWidth;
+			uniforms.resolution[1] = projectionHeight;
+			uniforms.resolution[2] = projectionWidth != 0.f ? 1.f / projectionWidth : 0.f;
+			uniforms.resolution[3] = projectionHeight != 0.f ? 1.f / projectionHeight : 0.f;
+			uniforms.time[0] = std::chrono::duration<float>(
+				std::chrono::steady_clock::now() - startedAt).count();
+			for (int c = 0; c < 4; c++)
+			{
+				uniforms.a[c] = frameEffectParams[i].a[c];
+				uniforms.b[c] = frameEffectParams[i].b[c];
+			}
+			g.queue.writeBuffer(g.effectBuffer,
+				(uint64_t)(effectSlotBase + i) * g.effectSlotStride, &uniforms, sizeof(uniforms));
+		}
+		g.effectSlotsUsed = effectSlotBase + (uint32_t)frameEffectParams.size();
 
 		RenderPassEncoder pass = g.framePass;
 
@@ -1853,11 +1896,16 @@ namespace
 			const bool boundary = (i == quadCount)
 				|| batchQuadTextures[i] != batchQuadTextures[runStart]
 				|| batchQuadCameras[i] != batchQuadCameras[runStart]
-				|| batchQuadBlends[i] != batchQuadBlends[runStart];
+				|| batchQuadBlends[i] != batchQuadBlends[runStart]
+				// F6: a shader is a different pipeline, and a parameter slot
+				// is a different dynamic offset. Neither can change mid-draw,
+				// so both end a run exactly as texture and camera do.
+				|| batchQuadShaders[i] != batchQuadShaders[runStart]
+				|| batchQuadEffectSlots[i] != batchQuadEffectSlots[runStart];
 			if (!boundary) { continue; }
 
 			RenderPipeline pipeline = getQuadPipeline(
-				PipelineKey{ targetFormat, batchQuadBlends[runStart], shaderOverride });
+				PipelineKey{ targetFormat, batchQuadBlends[runStart], batchQuadShaders[runStart] });
 			if (!pipeline)
 			{
 				// The variant could not be built. Skipping the run loses those
@@ -1878,7 +1926,8 @@ namespace
 			// Group 2 is bound on every draw, not only effect draws: a draw
 			// must bind every group its pipeline layout declares, and the
 			// layout is shared. Sprite shaders never read it.
-			const uint32_t effectOffset = effectSlot * g.effectSlotStride;
+			const uint32_t effectOffset =
+				(effectSlotBase + batchQuadEffectSlots[runStart]) * g.effectSlotStride;
 			pass.setBindGroup(2, g.effectBindGroup, 1, &effectOffset);
 			pass.draw((uint32_t)((i - runStart) * 6), 1, (uint32_t)(runStart * 6), 0);
 			runs++;
@@ -1906,6 +1955,7 @@ namespace
 	// ({u0, v0, u1, v1} with v measured from the bottom, default {0,1,1,0})
 	// and are converted to WebGPU's top-left origin here: v = 1 - v.
 	void pushQuad(const wgpu2d::Camera &camera, wgpu2d::BlendMode blend,
+		uint32_t shader, const wgpu2d::EffectParams &effectParams,
 		const glm::vec4 transforms, const wgpu2d::Texture texture,
 		const glm::vec4 colors[4], const glm::vec2 origin, const float rotation, const glm::vec4 textureCoords)
 	{
@@ -1964,6 +2014,16 @@ namespace
 		}
 		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
 		batchQuadBlends.push_back(blend);
+
+		// Same dedupe as the camera above. Quads without an effect still take
+		// a slot index, because every draw binds group 2 whether it reads it
+		// or not -- they just all land on the same slot.
+		if (frameEffectParams.empty() || !sameEffectParams(frameEffectParams.back(), effectParams))
+		{
+			frameEffectParams.push_back(effectParams);
+		}
+		batchQuadShaders.push_back(shader);
+		batchQuadEffectSlots.push_back((uint32_t)frameEffectParams.size() - 1);
 	}
 
 	// 10: the upscale. One quad covering the surface, sampling the low-res
@@ -1993,7 +2053,7 @@ namespace
 		// The world target is cleared opaque, so today this is numerically
 		// identical to Alpha -- it stops being identical the moment anything
 		// clears it to anything translucent.
-		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Premultiplied,
+		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Premultiplied, 0, wgpu2d::EffectParams{},
 			glm::vec4{0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight},
 			handle, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
 		g.scaledTargetDrawn = false; // the pass below is the surface's, not the target's
@@ -2870,24 +2930,11 @@ namespace wgpu2d
 		// Whatever is pending belongs underneath, so it goes out first.
 		flush();
 
-		if (!ensureEffectSlotCapacity(g.effectSlotsUsed + 1)) { return; }
-		const uint32_t slot = g.effectSlotsUsed++;
-
-		EffectUniforms uniforms;
-		uniforms.resolution[0] = (float)g.surfaceWidth;
-		uniforms.resolution[1] = (float)g.surfaceHeight;
-		uniforms.resolution[2] = 1.f / (float)g.surfaceWidth;
-		uniforms.resolution[3] = 1.f / (float)g.surfaceHeight;
-		uniforms.time[0] = std::chrono::duration<float>(
-			std::chrono::steady_clock::now() - startedAt).count();
-		for (int i = 0; i < 4; i++)
-		{
-			uniforms.a[i] = params.a[i];
-			uniforms.b[i] = params.b[i];
-		}
-		g.queue.writeBuffer(g.effectBuffer, (uint64_t)slot * g.effectSlotStride,
-			&uniforms, sizeof(uniforms));
-
+		// No slot bookkeeping here any more. F6 moved that into the batch: the
+		// quad below carries its effect and its parameters like any other, and
+		// flushBatch allocates and writes the slot. A full-screen effect is
+		// now just a quad that happens to cover the screen.
+		//
 		// The same swap compositeScaledTarget uses: the batch is the caller's,
 		// and this borrows it for exactly one quad rather than adding a second
 		// vertex buffer that would be idle most of the time.
@@ -2903,10 +2950,10 @@ namespace wgpu2d
 		keptFrameCameras.swap(frameCameras);
 
 		const glm::vec4 white[4] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
-		pushQuad(Camera{}, BlendMode::Premultiplied,
+		pushQuad(Camera{}, BlendMode::Premultiplied, effect.id, params,
 			glm::vec4{ 0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight },
 			source, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
-		flushBatch(0, effect.id, slot);
+		flushBatch(0);
 
 		batchVertices.swap(keptVertices);
 		batchQuadTextures.swap(keptTextures);
@@ -3151,7 +3198,8 @@ namespace wgpu2d
 	void Renderer2D::renderRectangleAbsRotation(const Rect transforms, const Texture texture, const Color4f colors[4],
 		const glm::vec2 origin, const float rotationDegrees, const glm::vec4 textureCoords)
 	{
-		pushQuad(currentCamera, currentBlendMode, transforms, texture, colors, origin, rotationDegrees, textureCoords);
+		pushQuad(currentCamera, currentBlendMode, currentEffect.id, currentEffectParams,
+			transforms, texture, colors, origin, rotationDegrees, textureCoords);
 	}
 
 	void Renderer2D::renderRectangle(const Rect transforms, const Color4f colors[4], const glm::vec2 origin, const float rotationDegrees)

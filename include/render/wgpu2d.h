@@ -361,6 +361,27 @@ namespace wgpu2d
 		// missing pop would be silent where a missing popCamera is obvious.
 		BlendMode currentBlendMode = BlendMode::Alpha;
 		void setBlendMode(BlendMode mode) { currentBlendMode = mode; }
+
+		// The effect every quad recorded after this runs through, and the
+		// parameters it reads. Set like the blend mode, for the same reason:
+		// threading them through every renderRectangle overload would double
+		// the signatures for something most draws never use.
+		//
+		// This is the per-*quad* channel a post-process did not need. A
+		// full-screen effect is one draw with one parameter block; a shield
+		// ripple is a quad among many, each wanting its own impact point.
+		//
+		// Consecutive quads sharing parameters share a slot, so setting this
+		// once around a loop costs one slot rather than one per quad. Changing
+		// either the effect or the parameters ends a draw run.
+		Effect currentEffect = {};
+		EffectParams currentEffectParams = {};
+		void setEffect(Effect effect, const EffectParams &params = {})
+		{
+			currentEffect = effect;
+			currentEffectParams = params;
+		}
+		void clearEffect() { currentEffect = {}; currentEffectParams = {}; }
 		void pushCamera(Camera c = {});
 		void popCamera();
 
