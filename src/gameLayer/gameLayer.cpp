@@ -328,7 +328,9 @@ bool gameLogic(float deltaTime)
 				{
 					data.health -= 0.1;
 					hud::onDamage();  // shake the HUD on the hit
-					shield::hit();    // and flare the bubble, if it is up
+					// Relative to the ship, because the shield moves with it and
+					// the ripple has to stay anchored to the bubble.
+					shield::hit(data.bullets[i].position - data.playerPos);
 
 					data.bullets.erase(data.bullets.begin() + i);
 					i--;

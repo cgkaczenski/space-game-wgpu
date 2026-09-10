@@ -678,11 +678,42 @@ generated textures would serve all three, and is the obvious refactor when a
 fourth arrives. Not done: three is where a pattern becomes visible, four is
 where extracting it stops being speculative.
 
-**F6. Effect shaders, with parameters.** _(library)_ The renderer can draw a
-textured quad tinted by one colour. That is the whole vocabulary: `quad.wgsl`
-is `in.color * textureSample(...)`, and the only per-quad channel is four
-floats of vertex colour. Everything the shield could become runs into that wall
-at once, so this is one item rather than several.
+**F6. Effect shaders, with parameters — landed.** _(library mechanism, game
+policy)_ The renderer could draw a textured quad tinted by one colour. That was
+the whole vocabulary: `quad.wgsl` is `in.color * textureSample(...)`, and the
+only per-quad channel was four floats of vertex colour. Everything the shield
+could become ran into that wall at once, so this was one item rather than
+several.
+
+**What landed.** `createEffect` compiles application WGSL into a fragment stage
+that shares the sprite vertex stage; `setEffect` / `clearEffect` attach one plus
+eight floats of parameters to the quads that follow. The shield impact ripple is
+the consumer, and the cloak (F2) was retrofitted onto the same channel.
+
+**One row of the table below was wrong, and finding out was the point.**
+"several overlapping ripples" was predicted to need "an array — a uniform or
+storage buffer". It needs neither. With a per-quad parameter channel, several
+ripples are simply several quads, each carrying its own impact point and age:
+no array, no upper bound baked into a shader, and overlapping waves brighten
+where they cross for free because they are already additive. Measured cost is
+one quad and one draw run per live ripple — distinct parameters mean a distinct
+slot, which means a distinct run, which is the run key doing what it was
+extended to do.
+
+**Two things the ripple taught that the shader did not.** The impact has to be
+stored *relative to the ship*, because the shield moves with it and a wave
+anchored to the world slides off the bubble. And it has to be stored as a
+*direction*, not as the collision point: the collision is against the hull's
+circle, well inside the bubble, so the reported point starts the wave in the
+shield's interior and it has to travel out before reaching where the player
+watched the bullet strike. A shell is a surface; the direction is the whole of
+what distinguishes one hit from another.
+
+**A shared effect can be drowned by an unshared one.** The hit flare and the
+ripple are the same event drawn twice, and the flare's decay was tuned when it
+was the only signal a hit had happened. Left alone it saturated both rim rings
+for the first quarter-second, so the wave appeared to start late. Two effects
+that describe one event have to be tuned together.
 
 **What the shield wants, and what each thing actually needs:**
 
@@ -691,7 +722,7 @@ at once, so this is one item rather than several.
 | look _spherical_ rather than like a ring | **nothing new** — see below                                   |
 | a specular highlight that tracks a light | nothing new: rotate the quad, the highlight rotates with it   |
 | ripple outward from an impact point      | a shader + per-draw parameters (point, elapsed)               |
-| several overlapping ripples              | the above, with an array — a uniform or storage buffer        |
+| several overlapping ripples              | ~~an array — a uniform or storage buffer~~ — nothing more: several quads |
 | a dissolve / shatter on depletion        | a shader + one threshold parameter + a noise texture          |
 | fragments flying apart                   | many quads with per-quad state — N5, or F5's machinery        |
 | refraction, heat haze                    | F2: it has to _read_ the scene, so it needs the render target |

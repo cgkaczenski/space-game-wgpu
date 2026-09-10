@@ -39,8 +39,20 @@ namespace shield
 	void setActive(bool active);
 	bool isActive();
 
-	// Something struck the shield: flare briefly. `strength` 1 is a solid hit.
-	void hit(float strength = 1.f);
+	// Something struck the shield: flare, and start a ripple travelling out
+	// from where it landed.
+	//
+	// `offsetFromShip` is the impact relative to the ship's centre, not an
+	// absolute position — the shield moves with the ship, so the wave has to be
+	// anchored to the bubble rather than to the world. Only its *direction* is
+	// used: the collision that produced it happened against the hull, which is
+	// inside the bubble, and a shell is a surface, so the wave starts where
+	// that direction meets it. `strength` 1 is a solid hit.
+	//
+	// Several hits ripple at once, up to a small limit. Each is its own quad
+	// with its own parameters, which is what the per-quad channel made cheap:
+	// no array in a uniform, no upper bound baked into a shader.
+	void hit(glm::vec2 offsetFromShip, float strength = 1.f);
 
 	// Draws the bubble. Call *after* the ship, so the rim reads as being in
 	// front of the hull. `dt` is game time, like the plume's.

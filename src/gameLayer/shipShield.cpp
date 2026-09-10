@@ -2,7 +2,11 @@
 
 #include "imgui.h"
 
+#include <platformTools.h>
+
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <cmath>
 #include <iostream>
 #include <vector>
@@ -19,6 +23,35 @@ namespace
 	wgpu2d::Texture rim;
 	wgpu2d::Texture tint;
 
+	wgpu2d::Effect rippleEffect;
+
+	// The live impacts. A small fixed set, oldest replaced: a shield being hit
+	// by more than this at once has bigger problems than a missing ripple.
+	//
+	// A hit is stored as a *direction*, not as the point the collision reported.
+	// That point is on the hull's circle, which is well inside the bubble, so
+	// the wave used to start in the shield's interior and had to travel out
+	// before it reached the place the player watched the bullet strike. A shell
+	// is a surface: every hit is on it, and the direction is the whole of what
+	// distinguishes one hit from another.
+	struct Impact
+	{
+		glm::vec2 direction = {0.f, -1.f}; // unit, from the ship's centre
+		float elapsed = 0.f;
+		float intensity = 0.f;
+	};
+	const int maxImpacts = 4;
+	Impact impacts[maxImpacts];
+	int nextImpact = 0;
+
+	// How the wave behaves, in the quad's own uv units so it is independent of
+	// the shield's size on screen. The quad is 1 uv across, which puts the
+	// silhouette 0.5 from the centre and makes a full crossing 1.0.
+	const float waveSpeed = 2.2f;       // uv per second: a crossing takes ~0.45s
+	const float waveBand = 0.08f;       // half-width of the bright front
+	const float waveLifetime = 0.5f;    // seconds; past this it has left the shell
+	const float impactRadiusUv = 0.47f; // on the shell, just inside the silhouette
+
 	bool active = false;
 	float level = 0.f;   // eased `active`, 0..1
 	float flare = 0.f;   // spikes on a hit, decays
@@ -27,7 +60,12 @@ namespace
 	// How it behaves.
 	const float raisePerSecond = 9.f;
 	const float dropPerSecond = 5.f;
-	const float flareDecayPerSecond = 6.f;
+	// Fast, because the flare and the ripple are the same event. At 6 per
+	// second the whole-bubble flash was still a tenth of its peak after 0.38s,
+	// by which time the wave had crossed most of the shell -- so the flash *was*
+	// the impact and the ripple read as a separate, late thing. Short enough,
+	// and it becomes the front of the wave instead of a substitute for it.
+	const float flareDecayPerSecond = 14.f;
 	const float pulseHz = 0.9f;      // slow breathing, so it reads as powered
 	const float pulseDepth = 0.12f;
 
@@ -183,6 +221,25 @@ bool init()
 		std::cerr << "shield: could not create the bubble textures\n";
 		return false;
 	}
+
+	// The ripple is an effect rather than another generated texture, because
+	// it is not a fixed image: where the wave is depends on where the hit
+	// landed and how long ago, and neither is knowable at init.
+	const char *path = RESOURCES_PATH "shaders/shieldRipple.wgsl";
+	std::ifstream file(path, std::ios::binary);
+	if (!file.is_open())
+	{
+		std::cerr << "shield: cannot read " << path << "\n";
+		return false;
+	}
+	std::stringstream ss;
+	ss << file.rdbuf();
+	rippleEffect = wgpu2d::createEffect(ss.str().c_str(), "shield ripple");
+	if (rippleEffect.id == 0)
+	{
+		std::cerr << "shield: ripple effect did not compile\n";
+		return false;
+	}
 	return true;
 }
 
@@ -195,16 +252,28 @@ void cleanup()
 void setActive(bool a) { active = a; }
 bool isActive() { return active; }
 
-void hit(float strength)
+void hit(glm::vec2 offsetFromShip, float strength)
 {
 	if (strength <= 0.f || !active) { return; }
 	flare += strength;
 	if (flare > 1.f) { flare = 1.f; }
+
+	Impact &slot = impacts[nextImpact];
+	nextImpact = (nextImpact + 1) % maxImpacts;
+	// Only the direction survives; see Impact. The zero guard is the one
+	// camera::follow and the cloak shader both need, for the same reason.
+	const float distance = glm::length(offsetFromShip);
+	slot.direction = distance > 0.0001f
+		? offsetFromShip / distance
+		: glm::vec2(0.f, -1.f);
+	slot.elapsed = 0.f;
+	slot.intensity = std::min(1.f, strength);
 }
 
 void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt)
 {
 	if (rim.id == 0 || tint.id == 0) { return; }
+
 
 	const float target = active ? 1.f : 0.f;
 	const float rate = active ? raisePerSecond : dropPerSecond;
@@ -261,6 +330,33 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 		glm::vec4 shell = base * shellWeight + extra;
 		shell.a = 1.f;
 		drawDisc(renderer, rim, shipPos, shipSize, shellScale, shell);
+
+		// One quad per live impact, each carrying its own point and age. They
+		// are still additive, so overlapping waves brighten where they cross,
+		// which is what a wave on a shell should do.
+		for (Impact &impact : impacts)
+		{
+			if (impact.intensity <= 0.f) { continue; }
+			impact.elapsed += dt;
+			if (impact.elapsed > waveLifetime) { impact.intensity = 0.f; continue; }
+
+			// The point on the shell, in the quad's own uv space, so the
+			// shader works in units that do not change with the shield's size
+			// on screen.
+			const glm::vec2 uv = glm::vec2(0.5f) + impact.direction * impactRadiusUv;
+
+			// Fades as the front travels, so a wave dies out rather than
+			// stopping abruptly at the rim.
+			const float remaining = 1.f - impact.elapsed / waveLifetime;
+
+			wgpu2d::EffectParams params;
+			params.a = {uv.x, uv.y, impact.elapsed, impact.intensity * remaining * level};
+			params.b = {waveSpeed, waveBand, 0.f, 0.f};
+
+			renderer.setEffect(rippleEffect, params);
+			drawDisc(renderer, rim, shipPos, shipSize, shellScale, {1, 1, 1, 1});
+			renderer.clearEffect();
+		}
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 }
@@ -270,7 +366,10 @@ void debugUi()
 	bool a = active;
 	if (ImGui::Checkbox("Shield", &a)) { setActive(a); }
 	ImGui::SameLine();
-	if (ImGui::SmallButton("Flare")) { hit(); }
+	// A hit somewhere off-centre, so the debug button exercises the ripple
+	// rather than only the flare. The offset is in world units and the ship is
+	// 250 across, so this lands on the upper-left of the bubble.
+	if (ImGui::SmallButton("Flare")) { hit({-70.f, -70.f}); }
 }
 
 }
