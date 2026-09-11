@@ -419,6 +419,13 @@ int main()
 	
 	auto stop = std::chrono::high_resolution_clock::now();
 
+	// Filled at the end of each iteration, read by the slow-frame recorder at
+	// the top of the next one -- which is the only place they line up with
+	// deltaTime. See the recorder for why that matters.
+	float phaseLogicMs = 0.f;
+	float phaseEndFrameMs = 0.f;
+	float phasePollMs = 0.f;
+
 	while (!glfwWindowShouldClose(wind))
 	{
 		UpdateMusicStream(m);
@@ -438,6 +445,131 @@ int main()
 		if (augmentedDeltaTime > 1.f / 10) { augmentedDeltaTime = 1.f / 10; }
 	
 	#pragma endregion
+
+		// ---- Slow-frame recorder -------------------------------------------
+		//
+		// A frame-rate collapse that cannot be reproduced on demand has to be
+		// caught when it happens rather than hunted for. This watches the
+		// frame clock and, when a frame costs far more than its neighbours,
+		// prints that frame's counters and the run-up to it.
+		//
+		// It sits at the *top* of the iteration, and that is a correction
+		// rather than a preference. `deltaTime` is measured from the start of
+		// the previous iteration to the start of this one, so it is the
+		// previous frame's duration. `frameStats()` returns whatever
+		// wgpuEndFrame last published, which is also the previous frame -- but
+		// only until wgpuBeginFrame runs. Reporting after wgpuEndFrame, where
+		// this used to live, paired frame N's counters with frame N-1's
+		// duration. Every report written before this moved was describing two
+		// different frames, which is why a 1004ms frame could claim
+		// submit->done=0.34ms and blocked=0ms and mean nothing by it.
+		//
+		// Every counter is zero in a steady frame, so whichever one is not
+		// zero names the cause: pipelineBuilds means a variant was compiled
+		// mid-frame (and a large number means a failed build being retried,
+		// since failures are not cached); validationErrors means the device
+		// complained; blockedMs means the frame sat draining an async
+		// callback; texturesCreated means an allocation. If a slow frame shows
+		// all zeros, the cost was outside this process -- thermal throttling,
+		// another application, or the GPU itself -- and that is worth knowing
+		// too, because it rules out everything above.
+		{
+			static float emaMs = 0.f;
+			static float history[8] = {};
+			static int historyAt = 0;
+			static long long slowFrames = 0;
+			static long long frameNumber = 0;
+			static long long lastReportFrame = 0;
+			static int warmup = 30; // startup frames are slow and uninteresting
+			static std::chrono::steady_clock::time_point sessionStart =
+				std::chrono::steady_clock::now();
+
+			// Reports go to a file as well as the terminal, and this is the
+			// whole reason: the first time this fired for real, the output was
+			// in a terminal that had scrolled and there was nothing left to
+			// read. A diagnostic for an intermittent fault is worthless if it
+			// depends on the operator having piped it somewhere beforehand.
+			//
+			// Opened once, appended, and flushed after every report -- stdout
+			// is fully buffered when redirected and a killed process loses its
+			// tail, which AGENTS.md already records as a trap here.
+			static std::ofstream slowLog("slow-frames.log", std::ios::app);
+			static bool loggedHeader = false;
+			if (!loggedHeader)
+			{
+				loggedHeader = true;
+				int fw = 0, fh = 0;
+				glfwGetFramebufferSize(wind, &fw, &fh);
+				slowLog << "\n=== session " << (long long)time(nullptr)
+					<< "  framebuffer " << fw << "x" << fh << " ===\n";
+				slowLog.flush();
+			}
+
+			const float frameMs = deltaTime * 1000.f;
+			++frameNumber;
+
+			history[historyAt] = frameMs;
+			historyAt = (historyAt + 1) % 8;
+			if (warmup > 0) { --warmup; }
+
+			// A frame is suspicious if it is both far above the running
+			// average and slow in absolute terms -- the second test stops
+			// startup and a paused window from tripping it.
+			const bool suspicious = warmup == 0 && emaMs > 0.f
+				&& frameMs > emaMs * 3.f && frameMs > 25.f;
+			if (suspicious && slowFrames < 200) // bounded: a sustained stall must not spam
+			{
+				++slowFrames;
+				const wgpu2d::FrameStats st = wgpu2d::frameStats();
+				const float elapsed = std::chrono::duration<float>(
+					std::chrono::steady_clock::now() - sessionStart).count();
+
+				std::ostringstream line;
+				line << "SLOW FRAME " << frameMs << " ms (avg " << emaMs << ")"
+					<< "  at " << elapsed << "s"
+					<< " frame " << frameNumber
+					<< " (+" << (frameNumber - lastReportFrame) << " since last)"
+					// Where the time went outside our own work. These two are
+					// the ones that matter: a slow frame with a large acquire
+					// or present was waiting, not working, and drawing less
+					// would not have helped it.
+					<< "\n  waiting: acquire=" << st.acquireMs << "ms"
+					<< " present=" << st.presentMs << "ms"
+					<< " submit->done=" << st.gpuMillis << "ms"
+					// Which part of the iteration the time went to. Between
+					// them these cover everything except the few microseconds
+					// of bookkeeping around them, so a slow frame with all
+					// three small really is unaccounted for.
+					<< "\n  phases:  logic=" << phaseLogicMs << "ms"
+					<< " endFrame=" << phaseEndFrameMs << "ms"
+					<< " poll=" << phasePollMs << "ms"
+					<< "\n  doing:   builds=" << st.pipelineBuilds
+					<< " failures=" << st.pipelineFailures
+					<< " errors=" << st.validationErrors
+					<< " textures=" << st.texturesCreated
+					<< " blocked=" << st.blockedMs << "ms"
+					<< "\n  drawing: quads=" << st.quads
+					<< " runs=" << st.drawRuns
+					<< " flushes=" << st.flushes
+					<< " variants=" << st.pipelineVariants
+					<< "\n  previous 8 frames (ms):";
+				for (int i = 0; i < 8; i++)
+				{
+					line << " " << history[(historyAt + i) % 8];
+				}
+
+				std::cout << line.str() << "\n";
+				std::cout.flush();
+				slowLog << line.str() << "\n";
+				slowLog.flush();
+				lastReportFrame = frameNumber;
+			}
+
+			// Updated after the test so one bad frame does not raise the bar
+			// for the next -- a sustained stall should keep reporting.
+			emaMs += (frameMs - emaMs) * (emaMs > 0.f ? 0.05f : 1.f);
+		}
+
 
 	#pragma region frame start
 			// F12: ask the renderer for this frame. The request is fulfilled
@@ -521,11 +653,18 @@ int main()
 
 	#pragma region game logic
 
+		// Phase timers. A frame that is slow with every library counter at zero
+		// used to be a dead end -- the only honest conclusion was "outside this
+		// process". These say *which part of the iteration* the time went to,
+		// which turns that dead end into three narrower questions.
+		const auto logicStart = std::chrono::high_resolution_clock::now();
 		if (!gameLogic(augmentedDeltaTime))
 		{
 			closeGame();
 			return 0;
 		}
+		phaseLogicMs = std::chrono::duration<float, std::milli>(
+			std::chrono::high_resolution_clock::now() - logicStart).count();
 
 	#pragma endregion
 
@@ -586,113 +725,10 @@ int main()
 			ImGui::Render();
 			render::wgpuImguiRenderDrawData(); // on top of the game, same pass
 		#endif
+		const auto endFrameStart = std::chrono::high_resolution_clock::now();
 		render::wgpuEndFrame(); // end pass, submit, present
-
-		// ---- Slow-frame recorder -------------------------------------------
-		//
-		// A frame-rate collapse that cannot be reproduced on demand has to be
-		// caught when it happens rather than hunted for. This watches the
-		// frame clock and, when a frame costs far more than its neighbours,
-		// prints that frame's counters and the run-up to it.
-		//
-		// Every counter is zero in a steady frame, so whichever one is not
-		// zero names the cause: pipelineBuilds means a variant was compiled
-		// mid-frame (and a large number means a failed build being retried,
-		// since failures are not cached); validationErrors means the device
-		// complained; blockedMs means the frame sat draining an async
-		// callback; texturesCreated means an allocation. If a slow frame shows
-		// all zeros, the cost was outside this process -- thermal throttling,
-		// another application, or the GPU itself -- and that is worth knowing
-		// too, because it rules out everything above.
-		{
-			static float emaMs = 0.f;
-			static float history[8] = {};
-			static int historyAt = 0;
-			static long long slowFrames = 0;
-			static long long frameNumber = 0;
-			static long long lastReportFrame = 0;
-			static int warmup = 30; // startup frames are slow and uninteresting
-			static std::chrono::steady_clock::time_point sessionStart =
-				std::chrono::steady_clock::now();
-
-			// Reports go to a file as well as the terminal, and this is the
-			// whole reason: the first time this fired for real, the output was
-			// in a terminal that had scrolled and there was nothing left to
-			// read. A diagnostic for an intermittent fault is worthless if it
-			// depends on the operator having piped it somewhere beforehand.
-			//
-			// Opened once, appended, and flushed after every report -- stdout
-			// is fully buffered when redirected and a killed process loses its
-			// tail, which AGENTS.md already records as a trap here.
-			static std::ofstream slowLog("slow-frames.log", std::ios::app);
-			static bool loggedHeader = false;
-			if (!loggedHeader)
-			{
-				loggedHeader = true;
-				int fw = 0, fh = 0;
-				glfwGetFramebufferSize(wind, &fw, &fh);
-				slowLog << "\n=== session " << (long long)time(nullptr)
-					<< "  framebuffer " << fw << "x" << fh << " ===\n";
-				slowLog.flush();
-			}
-
-			const float frameMs = deltaTime * 1000.f;
-			++frameNumber;
-
-			history[historyAt] = frameMs;
-			historyAt = (historyAt + 1) % 8;
-			if (warmup > 0) { --warmup; }
-
-			// A frame is suspicious if it is both far above the running
-			// average and slow in absolute terms -- the second test stops
-			// startup and a paused window from tripping it.
-			const bool suspicious = warmup == 0 && emaMs > 0.f
-				&& frameMs > emaMs * 3.f && frameMs > 25.f;
-			if (suspicious && slowFrames < 200) // bounded: a sustained stall must not spam
-			{
-				++slowFrames;
-				const wgpu2d::FrameStats st = wgpu2d::frameStats();
-				const float elapsed = std::chrono::duration<float>(
-					std::chrono::steady_clock::now() - sessionStart).count();
-
-				std::ostringstream line;
-				line << "SLOW FRAME " << frameMs << " ms (avg " << emaMs << ")"
-					<< "  at " << elapsed << "s"
-					<< " frame " << frameNumber
-					<< " (+" << (frameNumber - lastReportFrame) << " since last)"
-					// Where the time went outside our own work. These two are
-					// the ones that matter: a slow frame with a large acquire
-					// or present was waiting, not working, and drawing less
-					// would not have helped it.
-					<< "\n  waiting: acquire=" << st.acquireMs << "ms"
-					<< " present=" << st.presentMs << "ms"
-					<< " submit->done=" << st.gpuMillis << "ms"
-					<< "\n  doing:   builds=" << st.pipelineBuilds
-					<< " failures=" << st.pipelineFailures
-					<< " errors=" << st.validationErrors
-					<< " textures=" << st.texturesCreated
-					<< " blocked=" << st.blockedMs << "ms"
-					<< "\n  drawing: quads=" << st.quads
-					<< " runs=" << st.drawRuns
-					<< " flushes=" << st.flushes
-					<< " variants=" << st.pipelineVariants
-					<< "\n  previous 8 frames (ms):";
-				for (int i = 0; i < 8; i++)
-				{
-					line << " " << history[(historyAt + i) % 8];
-				}
-
-				std::cout << line.str() << "\n";
-				std::cout.flush();
-				slowLog << line.str() << "\n";
-				slowLog.flush();
-				lastReportFrame = frameNumber;
-			}
-
-			// Updated after the test so one bad frame does not raise the bar
-			// for the next -- a sustained stall should keep reporting.
-			emaMs += (frameMs - emaMs) * (emaMs > 0.f ? 0.05f : 1.f);
-		}
+		phaseEndFrameMs = std::chrono::duration<float, std::milli>(
+			std::chrono::high_resolution_clock::now() - endFrameStart).count();
 
 		// Collect a screenshot if one was asked for. The renderer hands over
 		// tightly packed RGBA and nothing else -- no path, no format, no
@@ -718,7 +754,13 @@ int main()
 			}
 		}
 
+		// Timed because it is the one part of the iteration that is entirely the
+		// window system's, and it was outside every measurement the recorder
+		// had. A frame that stalls here is stalling in AppKit, not in us.
+		const auto pollStart = std::chrono::high_resolution_clock::now();
 		glfwPollEvents();
+		phasePollMs = std::chrono::duration<float, std::milli>(
+			std::chrono::high_resolution_clock::now() - pollStart).count();
 
 	#pragma endregion
 

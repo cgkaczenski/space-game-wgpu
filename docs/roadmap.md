@@ -172,6 +172,41 @@ behaviour; and `wgpu2d` is a CMake target that cannot see the game.
 
 ## The unreproduced stall
 
+**The recorder was reporting two different frames at once, and every report
+written before 2026-09-11 is unreliable for attribution.** `deltaTime` is
+measured from the start of one iteration to the start of the next, so it is the
+*previous* frame's duration. `frameStats()` returns whatever `wgpuEndFrame` last
+published, and the recorder ran straight after `wgpuEndFrame` — so it paired
+frame N's counters with frame N-1's duration. That is why a 1004 ms frame could
+report `submit->done=0.34ms` and `blocked=0ms` and mean nothing by it. The
+recorder now sits at the top of the iteration, where the two line up.
+
+**`submit->done` is not an attribution, and the self-test proved it.** With a
+120 ms stall injected into `gameLogic`, one report showed `submit->done=129ms`
+and the next showed `0.29ms` for the identical stall. The work-done callback
+lands a frame or two late by design, which the renderer already says in a
+comment; what is new is knowing that it will happily claim a stall it had no
+part in.
+
+**Phases are recorded now:** `logic`, `endFrame` and `poll`. Between them they
+cover the iteration, so a slow frame with all three small really is unaccounted
+for — where before that conclusion was an assumption. `poll` matters most: it is
+the window system's, and it was outside every measurement the recorder had.
+Both phases were validated against a deliberate stall in each.
+
+**What the log says independently of attribution.** Across 274 reports in 119
+sessions, two shapes stand out and neither depends on the broken pairing:
+
+- **Eighteen frames land between 1003 and 1012 ms**, across fifteen different
+  sessions. That tightness is a timeout, not a stall. The only one-second bound
+  in the per-frame path is the error-scope drain (`1000 x 1ms`), which only runs
+  when something is *created* mid-frame — and which now reports its own cost
+  correctly.
+- **Alternating pairs that sum to a refresh interval:** `1.57, 31.87, 1.61,
+  31.41, 1.61, 31.73`. Each pair is 33.3 ms. That is missed-vsync pairing under
+  `Fifo`, the same shape as the 75-to-15 observation below, and it is a
+  consequence of a long frame rather than a cause.
+
 **Open.** A single observation: the frame rate fell from its usual 75 to about
 15, with visible camera jitter, and did not recur across minutes of play after
 a restart. No reproduction yet, so nothing has been changed to "fix" it.
@@ -339,7 +374,7 @@ device is created with `requiredFeatureCount = 0` and `requiredLimits = nullptr`
 (`wgpuInit`), so anything needing a feature or a raised limit starts by changing
 that call.
 
-**Order, once R3–R6 are done:** N2 → F1 → N5 → N3 → N4 → F5. Instrumentation
+**Order, once R3–R6 are done:** N2 → F1 → N5 → N3 → N4 step one → F7 → N4 step two → F5. Instrumentation
 before optimisation. F1 is now the cheapest thing on this page: R2 already
 built `BlendMode::Additive` and the run splitting, so all that is left is the
 game choosing it.
@@ -467,18 +502,50 @@ comment in `glfwMain.cpp` records the gap so nobody assumes it was finished.
 **Concepts:** compute pipeline and compute pass as a sibling of the render pass
 on the same encoder, workgroup sizing, `dispatchWorkgroups`, storage textures
 and `textureStore`, per-mip-level texture views, the `StorageBinding` usage
-flag.
+flag. Step two adds the one thing compute has that neither other stage does:
+`var<workgroup>` memory and `workgroupBarrier`.
 
 **LearnWebGPU:** [Compute Pipeline](https://eliemichel.github.io/LearnWebGPU/basic-compute/compute-pipeline.html) · [Mipmap Generation](https://eliemichel.github.io/LearnWebGPU/basic-compute/image-processing/mipmap-generation.html) · [Convolution Filters](https://eliemichel.github.io/LearnWebGPU/basic-compute/image-processing/convolution-filters.html)
 
-**Would land:** replaces `downsampleRGBA8` in step one; step two is a blur over
-the scaled world target from milestone 10, before `compositeScaledTarget`.
+**Step one — landed.** `downsampleRGBA8` is gone; one compute pass, one
+dispatch per level, each reading the level above. Verified byte for byte
+against the CPU code it replaced by converting each texel back to the integer
+it is before averaging, so the GPU performs the same round-half-up: 3,789,232
+bytes across every mipped texture, zero differ.
+
+**And it bought no frame rate, which is worth writing down.** Measured at 75Hz:
+between 9.5 and 10.2ms of each 13.3ms frame is spent blocked waiting for a
+drawable, at 39 quads and 7 draw runs. This renderer is nowhere near GPU bound.
+What step one saved is load-time CPU work and upload volume, once, and it is
+small. N4 earns its place as the prerequisite for F5, where compute stops being
+a cheaper way to do something and becomes the only way to do it at all.
+
+**Step two — a blur, and its target has moved.** It was going to run over
+milestone 10's low-resolution stand-in. That was chosen because the target
+already existed, but it only exists when render scale is below one, which is a
+debug setting — so the blur would have been invisible in normal play. It now
+has a real consumer: **the phosphor glow of F7's CRT pass.** Sequence it after
+F7, not before, and blur the bright parts of the composited frame.
+
+**Why step two is a second half rather than a repeat.** A mip reduction reads
+four texels per output and neighbouring invocations share nothing. A blur of
+radius r reads 2r+1 per output and the invocation next door reads almost all of
+the same ones. That redundancy is what workgroup shared memory exists for: one
+workgroup loads its tile plus a margin once, waits at a barrier, and every
+invocation reads neighbours out of that instead of out of the texture.
+
+**And it is a comparison, not an unlock.** Two fullscreen fragment passes would
+blur perfectly well — F2 and F6 already make that a shader and a draw. Compute
+should win by cutting redundant reads and skipping the rasteriser, and N2's
+timing can settle whether it does on this adapter instead of leaving it a
+claim. With ~10ms idle per frame the difference will not be visible either way;
+the point is the measurement. **Separability first:** an NxN gaussian is a 1xN
+pass then an Nx1 pass, 81 reads becoming 18 at radius 4, and that saving is
+available to the fragment version too — so measure compute against a *separable*
+fragment blur, not against a naive one.
 
 **Why it earns its place:** the largest single hole in the port — milestone 7
-took the CPU half of that chapter and left the compute half. Doing mips first
-keeps the new material to compute alone (the pixels are already known-correct);
-the convolution pass then reuses milestone 10's target machinery, so again the
-only new thing is the compute side.
+took the CPU half of that chapter and left the compute half.
 
 ---
 
@@ -748,6 +815,96 @@ rotates the highlight for free.
    attributes (N5 — this is what instance data _is_), or a dynamic-offset
    uniform slot, which is exactly what milestone 6b already built for the
    camera. Either way a time uniform falls out for free.
+
+**F7. A CRT pass over the finished frame — landed, glow excepted.** _(library
+mechanism, game policy)_ One retro filter over the game and the HUD, with
+sliders, for a unified look. `setFinalEffect` is the mechanism;
+`resources/shaders/crt.wgsl` and `gameLayer/crt.cpp` are the policy. Measured
+cost while on: one extra quad, two extra draw runs, one extra flush. Off: zero.
+
+**Two bugs found and fixed.**
+
+1. **`drawFullscreenEffect` flushed to a literal target 0.** A full-screen
+   effect is an ordinary screen-space draw and has to land wherever screen-space
+   draws are going — the frame's target, when the frame is being routed through
+   one. Flushing to 0 put the cloak straight onto the surface while everything
+   after it went into the target, and the end-of-frame composite then covered
+   the cloak with a target that had never received the world: **cloak plus CRT
+   turned the whole screen black.** `compositeScaledTarget` flushes to a literal
+   0 and is right to — putting the target *onto* the surface is the one draw
+   that must not be redirected back into it.
+
+2. **Scanlines were a count of lines, and that is why the hull looked
+   translucent.** 240 lines across a 500-pixel window is a period of 2.083
+   pixels, so the dark band drifts a twelfth of a pixel per row and beats
+   against the sprite's own pixel grid. The result is not scanlines, it is a
+   moving screen door over the artwork — and a screen door over a sprite on a
+   dark background reads as the sprite being see-through. A period measured in
+   whole output pixels cannot drift. Measured on the hull, filter off = 213:
+
+   | settings | hull mean |
+   | --- | --- |
+   | 240-line count, strength 0.35 | 162 |
+   | whole-pixel period, lighter hand | 180 |
+
+   **The general lesson, and it is not only about scanlines:** any screen-space
+   pattern laid over pixel art has to be locked to whole output pixels. Express
+   it as a period, never as a count across the picture. The aperture mask was
+   already written this way and never had the problem.
+
+3. **The composite borrowed the batch without setting all of it aside, and
+   that was three bugs wearing one coat.** Two callers lend the pending batch
+   to a quad of their own: this composite and `drawFullscreenEffect`. The batch
+   is eight parallel arrays and they swapped four and five of them. What is
+   left behind does not vanish — it sits at index 0, and the borrowed quad then
+   reads somebody else's blend mode, shader and effect parameters.
+
+   That one defect produced **the ship going translucent under thrust** (the
+   plume leaves an Additive quad at the head of the batch, the composite
+   inherited it, and the frame was added to the surface instead of replacing
+   it) and **the black quadrant under curvature** (the CRT read another quad's
+   parameter slot, so the curvature it applied was whatever happened to be
+   there). The fix is a guard that swaps the whole batch, not a longer list of
+   swaps, so the next array added to the batch cannot bring this back.
+
+   **The lesson is about diagnosis, not about batching.** Hours went into that
+   shader on the strength of a contradiction: every factor measured correct on
+   its own and the product came out black. That contradiction was the evidence.
+   Parallel arrays mutated in two places is a shape worth distrusting, and the
+   file that keeps testing clean is not the file to keep testing.
+
+4. **Stacked darkening is a dimmer, not a filter.** Scanlines and the aperture
+   mask each remove light *on average*, so turning the master up made the whole
+   picture fall away. A real tube does not dim as its mask gets finer: the
+   bright parts get brighter and the average holds. Each term now records the
+   mean it took and one capped multiply gives it back, and both means are known
+   exactly rather than estimated — `line` averages 0.5 over a period, and each
+   channel is full on one column in three. Picture mean with the filter off is
+   28.1:
+
+   | master | picture mean |
+   | --- | --- |
+   | 1.0 | 27.3 |
+   | 2.0 | 26.5 |
+
+   What is left is the vignette, which is deliberate.
+
+**The trap that remains: pixel art under curvature.** Bending the coordinate
+asks for positions between texels, and with nearest filtering that gives rows
+and columns of unequal thickness that crawl as the camera moves. The frame's
+target is therefore sampled with *linear* filtering whenever a final effect is
+set, unlike the low-res upscale's nearest. The softness that introduces is most
+of the blending the glow would add, it costs nothing, and a real phosphor mask
+is soft anyway — which is part of why the glow can wait.
+
+**Sliders:** a master strength plus curvature, scanline strength, scanline
+period in pixels, aperture mask, fringing and vignette. They need separating
+because they go wrong at different rates: curvature reads as broken well before
+the scanlines do. Defaults are an 8-pixel period at a light strength,
+and the slider runs to 32 — a narrow period at strength reads as texture laid on
+the artwork, where a wide one puts the dark band far enough apart that the eye
+reads it as a line. The brightness compensation does not care which: the wave
+averages 0.5 over any period.
 
 **F5. Capstone: a GPU-driven starfield.** _(library: the compute-driven instanced particle system; game: that they are stars)_ Star positions in a storage buffer,
 advanced each frame by a compute shader, drawn as instanced quads that read that

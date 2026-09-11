@@ -161,6 +161,26 @@ namespace wgpu2d
 		glm::vec4 b = {};
 	};
 
+	// F7: an effect the finished frame is composited through.
+	//
+	// While one is set, everything drawn to the screen lands in a full-size
+	// target instead, and one quad brings it back through `effect` at the end
+	// of the frame. What that buys over `drawFullscreenEffect` is *when*: the
+	// composite happens the moment something first draws to the surface, so
+	// the game and the HUD go through the filter and anything drawn after it
+	// does not. The debug UI is drawn after, which is why it stays flat and
+	// readable while the game curves.
+	//
+	// The target is sampled with linear filtering rather than the low-res
+	// upscale's nearest. A filter that bends the coordinate asks for positions
+	// between texels, and nearest gives rows of unequal thickness that crawl as
+	// the camera moves -- which reads as a bug, not as a monitor.
+	//
+	// Costs a full-screen target and one extra pass while set, and exactly
+	// nothing when cleared.
+	void setFinalEffect(Effect effect, const EffectParams &params = {});
+	void clearFinalEffect();
+
 	// A copyable handle like gl2d's Texture { GLuint id }; 0 means invalid.
 	struct Texture
 	{

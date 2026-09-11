@@ -199,6 +199,15 @@ namespace
 		uint32_t scaledTargetId = 0;     // 0 when rendering straight to the surface
 		bool scaledTargetDrawn = false;  // has content this frame, needs compositing
 		bool compositing = false;        // guard while the composite draws
+		bool scaledTargetLinear = false; // how the target is sampled on the way back
+
+		// F7: an effect the composite runs through. Non-zero also *causes* the
+		// target to exist, at full size, which is the whole trick: milestone
+		// 10 already routes the frame through a target and composites it at
+		// the right moment, and all a final effect needs is for that to happen
+		// when the render scale is 1 too.
+		uint32_t finalEffectId = 0;
+		wgpu2d::EffectParams finalEffectParams;
 	};
 
 	Context g;
@@ -1605,10 +1614,12 @@ namespace
 		return handle;
 	}
 
-	// 10: keeps the low-res stand-in matching the surface's current size.
+	// 10, then F7: keeps the frame's target matching the surface's current
+	// size. It exists for two unrelated reasons now -- a render scale below 1,
+	// and a final effect -- and either is enough.
 	void ensureScaledTarget()
 	{
-		if (g.renderScale >= 1.f)
+		if (g.renderScale >= 1.f && g.finalEffectId == 0)
 		{
 			g.scaledTargetId = 0;
 			return;
@@ -1616,17 +1627,25 @@ namespace
 
 		const int w = std::max(1, (int)std::lround(g.surfaceWidth * g.renderScale));
 		const int h = std::max(1, (int)std::lround(g.surfaceHeight * g.renderScale));
+
+		// Nearest is the pixel-perfect upscale milestone 10 wanted. A final
+		// effect wants the opposite: it bends the coordinate, so it asks for
+		// positions between texels, and nearest turns that into rows of
+		// unequal thickness that crawl as the camera moves.
+		const bool linear = g.finalEffectId != 0;
+
 		if (g.scaledTargetId && g.scaledTargetId <= textures.size()
 			&& textures[g.scaledTargetId - 1].width == w
-			&& textures[g.scaledTargetId - 1].height == h)
+			&& textures[g.scaledTargetId - 1].height == h
+			&& g.scaledTargetLinear == linear)
 		{
 			return;
 		}
 
-		// Nearest filtering on the way back up: this is the pixel-perfect
-		// upscale, not a smooth one.
-		wgpu2d::Texture target = createRenderTarget(w, h, true, "low-res target", g.scaledTargetId);
+		const char *label = linear ? "frame target" : "low-res target";
+		wgpu2d::Texture target = createRenderTarget(w, h, !linear, label, g.scaledTargetId);
 		g.scaledTargetId = target.id;
+		g.scaledTargetLinear = linear;
 	}
 
 	// Reads a whole file, like gl2d's loaders do before decoding.
@@ -1962,6 +1981,54 @@ namespace
 		return (bool)g.framePass;
 	}
 
+	// Sets the whole pending batch aside and puts it back on the way out.
+	//
+	// Two callers need to borrow the batch for one quad of their own: the
+	// scaled-target composite and drawFullscreenEffect. Both used to hand-roll
+	// the swap, and both got it wrong, because the batch is *eight* parallel
+	// arrays and they each swapped four or five of them. What is left behind
+	// does not vanish -- it stays at index 0, and the borrowed quad then reads
+	// somebody else's blend mode, somebody else's shader and somebody else's
+	// effect parameters.
+	//
+	// That is not theoretical. It is why the ship went translucent while the
+	// engine was firing: the plume leaves an Additive quad at the head of the
+	// pending batch, the composite inherited it, and the whole frame was added
+	// to the surface instead of replacing it -- so the background showed
+	// through everything drawn on top of it, ship included.
+	//
+	// A guard rather than a longer list of swaps, because the next array added
+	// to the batch should not be able to reintroduce this.
+	struct BorrowedBatch
+	{
+		std::vector<Vertex> vertices;
+		std::vector<uint32_t> textures;
+		std::vector<uint32_t> cameras;
+		std::vector<wgpu2d::BlendMode> blends;
+		std::vector<uint32_t> shaders;
+		std::vector<uint32_t> effectSlots;
+		std::vector<wgpu2d::EffectParams> effectParams;
+		std::vector<wgpu2d::Camera> frameCams;
+
+		BorrowedBatch() { swapAll(); }
+		~BorrowedBatch() { swapAll(); }
+
+		BorrowedBatch(const BorrowedBatch &) = delete;
+		BorrowedBatch &operator=(const BorrowedBatch &) = delete;
+
+		void swapAll()
+		{
+			vertices.swap(batchVertices);
+			textures.swap(batchQuadTextures);
+			cameras.swap(batchQuadCameras);
+			blends.swap(batchQuadBlends);
+			shaders.swap(batchQuadShaders);
+			effectSlots.swap(batchQuadEffectSlots);
+			effectParams.swap(frameEffectParams);
+			frameCams.swap(frameCameras);
+		}
+	};
+
 	void clearBatch()
 	{
 		batchVertices.clear();
@@ -2234,14 +2301,7 @@ namespace
 		if (!g.scaledTargetId || !g.scaledTargetDrawn || g.compositing) { return; }
 		g.compositing = true;
 
-		std::vector<Vertex> keptVertices;
-		std::vector<uint32_t> keptTextures;
-		std::vector<uint32_t> keptCameras;
-		std::vector<wgpu2d::Camera> keptFrameCameras;
-		keptVertices.swap(batchVertices);
-		keptTextures.swap(batchQuadTextures);
-		keptCameras.swap(batchQuadCameras);
-		keptFrameCameras.swap(frameCameras);
+		BorrowedBatch borrowed;
 
 		wgpu2d::Texture handle;
 		handle.id = g.scaledTargetId;
@@ -2251,16 +2311,16 @@ namespace
 		// The world target is cleared opaque, so today this is numerically
 		// identical to Alpha -- it stops being identical the moment anything
 		// clears it to anything translucent.
-		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Premultiplied, 0, wgpu2d::EffectParams{},
+		// F7: the same quad, through the final effect when one is set. This is
+		// the only place the frame is a texture and the surface is the target,
+		// which is what makes it the right and only home for such a filter.
+		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Premultiplied,
+			g.finalEffectId, g.finalEffectParams,
 			glm::vec4{0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight},
 			handle, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
 		g.scaledTargetDrawn = false; // the pass below is the surface's, not the target's
 		flushBatch(0);
 
-		batchVertices.swap(keptVertices);
-		batchQuadTextures.swap(keptTextures);
-		batchQuadCameras.swap(keptCameras);
-		frameCameras.swap(keptFrameCameras);
 		g.compositing = false;
 	}
 
@@ -2815,6 +2875,12 @@ void wgpuBeginFrame()
 	// that do report it.
 	if (!g.surfaceConfigured) { return; } // minimized, or resize not pushed yet
 
+	// F7: a final effect can be set or cleared at any time, and setting one is
+	// what makes the frame's target exist. Checking here rather than in the
+	// setter keeps the target's lifetime in one place with the resize path,
+	// and the check is a size comparison against an existing texture.
+	ensureScaledTarget();
+
 	// Acquire: the texture that will next go on screen. Timed, because this
 	// is one of the two places a frame can spend its time waiting rather than
 	// working -- it blocks until the presentation engine frees a drawable.
@@ -3123,6 +3189,18 @@ namespace wgpu2d
 		return effect;
 	}
 
+	void setFinalEffect(Effect effect, const EffectParams &params)
+	{
+		render::g.finalEffectId = effect.id;
+		render::g.finalEffectParams = params;
+	}
+
+	void clearFinalEffect()
+	{
+		render::g.finalEffectId = 0;
+		render::g.finalEffectParams = {};
+	}
+
 	void Renderer2D::drawFullscreenEffect(Texture source, Effect effect, const EffectParams &params)
 	{
 		using namespace render;
@@ -3140,28 +3218,25 @@ namespace wgpu2d
 		// The same swap compositeScaledTarget uses: the batch is the caller's,
 		// and this borrows it for exactly one quad rather than adding a second
 		// vertex buffer that would be idle most of the time.
-		std::vector<Vertex> keptVertices;
-		std::vector<uint32_t> keptTextures;
-		std::vector<uint32_t> keptCameras;
-		std::vector<wgpu2d::BlendMode> keptBlends;
-		std::vector<wgpu2d::Camera> keptFrameCameras;
-		keptVertices.swap(batchVertices);
-		keptTextures.swap(batchQuadTextures);
-		keptCameras.swap(batchQuadCameras);
-		keptBlends.swap(batchQuadBlends);
-		keptFrameCameras.swap(frameCameras);
+		BorrowedBatch borrowed;
 
 		const glm::vec4 white[4] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
 		pushQuad(Camera{}, BlendMode::Premultiplied, effect.id, params,
 			glm::vec4{ 0, 0, (float)g.surfaceWidth, (float)g.surfaceHeight },
 			source, white, {}, 0.f, WGPU2D_DefaultTextureCoords);
-		flushBatch(0);
 
-		batchVertices.swap(keptVertices);
-		batchQuadTextures.swap(keptTextures);
-		batchQuadCameras.swap(keptCameras);
-		batchQuadBlends.swap(keptBlends);
-		frameCameras.swap(keptFrameCameras);
+		// resolveTarget, not a literal 0. A full-screen effect is an ordinary
+		// screen-space draw and has to land wherever screen-space draws are
+		// going -- which is the frame's target when the frame is being routed
+		// through one. Flushing to 0 put the cloak straight onto the surface
+		// while everything drawn after it went into the target, and the
+		// end-of-frame composite then covered the cloak with a target that had
+		// never received the world: the screen went black.
+		//
+		// compositeScaledTarget flushes to a literal 0 and is right to: putting
+		// the target *onto* the surface is the one draw that must not be
+		// redirected back into it.
+		flushBatch(resolveTarget(0));
 	}
 
 	FrameStats frameStats() { return render::statsLastFrame; }

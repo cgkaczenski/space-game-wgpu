@@ -13,6 +13,7 @@
 #include <shipShield.h>
 #include <bulletGlow.h>
 #include <cloak.h>
+#include <crt.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
 #include <bullet.h>
@@ -107,6 +108,7 @@ bool initGame()
 	if (!shield::init()) { return false; }
 	if (!bulletGlow::init()) { return false; }
 	if (!cloak::init()) { return false; }
+	if (!crt::init()) { return false; }
 
 	shootSound = LoadSound(RESOURCES_PATH "shoot.flac");
 	if (shootSound.stream.buffer == nullptr)
@@ -171,6 +173,10 @@ bool gameLogic(float deltaTime)
 	renderer.clearScreen({0, 0, 0, 1}); //clear screen (the pass's load op, applied at flush)
 
 	renderer.updateWindowMetrics(w, h);
+
+	// Before anything is drawn: setting this is what routes the frame through
+	// a target, and the target has to exist before the first quad lands.
+	crt::apply();
 #pragma endregion
 
 
@@ -594,6 +600,7 @@ bool gameLogic(float deltaTime)
 
 	shield::debugUi(); // the feature owns its own controls (roadmap R11)
 	cloak::debugUi();
+	crt::debugUi();
 
 	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
 	{
