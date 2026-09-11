@@ -55,17 +55,24 @@ add_subdirectory(thirdparty/glui)				#layout math (Frame, Box); the rest of glui
 # The contents follow R"WGSL( with no newline between, deliberately: a leading
 # newline would make string line 1 the file's line 0 and every WGSL compile
 # error would report one line further down than the file it came from.
-set(QUAD_WGSL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/quad.wgsl")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${QUAD_WGSL_SRC}")
-file(READ "${QUAD_WGSL_SRC}" QUAD_WGSL_CONTENTS)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/render/quadShaderSource.h"
+# One function, because there is now more than one of these and a third is
+# coming with the starfield.
+function(embed_wgsl SHADER_FILE VAR_NAME OUT_HEADER)
+	set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/${SHADER_FILE}")
+	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SRC}")
+	file(READ "${SRC}" CONTENTS)
+	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/render/${OUT_HEADER}"
 "#pragma once
-// Generated from resources/shaders/quad.wgsl by CMake. Do not edit.
+// Generated from resources/shaders/${SHADER_FILE} by CMake. Do not edit.
 namespace render
 {
-\tinline const char *quadShaderWGSL = R\"WGSL(${QUAD_WGSL_CONTENTS})WGSL\";
+\tinline const char *${VAR_NAME} = R\"WGSL(${CONTENTS})WGSL\";
 }
 ")
+endfunction()
+
+embed_wgsl(quad.wgsl quadShaderWGSL quadShaderSource.h)
+embed_wgsl(mipmap.wgsl mipmapShaderWGSL mipmapShaderSource.h)
 
 # ---------------------------------------------------------------------------
 # engine: reusable gameplay systems. No drawing, no window, no ships.

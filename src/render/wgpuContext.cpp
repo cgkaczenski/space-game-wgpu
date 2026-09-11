@@ -2,7 +2,8 @@
 // of it (wgpu2d::*). One translation unit on purpose: the API's methods
 // need the context's internals and there is one renderer.
 
-#include <render/quadShaderSource.h> // generated from resources/shaders/quad.wgsl
+#include <render/quadShaderSource.h>   // generated from resources/shaders/quad.wgsl
+#include <render/mipmapShaderSource.h> // generated from resources/shaders/mipmap.wgsl
 #include <render/wgpuContext.h>
 #include <render/wgpu2d.h>
 #include <render/wgpuFrame.h>
@@ -140,6 +141,18 @@ namespace
 		Sampler samplerLinear = nullptr;
 		BindGroupLayout textureBindGroupLayout = nullptr; // group 0: texture + sampler
 		PipelineLayout pipelineLayout = nullptr;
+
+		// N4: the compute pipeline that builds mip levels. Created on the first
+		// mipped texture rather than at init, so a game that never asks for
+		// mips never compiles it -- and the failure is remembered, because a
+		// pipeline that could not be built will not build on the next texture
+		// either and retrying it once per image is how milestone 12 learned to
+		// turn one broken pipeline into 783 of them.
+		ShaderModule mipmapShaderModule = nullptr;
+		BindGroupLayout mipmapBindGroupLayout = nullptr;
+		PipelineLayout mipmapPipelineLayout = nullptr;
+		ComputePipeline mipmapPipeline = nullptr;
+		bool mipmapPipelineFailed = false;
 
 		// 5/6b: the camera uniform. One 64-byte matrix per camera used in a
 		// frame, each in its own slot of cameraSlotStride bytes (the device's
@@ -1124,34 +1137,222 @@ namespace
 	// Textures
 	// ---------------------------------------------------------------------
 
-	// One mip level down: each output texel is the average of a 2x2 block of
-	// the input (clamped at odd edges). WebGPU has no glGenerateMipmap; this
-	// is the CPU replacement for gl2d's mips.
-	std::vector<unsigned char> downsampleRGBA8(const std::vector<unsigned char> &src, int w, int h, int &outW, int &outH)
+	// N4: mip levels are built by a compute pass, not on the CPU.
+	//
+	// What a compute pipeline *is*, next to the render pipeline above it: a
+	// render pipeline is a conveyor with two programmable holes in it, and the
+	// hardware decides how many times each runs -- the vertex stage once per
+	// vertex, the fragment stage once per pixel the rasteriser covered. Where
+	// their output goes is fixed too: a fragment shader writes the one pixel it
+	// was created for and nothing else, which is the same rule that stopped the
+	// cloak reading the scene behind it.
+	//
+	// A compute pipeline removes the conveyor. There are no vertices, no
+	// rasteriser and no colour target -- one shader stage, an explicit
+	// invocation count from dispatchWorkgroups, and writes that go wherever the
+	// shader addresses. Everything else is the machinery already here: a bind
+	// group layout, a pipeline layout, a pass on the same encoder as the render
+	// pass, the same submit.
+
+	// Levels from WxH down to 1x1, which is what the old CPU loop counted by
+	// halving until it ran out.
+	uint32_t mipLevelCountFor(int width, int height)
 	{
-		outW = std::max(1, w / 2);
-		outH = std::max(1, h / 2);
-		std::vector<unsigned char> dst((size_t)outW * outH * 4);
-		for (int y = 0; y < outH; y++)
+		uint32_t levels = 1;
+		int w = width, h = height;
+		while (w > 1 || h > 1)
 		{
-			const int y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
-			for (int x = 0; x < outW; x++)
-			{
-				const int x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
-				for (int c = 0; c < 4; c++)
-				{
-					const int sum = src[4 * (x0 + y0 * w) + c] + src[4 * (x1 + y0 * w) + c]
-						+ src[4 * (x0 + y1 * w) + c] + src[4 * (x1 + y1 * w) + c];
-					dst[4 * (x + y * outW) + c] = (unsigned char)((sum + 2) / 4);
-				}
-			}
+			w = std::max(1, w / 2);
+			h = std::max(1, h / 2);
+			levels++;
 		}
-		return dst;
+		return levels;
+	}
+
+	bool ensureMipmapPipeline()
+	{
+		if (g.mipmapPipeline) { return true; }
+		if (g.mipmapPipelineFailed) { return false; }
+
+		ErrorScope scope("mipmap compute pipeline");
+
+		g.mipmapShaderModule = createShaderModule(mipmapShaderWGSL, "mipmap.wgsl");
+		if (!g.mipmapShaderModule) { g.mipmapPipelineFailed = true; return false; }
+
+		// Two bindings, and they are a matched pair the shader also declares.
+		// The read side is an ordinary sampled-texture binding with no sampler:
+		// textureLoad wants exact texels, and a sampler would be a filtering
+		// decision this shader has no use for.
+		BindGroupLayoutEntry entries[2];
+		entries[0] = Default;
+		entries[0].binding = 0;
+		entries[0].visibility = ShaderStage::Compute;
+		entries[0].texture.sampleType = TextureSampleType::Float;
+		entries[0].texture.viewDimension = TextureViewDimension::_2D;
+		entries[0].texture.multisampled = false;
+		entries[0].buffer.type = BufferBindingType::BindingNotUsed;
+		entries[0].sampler.type = SamplerBindingType::BindingNotUsed;
+		entries[0].storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		// The write side. A storage texture's format is part of the binding's
+		// *type* -- the shader spells out rgba8unorm and so does this, and they
+		// have to agree, which is not true of an ordinary sampled binding where
+		// the format comes from whatever view is bound. WriteOnly is the only
+		// access core WebGPU guarantees for this format.
+		entries[1] = Default;
+		entries[1].binding = 1;
+		entries[1].visibility = ShaderStage::Compute;
+		entries[1].storageTexture.access = StorageTextureAccess::WriteOnly;
+		entries[1].storageTexture.format = TextureFormat::RGBA8Unorm;
+		entries[1].storageTexture.viewDimension = TextureViewDimension::_2D;
+		entries[1].buffer.type = BufferBindingType::BindingNotUsed;
+		entries[1].sampler.type = SamplerBindingType::BindingNotUsed;
+		entries[1].texture.sampleType = TextureSampleType::BindingNotUsed;
+
+		BindGroupLayoutDescriptor layoutDesc = Default;
+		layoutDesc.label = StringView("mipmap bind group layout");
+		layoutDesc.entryCount = 2;
+		layoutDesc.entries = entries;
+		g.mipmapBindGroupLayout = g.device.createBindGroupLayout(layoutDesc);
+
+		PipelineLayoutDescriptor pipelineLayoutDesc = Default;
+		pipelineLayoutDesc.label = StringView("mipmap pipeline layout");
+		pipelineLayoutDesc.bindGroupLayoutCount = 1;
+		WGPUBindGroupLayout layouts[1] = { g.mipmapBindGroupLayout };
+		pipelineLayoutDesc.bindGroupLayouts = layouts;
+		g.mipmapPipelineLayout = g.device.createPipelineLayout(pipelineLayoutDesc);
+
+		// The whole descriptor, next to RenderPipelineDescriptor's dozen fields:
+		// a layout and one programmable stage. There is nothing else to say
+		// because there is no fixed-function pipeline left to configure.
+		ComputePipelineDescriptor desc = Default;
+		desc.label = StringView("mipmap");
+		desc.layout = g.mipmapPipelineLayout;
+		desc.compute.nextInChain = nullptr;
+		desc.compute.module = g.mipmapShaderModule;
+		desc.compute.entryPoint = StringView("cs_main");
+		desc.compute.constantCount = 0;
+		desc.compute.constants = nullptr;
+		g.mipmapPipeline = g.device.createComputePipeline(desc);
+
+		if (!g.mipmapPipeline || scope.failed())
+		{
+			std::cerr << "WebGPU: the mipmap compute pipeline could not be built; "
+				"textures will have level 0 only\n";
+			g.mipmapPipelineFailed = true;
+			return false;
+		}
+		return true;
+	}
+
+	// Fills levels 1..n-1 of a texture that already holds level 0.
+	//
+	// One pass, one dispatch per level, in order. Level 2 reads what level 1's
+	// dispatch wrote, and that is safe without anything being said here:
+	// WebGPU orders dispatches within a pass and inserts the barrier itself.
+	// Under Vulkan or Metal directly this is where a memory barrier would go.
+	bool generateMipmaps(Texture texture, int width, int height, uint32_t levelCount,
+		const char *label)
+	{
+		if (levelCount <= 1) { return true; }
+		if (!ensureMipmapPipeline()) { return false; }
+
+		ErrorScope scope("mipmap generation");
+
+		CommandEncoderDescriptor encoderDesc = Default;
+		encoderDesc.label = StringView(label);
+		CommandEncoder encoder = g.device.createCommandEncoder(encoderDesc);
+		if (!encoder) { return false; }
+
+		ComputePassDescriptor passDesc = Default;
+		passDesc.label = StringView("mipmap generation");
+		passDesc.timestampWrites = nullptr;
+		ComputePassEncoder pass = encoder.beginComputePass(passDesc);
+		pass.setPipeline(g.mipmapPipeline);
+
+		// A storage-texture binding is one mip level, so every level needs its
+		// own view. That is the practical difference from the sampled view
+		// below, which spans all of them: sampling picks a level at run time,
+		// storing has to be told which one at bind time.
+		std::vector<TextureView> views;
+		std::vector<BindGroup> groups;
+		views.reserve((size_t)levelCount * 2);
+		groups.reserve(levelCount);
+
+		int w = width, h = height;
+		for (uint32_t level = 1; level < levelCount; level++)
+		{
+			const int dstW = std::max(1, w / 2);
+			const int dstH = std::max(1, h / 2);
+
+			TextureViewDescriptor viewDesc = Default;
+			viewDesc.format = TextureFormat::RGBA8Unorm;
+			viewDesc.dimension = TextureViewDimension::_2D;
+			viewDesc.mipLevelCount = 1;
+			viewDesc.baseArrayLayer = 0;
+			viewDesc.arrayLayerCount = 1;
+			viewDesc.aspect = TextureAspect::All;
+
+			viewDesc.label = StringView("mip source");
+			viewDesc.baseMipLevel = level - 1;
+			viewDesc.usage = TextureUsage::TextureBinding;
+			TextureView srcView = texture.createView(viewDesc);
+
+			viewDesc.label = StringView("mip destination");
+			viewDesc.baseMipLevel = level;
+			viewDesc.usage = TextureUsage::StorageBinding;
+			TextureView dstView = texture.createView(viewDesc);
+			if (!srcView || !dstView) { break; }
+			views.push_back(srcView);
+			views.push_back(dstView);
+
+			BindGroupEntry bindEntries[2];
+			bindEntries[0] = Default;
+			bindEntries[0].binding = 0;
+			bindEntries[0].textureView = srcView;
+			bindEntries[1] = Default;
+			bindEntries[1].binding = 1;
+			bindEntries[1].textureView = dstView;
+
+			BindGroupDescriptor groupDesc = Default;
+			groupDesc.label = StringView("mip level");
+			groupDesc.layout = g.mipmapBindGroupLayout;
+			groupDesc.entryCount = 2;
+			groupDesc.entries = bindEntries;
+			BindGroup group = g.device.createBindGroup(groupDesc);
+			if (!group) { break; }
+			groups.push_back(group);
+
+			pass.setBindGroup(0, group, 0, nullptr);
+
+			// Workgroups, not invocations. The shader is @workgroup_size(8, 8),
+			// so this rounds up and the shader's bounds check throws away the
+			// overhang -- a 3x3 level still launches all 64 invocations.
+			pass.dispatchWorkgroups(((uint32_t)dstW + 7) / 8, ((uint32_t)dstH + 7) / 8, 1);
+
+			w = dstW;
+			h = dstH;
+		}
+
+		pass.end();
+
+		CommandBufferDescriptor bufferDesc = Default;
+		bufferDesc.label = StringView("mipmap generation");
+		CommandBuffer commands = encoder.finish(bufferDesc);
+		g.queue.submit(1, &commands);
+
+		commands.release();
+		pass.release();
+		encoder.release();
+		for (BindGroup &group : groups) { group.release(); }
+		for (TextureView &view : views) { view.release(); }
+
+		return !scope.failed();
 	}
 
 	// Uploads RGBA8 pixels (rows top-first, tightly packed) as a texture,
-	// with CPU-generated mip levels when requested, creates its view, and
-	// builds the bind group that hands the view plus the right sampler to
+	// has the device build the mip levels when requested, creates its view,
+	// and builds the bind group that hands the view plus the right sampler to
 	// the shader. Returns a handle (id 0 on failure) into the registry.
 	wgpu2d::Texture createTextureFromPixels(const unsigned char *pixels, int width, int height,
 		const char *label, bool pixelated, bool useMipMaps)
@@ -1162,22 +1363,8 @@ namespace
 			return wgpu2d::Texture{};
 		}
 
-		// All levels, level 0 first.
-		std::vector<std::vector<unsigned char>> levels;
-		std::vector<int> levelW, levelH;
-		levels.emplace_back(pixels, pixels + (size_t)4 * width * height);
-		levelW.push_back(width);
-		levelH.push_back(height);
-		if (useMipMaps)
-		{
-			while (levelW.back() > 1 || levelH.back() > 1)
-			{
-				int w = 0, h = 0;
-				levels.push_back(downsampleRGBA8(levels.back(), levelW.back(), levelH.back(), w, h));
-				levelW.push_back(w);
-				levelH.push_back(h);
-			}
-		}
+		// Only level 0 is uploaded now; the rest are computed on the device.
+		const uint32_t levelCount = useMipMaps ? mipLevelCountFor(width, height) : 1;
 
 		// One scope for texture, view and bind group: they are created
 		// together and the label names the image either way.
@@ -1198,9 +1385,14 @@ namespace
 		texDesc.format = TextureFormat::RGBA8Unorm;
 		entry.format = texDesc.format;
 		++framePerf.texturesCreated;
-		texDesc.mipLevelCount = (uint32_t)levels.size();
+		texDesc.mipLevelCount = levelCount;
 		texDesc.sampleCount = 1;
+		// StorageBinding is what lets the compute shader write into this. Usage
+		// is a property of the whole texture, not of a level, so asking for
+		// mips asks for it everywhere -- including level 0, which is only ever
+		// written by the queue.
 		texDesc.usage = TextureUsage::TextureBinding | TextureUsage::CopyDst;
+		if (levelCount > 1) { texDesc.usage = texDesc.usage | TextureUsage::StorageBinding; }
 		texDesc.viewFormatCount = 0;
 		texDesc.viewFormats = nullptr;
 		entry.texture = g.device.createTexture(texDesc);
@@ -1210,12 +1402,13 @@ namespace
 			return wgpu2d::Texture{};
 		}
 
-		// Upload every level. This is glTexImage2D + glGenerateMipmap.
-		for (size_t i = 0; i < levels.size(); i++)
+		// Upload level 0. This is glTexImage2D; the levels below it used to be
+		// built here on the CPU and are now a compute pass, which is the whole
+		// of glGenerateMipmap's job done explicitly.
 		{
 			TexelCopyTextureInfo destination = Default;
 			destination.texture = entry.texture;
-			destination.mipLevel = (uint32_t)i;
+			destination.mipLevel = 0;
 			destination.origin.x = 0;
 			destination.origin.y = 0;
 			destination.origin.z = 0;
@@ -1223,16 +1416,21 @@ namespace
 
 			TexelCopyBufferLayout sourceLayout = Default;
 			sourceLayout.offset = 0;
-			sourceLayout.bytesPerRow = 4 * (uint32_t)levelW[i];
-			sourceLayout.rowsPerImage = (uint32_t)levelH[i];
+			sourceLayout.bytesPerRow = 4 * (uint32_t)width;
+			sourceLayout.rowsPerImage = (uint32_t)height;
 
 			Extent3D extent = Default;
-			extent.width = (uint32_t)levelW[i];
-			extent.height = (uint32_t)levelH[i];
+			extent.width = (uint32_t)width;
+			extent.height = (uint32_t)height;
 			extent.depthOrArrayLayers = 1;
 
-			g.queue.writeTexture(destination, levels[i].data(), levels[i].size(), sourceLayout, extent);
+			g.queue.writeTexture(destination, pixels, (size_t)4 * width * height,
+				sourceLayout, extent);
 		}
+
+		// The queue is ordered against itself, so the writeTexture above is
+		// visible to the dispatches below without anything being waited on.
+		generateMipmaps(entry.texture, width, height, levelCount, label);
 
 		// The view the shader samples through: all mip levels.
 		TextureViewDescriptor viewDesc = Default;
@@ -1240,7 +1438,7 @@ namespace
 		viewDesc.format = TextureFormat::RGBA8Unorm;
 		viewDesc.dimension = TextureViewDimension::_2D;
 		viewDesc.baseMipLevel = 0;
-		viewDesc.mipLevelCount = (uint32_t)levels.size();
+		viewDesc.mipLevelCount = levelCount;
 		viewDesc.baseArrayLayer = 0;
 		viewDesc.arrayLayerCount = 1;
 		viewDesc.aspect = TextureAspect::All;
@@ -1283,7 +1481,7 @@ namespace
 
 		textures.push_back(entry);
 		std::cout << "WebGPU texture " << textures.size() << ": " << width << "x" << height
-			<< ", " << levels.size() << " mip level" << (levels.size() == 1 ? "" : "s")
+			<< ", " << levelCount << " mip level" << (levelCount == 1 ? "" : "s")
 			<< (pixelated ? ", nearest" : ", linear") << " (" << label << ")\n";
 		wgpu2d::Texture handle;
 		handle.id = (uint32_t)textures.size();
@@ -2805,6 +3003,10 @@ void wgpuShutdown()
 	g.quadPipelines.clear();
 	for (ShaderEntry &e : shaderRegistry) { if (e.module) { e.module.release(); } }
 	shaderRegistry.clear();
+	if (g.mipmapPipeline) { g.mipmapPipeline.release(); g.mipmapPipeline = nullptr; }
+	if (g.mipmapPipelineLayout) { g.mipmapPipelineLayout.release(); g.mipmapPipelineLayout = nullptr; }
+	if (g.mipmapBindGroupLayout) { g.mipmapBindGroupLayout.release(); g.mipmapBindGroupLayout = nullptr; }
+	if (g.mipmapShaderModule) { g.mipmapShaderModule.release(); g.mipmapShaderModule = nullptr; }
 	if (g.quadShaderModule) { g.quadShaderModule.release(); g.quadShaderModule = nullptr; }
 	if (g.pipelineLayout) { g.pipelineLayout.release(); g.pipelineLayout = nullptr; }
 	if (g.cameraBindGroupLayout) { g.cameraBindGroupLayout.release(); g.cameraBindGroupLayout = nullptr; }
