@@ -181,6 +181,39 @@ namespace wgpu2d
 	void setFinalEffect(Effect effect, const EffectParams &params = {});
 	void clearFinalEffect();
 
+	// N4 step two / F7: a phosphor glow on the finished frame.
+	//
+	// Bright parts bleed into what is next to them, which is the one part of a
+	// CRT that genuinely needs neighbouring pixels. It runs on the frame's own
+	// target, before the final effect, so a CRT pass curves the glow along with
+	// everything else instead of laying a flat bloom over a curved picture.
+	//
+	// Only meaningful while a final effect is set, because that is what puts
+	// the frame in a target. Costs three compute dispatches and one extra quad
+	// while set, and nothing when cleared.
+	struct FinalGlow
+	{
+		float threshold = 0.55f; // brightness that starts to bloom, 0..1
+		float knee = 0.25f;      // how soft that cut is; 0 is a hard edge
+		float sigma = 3.0f;      // blur width, in half-resolution texels
+		float intensity = 0.7f;  // how much of the blur is added back
+	};
+	// Milestone 10's low-resolution path, as a control rather than only as an
+	// environment variable.
+	//
+	// Below 1, the game is rasterised into a smaller target and upscaled at the
+	// end of the frame. The projection keeps using the surface's size, so the
+	// framing, the HUD layout and the mouse mapping are untouched -- only the
+	// pixel count changes. It is the remedy for a window large enough that the
+	// fill rate stops keeping up, which is what fullscreen turned out to be.
+	//
+	// 1 renders at native size and costs nothing extra.
+	void setRenderScale(float scale);
+	float renderScale();
+
+	void setFinalGlow(const FinalGlow &glow);
+	void clearFinalGlow();
+
 	// A copyable handle like gl2d's Texture { GLuint id }; 0 means invalid.
 	struct Texture
 	{

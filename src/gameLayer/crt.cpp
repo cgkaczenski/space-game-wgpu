@@ -39,6 +39,11 @@ namespace
 	// not care what the period is, since the wave averages 0.5 over any of them.
 	float period = 8.f;
 
+	// The phosphor glow. Off by default: it is the one part of the filter that
+	// costs real work, and the rest of the CRT reads correctly without it.
+	bool glowOn = true;
+	wgpu2d::FinalGlow glow;
+
 	bool readFile(const char *path, std::string &out)
 	{
 		std::ifstream file(path, std::ios::binary);
@@ -74,13 +79,20 @@ bool isEnabled() { return enabled; }
 
 void apply()
 {
+
 	// Off costs nothing: no target, no extra pass, the frame goes straight to
 	// the surface as it always did.
 	if (!enabled || effect.id == 0 || strength <= 0.f)
 	{
 		wgpu2d::clearFinalEffect();
+		wgpu2d::clearFinalGlow();
 		return;
 	}
+
+	// The glow rides on the frame's target, which only exists while a final
+	// effect is set -- so it follows the filter rather than switching on alone.
+	if (glowOn && glow.intensity > 0.f) { wgpu2d::setFinalGlow(glow); }
+	else { wgpu2d::clearFinalGlow(); }
 
 	wgpu2d::EffectParams params;
 	params.a = {strength, curvature, scanlines, mask};
@@ -104,6 +116,15 @@ void debugUi()
 	ImGui::SliderFloat("Aperture mask", &mask, 0.f, 0.5f);
 	ImGui::SliderFloat("Fringing", &fringing, 0.f, 2.f);
 	ImGui::SliderFloat("Vignette", &vignette, 0.f, 1.f);
+
+	ImGui::Checkbox("Phosphor glow", &glowOn);
+	if (glowOn)
+	{
+		ImGui::SliderFloat("Glow threshold", &glow.threshold, 0.f, 1.f);
+		ImGui::SliderFloat("Glow knee", &glow.knee, 0.01f, 0.5f);
+		ImGui::SliderFloat("Glow width", &glow.sigma, 0.5f, 8.f);
+		ImGui::SliderFloat("Glow intensity", &glow.intensity, 0.f, 2.f);
+	}
 }
 
 }

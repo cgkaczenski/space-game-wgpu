@@ -598,6 +598,17 @@ bool gameLogic(float deltaTime)
 
 	ImGui::Checkbox("Hitboxes", &showHitboxes);
 
+	// Render scale first, because it is the answer when the frame rate falls
+	// and the window is large. Rasterise fewer pixels; the framing, the HUD
+	// and the mouse are unaffected.
+	{
+		float scale = wgpu2d::renderScale();
+		if (ImGui::SliderFloat("Render scale", &scale, 0.25f, 1.f, "%.2f"))
+		{
+			wgpu2d::setRenderScale(scale);
+		}
+	}
+
 	shield::debugUi(); // the feature owns its own controls (roadmap R11)
 	cloak::debugUi();
 	crt::debugUi();

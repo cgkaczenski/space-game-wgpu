@@ -4,6 +4,8 @@
 
 #include <render/quadShaderSource.h>   // generated from resources/shaders/quad.wgsl
 #include <render/mipmapShaderSource.h> // generated from resources/shaders/mipmap.wgsl
+#include <render/brightpassShaderSource.h>
+#include <render/blurShaderSource.h>
 #include <render/wgpuContext.h>
 #include <render/wgpu2d.h>
 #include <render/wgpuFrame.h>
@@ -197,6 +199,18 @@ namespace
 		// are untouched: only the rasterized resolution changes.
 		float renderScale = 1.f;
 		uint32_t scaledTargetId = 0;     // 0 when rendering straight to the surface
+		// The registry slot the frame's target lives in, kept even while
+		// scaledTargetId is 0. Without it, switching a final effect off and on
+		// again allocated a fresh screen-sized texture every time and orphaned
+		// the last one -- and handed out a new id, which is worse than the leak
+		// because anything holding a bind group built from the old view keeps
+		// reading a texture nothing writes to any more.
+		uint32_t frameTargetSlot = 0;
+		// Bumped whenever the texture in that slot is replaced. The id alone is
+		// not enough to cache against: reusing the slot keeps the id and swaps
+		// the view underneath it, which is exactly the case that leaves a bind
+		// group pointing at a released view.
+		uint32_t frameTargetGeneration = 0;
 		bool scaledTargetDrawn = false;  // has content this frame, needs compositing
 		bool compositing = false;        // guard while the composite draws
 		bool scaledTargetLinear = false; // how the target is sampled on the way back
@@ -208,6 +222,41 @@ namespace
 		// when the render scale is 1 too.
 		uint32_t finalEffectId = 0;
 		wgpu2d::EffectParams finalEffectParams;
+
+		// N4 step two: the phosphor glow. Two half-resolution scratch textures
+		// to ping-pong between, because a separable blur cannot read and write
+		// the same texels it is walking over -- the one thing the mip generator
+		// never had to worry about, since every dispatch there wrote a level
+		// nothing in that dispatch read.
+		//
+		// Both compute stages have the same binding shape (a texture in, a
+		// storage texture out, one vec4 of parameters), so they share a layout
+		// and differ only in which module they run.
+		ShaderModule brightpassShaderModule = nullptr;
+		ShaderModule blurShaderModule = nullptr;
+		BindGroupLayout glowBindGroupLayout = nullptr;
+		PipelineLayout glowPipelineLayout = nullptr;
+		ComputePipeline brightpassPipeline = nullptr;
+		ComputePipeline blurPipeline = nullptr;
+		bool glowPipelineFailed = false;
+		Buffer glowParamBuffer = nullptr;
+		uint32_t glowParamStride = 256;
+		uint32_t glowScratchA = 0;
+		uint32_t glowScratchB = 0;
+		BindGroup glowGroups[3] = {};
+		int glowWidth = 0;
+		int glowHeight = 0;
+		// The frame's size as well as the scratch's, because the first bind
+		// group names the frame target's view. Halving means two frame sizes
+		// can share one scratch size, and the group would then hold a view of
+		// a target that no longer exists.
+		int glowFrameWidth = 0;
+		int glowFrameHeight = 0;
+		// And which target, not just how big. The size can be unchanged while
+		// the texture underneath it is a different one.
+		uint32_t glowFrameGeneration = 0;
+		bool finalGlowSet = false;
+		wgpu2d::FinalGlow finalGlow;
 	};
 
 	Context g;
@@ -276,6 +325,12 @@ namespace
 		wgpu::Texture texture = nullptr;
 		TextureView view = nullptr;
 		BindGroup bindGroup = nullptr; // group 0 for this texture + its sampler
+
+		// N4 step two: a second view of the same texels, declared for writing.
+		// A view carries the usages it may be bound for, and a compute shader
+		// writing through the sampling view is refused -- so a texture that is
+		// both read as a sprite and written by a dispatch needs one of each.
+		TextureView storageView = nullptr;
 		int width = 0;
 		int height = 0;
 
@@ -1505,7 +1560,12 @@ namespace
 	//
 	// reuseId re-fills an existing registry slot so handles stay valid across
 	// a resize; 0 appends a new one.
-	wgpu2d::Texture createRenderTarget(int width, int height, bool pixelated, const char *label, uint32_t reuseId = 0)
+	// `storage` makes it writable by a compute shader instead of by a render
+	// pass. That forces RGBA8Unorm rather than the surface's format: core
+	// WebGPU's storage-texture formats do not include BGRA8Unorm, which is what
+	// the surface is here, and nothing renders *into* a scratch texture anyway.
+	wgpu2d::Texture createRenderTarget(int width, int height, bool pixelated, const char *label,
+		uint32_t reuseId = 0, bool storage = false)
 	{
 		if (!g.device || width <= 0 || height <= 0)
 		{
@@ -1528,7 +1588,8 @@ namespace
 		texDesc.size.width = (uint32_t)width;
 		texDesc.size.height = (uint32_t)height;
 		texDesc.size.depthOrArrayLayers = 1;
-		texDesc.format = g.surfaceFormat;
+		TextureFormat scratchFormat = TextureFormat::RGBA8Unorm;
+		texDesc.format = storage ? scratchFormat : g.surfaceFormat;
 		entry.format = texDesc.format;
 		++framePerf.texturesCreated;
 		texDesc.mipLevelCount = 1;
@@ -1536,8 +1597,13 @@ namespace
 		// CopySrc for the same reason the surface has it: a render target is a
 		// frame too, and reading one back is how milestone 12's blend numbers
 		// were measured.
-		texDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding
-			| TextureUsage::CopySrc;
+		// Built up with statements rather than a ternary: these are flag enums
+		// and a conditional between two of them collapses to the underlying
+		// integer, which drops the bit rather than failing to compile.
+		WGPUTextureUsage usage = TextureUsage::TextureBinding | TextureUsage::CopySrc;
+		if (storage) { usage = usage | (WGPUTextureUsage)TextureUsage::StorageBinding; }
+		else { usage = usage | (WGPUTextureUsage)TextureUsage::RenderAttachment; }
+		texDesc.usage = usage;
 		texDesc.viewFormatCount = 0;
 		texDesc.viewFormats = nullptr;
 		entry.texture = g.device.createTexture(texDesc);
@@ -1549,20 +1615,41 @@ namespace
 
 		TextureViewDescriptor viewDesc = Default;
 		viewDesc.label = StringView(label);
-		viewDesc.format = g.surfaceFormat;
+		viewDesc.format = entry.format;
 		viewDesc.dimension = TextureViewDimension::_2D;
 		viewDesc.baseMipLevel = 0;
 		viewDesc.mipLevelCount = 1;
 		viewDesc.baseArrayLayer = 0;
 		viewDesc.arrayLayerCount = 1;
 		viewDesc.aspect = TextureAspect::All;
-		viewDesc.usage = TextureUsage::RenderAttachment | TextureUsage::TextureBinding;
+		WGPUTextureUsage viewUsage = TextureUsage::TextureBinding;
+		if (!storage) { viewUsage = viewUsage | (WGPUTextureUsage)TextureUsage::RenderAttachment; }
+		viewDesc.usage = viewUsage;
 		entry.view = entry.texture.createView(viewDesc);
 		if (!entry.view)
 		{
 			std::cerr << "WebGPU: createView (render target) returned null (" << label << ")\n";
 			entry.texture.release();
 			return wgpu2d::Texture{};
+		}
+
+		// A second view of the same texels, declared for writing. A view
+		// carries the usages it may be bound for, and wgpu refuses a compute
+		// shader writing through a view that only says TextureBinding -- so a
+		// texture that is both sampled as a sprite and written by a dispatch
+		// needs one view of each rather than one view claiming both.
+		if (storage)
+		{
+			viewDesc.label = StringView("storage view");
+			viewDesc.usage = TextureUsage::StorageBinding;
+			entry.storageView = entry.texture.createView(viewDesc);
+			if (!entry.storageView)
+			{
+				std::cerr << "WebGPU: createView (storage) returned null (" << label << ")\n";
+				entry.view.release();
+				entry.texture.release();
+				return wgpu2d::Texture{};
+			}
 		}
 
 		BindGroupEntry bindEntries[2];
@@ -1634,17 +1721,24 @@ namespace
 		// unequal thickness that crawl as the camera moves.
 		const bool linear = g.finalEffectId != 0;
 
-		if (g.scaledTargetId && g.scaledTargetId <= textures.size()
-			&& textures[g.scaledTargetId - 1].width == w
-			&& textures[g.scaledTargetId - 1].height == h
+		// Checked against the *slot*, not against scaledTargetId, because that
+		// is 0 whenever the target is not currently in use. Checking the id
+		// meant every switch-off and switch-on rebuilt a screen-sized texture
+		// that was already there and still the right size.
+		if (g.frameTargetSlot && g.frameTargetSlot <= textures.size()
+			&& textures[g.frameTargetSlot - 1].width == w
+			&& textures[g.frameTargetSlot - 1].height == h
 			&& g.scaledTargetLinear == linear)
 		{
+			g.scaledTargetId = g.frameTargetSlot;
 			return;
 		}
 
 		const char *label = linear ? "frame target" : "low-res target";
-		wgpu2d::Texture target = createRenderTarget(w, h, !linear, label, g.scaledTargetId);
+		wgpu2d::Texture target = createRenderTarget(w, h, !linear, label, g.frameTargetSlot);
 		g.scaledTargetId = target.id;
+		g.frameTargetSlot = target.id;
+		++g.frameTargetGeneration;
 		g.scaledTargetLinear = linear;
 	}
 
@@ -2296,12 +2390,243 @@ namespace
 	// (the target is a normal texture handle, so no extra pipeline or shader
 	// is needed). Any quads the game has recorded but not flushed are put
 	// aside and restored, so this never eats the caller's batch.
+	// ---------------------------------------------------------------------
+	// N4 step two: the phosphor glow
+	// ---------------------------------------------------------------------
+
+	bool ensureGlowPipelines()
+	{
+		if (g.brightpassPipeline && g.blurPipeline) { return true; }
+		if (g.glowPipelineFailed) { return false; }
+
+		ErrorScope scope("glow compute pipelines");
+
+		g.brightpassShaderModule = createShaderModule(brightpassShaderWGSL, "brightpass.wgsl");
+		g.blurShaderModule = createShaderModule(blurShaderWGSL, "blur.wgsl");
+		if (!g.brightpassShaderModule || !g.blurShaderModule)
+		{
+			g.glowPipelineFailed = true;
+			return false;
+		}
+
+		// Three bindings, shared by both stages. Binding 0 is loaded rather
+		// than sampled, so there is no sampler here either.
+		BindGroupLayoutEntry entries[3];
+		entries[0] = Default;
+		entries[0].binding = 0;
+		entries[0].visibility = ShaderStage::Compute;
+		entries[0].texture.sampleType = TextureSampleType::Float;
+		entries[0].texture.viewDimension = TextureViewDimension::_2D;
+		entries[0].texture.multisampled = false;
+		entries[0].buffer.type = BufferBindingType::BindingNotUsed;
+		entries[0].sampler.type = SamplerBindingType::BindingNotUsed;
+		entries[0].storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		entries[1] = Default;
+		entries[1].binding = 1;
+		entries[1].visibility = ShaderStage::Compute;
+		entries[1].storageTexture.access = StorageTextureAccess::WriteOnly;
+		entries[1].storageTexture.format = TextureFormat::RGBA8Unorm;
+		entries[1].storageTexture.viewDimension = TextureViewDimension::_2D;
+		entries[1].buffer.type = BufferBindingType::BindingNotUsed;
+		entries[1].sampler.type = SamplerBindingType::BindingNotUsed;
+		entries[1].texture.sampleType = TextureSampleType::BindingNotUsed;
+
+		entries[2] = Default;
+		entries[2].binding = 2;
+		entries[2].visibility = ShaderStage::Compute;
+		entries[2].buffer.type = BufferBindingType::Uniform;
+		entries[2].buffer.hasDynamicOffset = false;
+		entries[2].buffer.minBindingSize = 16;
+		entries[2].sampler.type = SamplerBindingType::BindingNotUsed;
+		entries[2].texture.sampleType = TextureSampleType::BindingNotUsed;
+		entries[2].storageTexture.access = StorageTextureAccess::BindingNotUsed;
+
+		BindGroupLayoutDescriptor layoutDesc = Default;
+		layoutDesc.label = StringView("glow bind group layout");
+		layoutDesc.entryCount = 3;
+		layoutDesc.entries = entries;
+		g.glowBindGroupLayout = g.device.createBindGroupLayout(layoutDesc);
+
+		PipelineLayoutDescriptor pipelineLayoutDesc = Default;
+		pipelineLayoutDesc.label = StringView("glow pipeline layout");
+		pipelineLayoutDesc.bindGroupLayoutCount = 1;
+		WGPUBindGroupLayout layouts[1] = { g.glowBindGroupLayout };
+		pipelineLayoutDesc.bindGroupLayouts = layouts;
+		g.glowPipelineLayout = g.device.createPipelineLayout(pipelineLayoutDesc);
+
+		ComputePipelineDescriptor desc = Default;
+		desc.layout = g.glowPipelineLayout;
+		desc.compute.nextInChain = nullptr;
+		desc.compute.entryPoint = StringView("cs_main");
+		desc.compute.constantCount = 0;
+		desc.compute.constants = nullptr;
+
+		desc.label = StringView("bright pass");
+		desc.compute.module = g.brightpassShaderModule;
+		g.brightpassPipeline = g.device.createComputePipeline(desc);
+
+		desc.label = StringView("separable blur");
+		desc.compute.module = g.blurShaderModule;
+		g.blurPipeline = g.device.createComputePipeline(desc);
+
+		// One slot per dispatch. Three bind groups rather than one with dynamic
+		// offsets, because each already differs in which textures it names.
+		BufferDescriptor bufDesc = Default;
+		bufDesc.label = StringView("glow parameters");
+		bufDesc.usage = BufferUsage::Uniform | BufferUsage::CopyDst;
+		g.glowParamStride = std::max(256u, g.minUniformBufferOffsetAlignment);
+		bufDesc.size = (uint64_t)g.glowParamStride * 3;
+		g.glowParamBuffer = g.device.createBuffer(bufDesc);
+
+		if (!g.brightpassPipeline || !g.blurPipeline || !g.glowParamBuffer || scope.failed())
+		{
+			std::cerr << "WebGPU: the glow pipelines could not be built; no bloom\n";
+			g.glowPipelineFailed = true;
+			return false;
+		}
+		return true;
+	}
+
+	// The scratch pair, at half the frame's size, plus the three bind groups
+	// that wire the dispatches together. All of it is rebuilt as one thing,
+	// because a bind group naming a released view is the subtlest way to get
+	// this wrong.
+	bool ensureGlowTargets(int frameWidth, int frameHeight)
+	{
+		const int w = std::max(1, frameWidth / 2);
+		const int h = std::max(1, frameHeight / 2);
+		if (g.glowScratchA && g.glowWidth == w && g.glowHeight == h
+			&& g.glowFrameWidth == frameWidth && g.glowFrameHeight == frameHeight
+			&& g.glowFrameGeneration == g.frameTargetGeneration)
+		{
+			return true;
+		}
+
+		wgpu2d::Texture a = createRenderTarget(w, h, false, "glow scratch A", g.glowScratchA, true);
+		wgpu2d::Texture b = createRenderTarget(w, h, false, "glow scratch B", g.glowScratchB, true);
+		if (a.id == 0 || b.id == 0) { return false; }
+		g.glowScratchA = a.id;
+		g.glowScratchB = b.id;
+		g.glowWidth = w;
+		g.glowHeight = h;
+		g.glowFrameWidth = frameWidth;
+		g.glowFrameHeight = frameHeight;
+		g.glowFrameGeneration = g.frameTargetGeneration;
+
+		ErrorScope scope("glow bind groups");
+		const uint32_t srcIds[3] = { g.scaledTargetId, g.glowScratchA, g.glowScratchB };
+		const uint32_t dstIds[3] = { g.glowScratchA, g.glowScratchB, g.glowScratchA };
+		for (int i = 0; i < 3; i++)
+		{
+			if (g.glowGroups[i]) { g.glowGroups[i].release(); g.glowGroups[i] = nullptr; }
+
+			BindGroupEntry bindEntries[3];
+			bindEntries[0] = Default;
+			bindEntries[0].binding = 0;
+			bindEntries[0].textureView = textures[srcIds[i] - 1].view;
+			bindEntries[1] = Default;
+			bindEntries[1].binding = 1;
+			bindEntries[1].textureView = textures[dstIds[i] - 1].storageView;
+			bindEntries[2] = Default;
+			bindEntries[2].binding = 2;
+			bindEntries[2].buffer = g.glowParamBuffer;
+			bindEntries[2].offset = (uint64_t)i * g.glowParamStride;
+			bindEntries[2].size = 16;
+
+			BindGroupDescriptor groupDesc = Default;
+			groupDesc.label = StringView("glow stage");
+			groupDesc.layout = g.glowBindGroupLayout;
+			groupDesc.entryCount = 3;
+			groupDesc.entries = bindEntries;
+			g.glowGroups[i] = g.device.createBindGroup(groupDesc);
+			if (!g.glowGroups[i]) { return false; }
+		}
+		return !scope.failed();
+	}
+
+	// Bright pass, blur across, blur down, then add the result back.
+	//
+	// Called from inside the composite, after the frame's target is complete
+	// and before it goes to the screen. That ordering is the point: the glow
+	// lands *in* the frame, so a final effect curves and scans it along with
+	// everything else rather than laying a flat bloom over a curved picture.
+	void runFinalGlow()
+	{
+		if (!g.finalGlowSet || !g.scaledTargetId || !g.frameEncoder) { return; }
+		if (!ensureGlowPipelines()) { return; }
+
+		const TextureEntry &frame = textures[g.scaledTargetId - 1];
+		if (!ensureGlowTargets(frame.width, frame.height)) { return; }
+
+		const float params[3][4] = {
+			{ g.finalGlow.threshold, g.finalGlow.knee, 0.f, 0.f },
+			{ 1.f, 0.f, g.finalGlow.sigma, 0.f },  // blur along x
+			{ 0.f, 1.f, g.finalGlow.sigma, 0.f },  // then along y
+		};
+		for (int i = 0; i < 3; i++)
+		{
+			g.queue.writeBuffer(g.glowParamBuffer, (uint64_t)i * g.glowParamStride,
+				params[i], sizeof(params[i]));
+		}
+
+		// A compute pass cannot be nested in a render pass, so the target's
+		// pass has to close before this one opens. Closing it is also what
+		// makes the target's contents visible to the dispatches below.
+		if (g.framePass)
+		{
+			g.framePass.end();
+			g.framePass.release();
+			g.framePass = nullptr;
+			g.framePassTarget = 0;
+		}
+
+		const uint32_t w = (uint32_t)g.glowWidth;
+		const uint32_t h = (uint32_t)g.glowHeight;
+
+		ComputePassDescriptor passDesc = Default;
+		passDesc.label = StringView("phosphor glow");
+		passDesc.timestampWrites = nullptr;
+		ComputePassEncoder pass = g.frameEncoder.beginComputePass(passDesc);
+
+		pass.setPipeline(g.brightpassPipeline);
+		pass.setBindGroup(0, g.glowGroups[0], 0, nullptr);
+		pass.dispatchWorkgroups((w + 7) / 8, (h + 7) / 8, 1);
+
+		// Both blur passes are the same pipeline; only the axis in the uniform
+		// differs. The second reads what the first wrote, and WebGPU orders
+		// dispatches within a pass, so nothing has to be said about it here.
+		pass.setPipeline(g.blurPipeline);
+		pass.setBindGroup(0, g.glowGroups[1], 0, nullptr);
+		pass.dispatchWorkgroups((w + 63) / 64, h, 1);
+		pass.setBindGroup(0, g.glowGroups[2], 0, nullptr);
+		pass.dispatchWorkgroups((h + 63) / 64, w, 1);
+
+		pass.end();
+		pass.release();
+
+		// Add it back. Additive, because light adds -- the same equation the
+		// plume and the shield rim use, and the reason a bloom brightens what
+		// is under it instead of replacing it.
+		wgpu2d::Texture handle;
+		handle.id = g.glowScratchA;
+		const float k = g.finalGlow.intensity;
+		const glm::vec4 tint[4] = { {k,k,k,1}, {k,k,k,1}, {k,k,k,1}, {k,k,k,1} };
+		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Additive, 0, wgpu2d::EffectParams{},
+			glm::vec4{0, 0, (float)frame.width, (float)frame.height},
+			handle, tint, {}, 0.f, WGPU2D_DefaultTextureCoords);
+		flushBatch(g.scaledTargetId);
+	}
+
 	void compositeScaledTarget()
 	{
 		if (!g.scaledTargetId || !g.scaledTargetDrawn || g.compositing) { return; }
 		g.compositing = true;
 
 		BorrowedBatch borrowed;
+
+		// The glow goes into the target, before the target goes to the screen.
+		runFinalGlow();
 
 		wgpu2d::Texture handle;
 		handle.id = g.scaledTargetId;
@@ -3069,6 +3394,14 @@ void wgpuShutdown()
 	g.quadPipelines.clear();
 	for (ShaderEntry &e : shaderRegistry) { if (e.module) { e.module.release(); } }
 	shaderRegistry.clear();
+	for (BindGroup &bg : g.glowGroups) { if (bg) { bg.release(); bg = nullptr; } }
+	if (g.glowParamBuffer) { g.glowParamBuffer.release(); g.glowParamBuffer = nullptr; }
+	if (g.brightpassPipeline) { g.brightpassPipeline.release(); g.brightpassPipeline = nullptr; }
+	if (g.blurPipeline) { g.blurPipeline.release(); g.blurPipeline = nullptr; }
+	if (g.glowPipelineLayout) { g.glowPipelineLayout.release(); g.glowPipelineLayout = nullptr; }
+	if (g.glowBindGroupLayout) { g.glowBindGroupLayout.release(); g.glowBindGroupLayout = nullptr; }
+	if (g.brightpassShaderModule) { g.brightpassShaderModule.release(); g.brightpassShaderModule = nullptr; }
+	if (g.blurShaderModule) { g.blurShaderModule.release(); g.blurShaderModule = nullptr; }
 	if (g.mipmapPipeline) { g.mipmapPipeline.release(); g.mipmapPipeline = nullptr; }
 	if (g.mipmapPipelineLayout) { g.mipmapPipelineLayout.release(); g.mipmapPipelineLayout = nullptr; }
 	if (g.mipmapBindGroupLayout) { g.mipmapBindGroupLayout.release(); g.mipmapBindGroupLayout = nullptr; }
@@ -3200,6 +3533,22 @@ namespace wgpu2d
 		render::g.finalEffectId = 0;
 		render::g.finalEffectParams = {};
 	}
+
+	void setRenderScale(float scale)
+	{
+		if (!(scale > 0.f)) { return; }
+		render::g.renderScale = std::min(scale, 1.f);
+	}
+
+	float renderScale() { return render::g.renderScale; }
+
+	void setFinalGlow(const FinalGlow &glow)
+	{
+		render::g.finalGlow = glow;
+		render::g.finalGlowSet = true;
+	}
+
+	void clearFinalGlow() { render::g.finalGlowSet = false; }
 
 	void Renderer2D::drawFullscreenEffect(Texture source, Effect effect, const EffectParams &params)
 	{

@@ -422,14 +422,21 @@ int main()
 	// Filled at the end of each iteration, read by the slow-frame recorder at
 	// the top of the next one -- which is the only place they line up with
 	// deltaTime. See the recorder for why that matters.
+	float phaseAudioMs = 0.f;
+	float phaseReportMs = 0.f;
+	float phaseBeginMs = 0.f;
 	float phaseLogicMs = 0.f;
+	float phaseUiMs = 0.f;
 	float phaseEndFrameMs = 0.f;
 	float phasePollMs = 0.f;
 
 	while (!glfwWindowShouldClose(wind))
 	{
+		const auto audioStart = std::chrono::high_resolution_clock::now();
 		UpdateMusicStream(m);
 		PlayMusicStream(m);
+		phaseAudioMs = std::chrono::duration<float, std::milli>(
+			std::chrono::high_resolution_clock::now() - audioStart).count();
 
 	#pragma region deltaTime
 
@@ -508,6 +515,11 @@ int main()
 			const float frameMs = deltaTime * 1000.f;
 			++frameNumber;
 
+			// Taken and cleared, so a frame with no report does not inherit
+			// the last one's cost.
+			const float reportMs = phaseReportMs;
+			phaseReportMs = 0.f;
+
 			history[historyAt] = frameMs;
 			historyAt = (historyAt + 1) % 8;
 			if (warmup > 0) { --warmup; }
@@ -540,9 +552,19 @@ int main()
 					// them these cover everything except the few microseconds
 					// of bookkeeping around them, so a slow frame with all
 					// three small really is unaccounted for.
-					<< "\n  phases:  logic=" << phaseLogicMs << "ms"
-					<< " endFrame=" << phaseEndFrameMs << "ms"
+					<< "\n  phases:  audio=" << phaseAudioMs << "ms"
+					<< " begin=" << phaseBeginMs << "ms"
+					<< " logic=" << phaseLogicMs << "ms"
+					<< " ui=" << phaseUiMs << "ms"
+					<< "\n           endFrame=" << phaseEndFrameMs << "ms"
 					<< " poll=" << phasePollMs << "ms"
+					<< " report=" << reportMs << "ms"
+					// Whatever the six above do not account for. It should be
+					// a fraction of a millisecond; anything else means a phase
+					// is missing and the report is guessing again.
+					<< " other=" << (frameMs - phaseAudioMs - phaseBeginMs
+						- phaseLogicMs - phaseUiMs - phaseEndFrameMs - phasePollMs
+						- reportMs) << "ms"
 					<< "\n  doing:   builds=" << st.pipelineBuilds
 					<< " failures=" << st.pipelineFailures
 					<< " errors=" << st.validationErrors
@@ -558,10 +580,18 @@ int main()
 					line << " " << history[(historyAt + i) % 8];
 				}
 
+				// The report's own cost, measured and carried into the next
+				// one. Writing half a kilobyte to a terminal and flushing a
+				// file are not free, and a recorder that fires on consecutive
+				// slow frames is writing inside the frames it is measuring --
+				// which is a diagnostic that can sustain the fault it reports.
+				const auto writeStart = std::chrono::high_resolution_clock::now();
 				std::cout << line.str() << "\n";
 				std::cout.flush();
 				slowLog << line.str() << "\n";
 				slowLog.flush();
+				phaseReportMs = std::chrono::duration<float, std::milli>(
+					std::chrono::high_resolution_clock::now() - writeStart).count();
 				lastReportFrame = frameNumber;
 			}
 
@@ -636,11 +666,15 @@ int main()
 
 			// Acquire the surface texture and open the frame's encoder. The
 			// game's flush() draws into it; wgpuEndFrame submits and presents.
-			render::wgpuBeginFrame();
+			const auto beginStart = std::chrono::high_resolution_clock::now();
+		render::wgpuBeginFrame();
+		phaseBeginMs = std::chrono::duration<float, std::milli>(
+			std::chrono::high_resolution_clock::now() - beginStart).count();
 	#pragma endregion
 
 	#pragma region imgui
 		#if REMOVE_IMGUI == 0
+				const auto uiNewStart = std::chrono::high_resolution_clock::now();
 				render::wgpuImguiNewFrame();
 				ImGui_ImplGlfw_NewFrame();
 				ImGui::NewFrame();
@@ -648,6 +682,8 @@ int main()
 				// of the dockspace draw nothing, so the game stays visible
 				// underneath.
 				ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+				phaseUiMs = std::chrono::duration<float, std::milli>(
+					std::chrono::high_resolution_clock::now() - uiNewStart).count();
 		#endif
 	#pragma endregion
 
@@ -722,8 +758,11 @@ int main()
 	#pragma region window stuff
 
 		#if REMOVE_IMGUI == 0
+			const auto uiStart = std::chrono::high_resolution_clock::now();
 			ImGui::Render();
 			render::wgpuImguiRenderDrawData(); // on top of the game, same pass
+			phaseUiMs += std::chrono::duration<float, std::milli>(
+				std::chrono::high_resolution_clock::now() - uiStart).count();
 		#endif
 		const auto endFrameStart = std::chrono::high_resolution_clock::now();
 		render::wgpuEndFrame(); // end pass, submit, present

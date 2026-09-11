@@ -170,6 +170,60 @@ behaviour; and `wgpu2d` is a CMake target that cannot see the game.
 
 ---
 
+## The stall, reproduced and explained
+
+**It was the fullscreen transition, and the phase timers named it on the first
+occurrence after they were added.** The log brackets it exactly: a 197ms frame
+with `poll=180ms`, then `WebGPU surface configured at 2560x1440`, and later a
+280ms frame with `poll=263ms` followed by `configured at 500x500`. `poll` is
+`glfwPollEvents`, which is AppKit performing the transition. Nothing in this
+project is involved, and nothing in it could have been found by looking.
+
+**The one-second frames are the Metal drawable timeout.** Both of them report
+`acquire≈1001ms`, three to four frames after a surface reconfigure.
+`getCurrentTexture` blocks until the presentation engine frees a drawable, and
+Metal gives up after one second. That is the 1003–1012ms band seen across
+fifteen earlier sessions: the same event, previously unattributable because the
+recorder was pairing the wrong frame's counters.
+
+**While fullscreen the game genuinely does not keep up.** 2560x1440 is about 15x
+the pixels of the 500x500 window, and four full-screen background layers at
+`zoom 0.5` multiply that by their overdraw. The alternating pairs return —
+`32.3, 1.22, 31.5, 1.28, 32.6` — each summing to a refresh interval, which is
+`Fifo` pairing and a consequence of a long frame rather than a cause.
+
+**The user's own resolution matches:** leaving fullscreen fixed it.
+
+**What is worth doing about it.** The transition stall is the window system's
+and should be left alone. The fullscreen frame rate is a workload question, and
+`WGPU_RENDER_SCALE` already exists for exactly it — milestone 10 built the
+low-resolution path and nothing exposes it in the debug UI yet. That is the
+remedy, not a renderer change.
+
+**`other` was hiding up to 125ms, and two things were living in it.** The first
+version of the breakdown left the ImGui *new-frame* block untimed — only
+`ImGui::Render` was covered — and left the recorder's own write untimed too.
+Both are named now. The report's cost is worth measuring rather than assuming:
+half a kilobyte to a terminal plus a file flush, fired on consecutive slow
+frames, is a diagnostic writing inside the frames it is measuring. Whether that
+sustained the plateau of ~120ms frames in the log is now a question the log
+itself answers. Against a pipe it reads 0.06ms; a terminal is the case that
+matters and is the user's to observe.
+
+**The remedy is exposed now.** `setRenderScale` and a slider in the debug panel,
+because the fullscreen frame rate is a fill-rate problem and milestone 10
+already built the answer. It had only ever been reachable through an environment
+variable read once at startup. Changing it at runtime works because the frame
+target is reused by slot and keyed by generation, which the glow bug forced.
+
+**The phase breakdown is complete now:** `audio`, `begin`, `logic`, `ui`,
+`endFrame`, `poll`, `report`, and `other` for whatever is left. `other` is the honest
+part: it was added because the first version left the audio update, the ImGui
+calls and `wgpuBeginFrame` outside every timer, and a 55ms frame with all phases
+small could still hide 48ms nobody was measuring. Validated against a deliberate
+stall in each phase; `other` reads 0.3ms when a 120ms stall is injected
+elsewhere.
+
 ## The unreproduced stall
 
 **The recorder was reporting two different frames at once, and every report
@@ -520,7 +574,71 @@ What step one saved is load-time CPU work and upload volume, once, and it is
 small. N4 earns its place as the prerequisite for F5, where compute stops being
 a cheaper way to do something and becomes the only way to do it at all.
 
-**Step two — a blur, and its target has moved.** It was going to run over
+**Step two — landed as the phosphor glow, with one half of it deliberately
+skipped.** Bright pass at half resolution, then a separable gaussian across and
+down, then the result added back onto the frame's target — before the CRT, so a
+curved picture curves its own bloom instead of wearing a flat one.
+
+**Shared workgroup memory is the thing it was for, and the arithmetic is
+exact.** At radius 8 every output reads 17 inputs and its neighbour reads 16 of
+the same 17. A fragment shader has no way to say so; its invocations are
+independent by construction, so it pays 17 every time. The compute version
+loads its 64-pixel span plus a margin into `var<workgroup>` once, waits at a
+`workgroupBarrier`, and reads neighbours out of that:
+
+| per 64 outputs | texture loads |
+| --- | --- |
+| independent invocations | 1088 |
+| one cooperative tile | 80 |
+
+**Three things the API made explicit.** A separable blur needs two scratch
+textures, because a pass cannot read and write the texels it is walking over —
+which the mip generator never had to face, since every dispatch there wrote a
+level nothing in that dispatch read. Core WebGPU's storage formats do not
+include BGRA8Unorm, which is the surface's format here, so the scratch pair is
+RGBA8Unorm. And **a view carries the usages it may be bound for**: a texture
+that is both sampled as a sprite and written by a dispatch needs one view of
+each, not one view claiming both. wgpu refuses the latter, and the message
+names the view rather than the binding.
+
+**Measured cost, filter on, glow off then on:** 40 to 42 quads, 8 to 10 draw
+runs, 3 to 4 flushes, plus one compute pass of three dispatches. The frame rate
+does not move, and cannot: there is ~10ms of idle in every frame.
+
+**Toggling the filter left a ghost of the screen stuck on the screen, and it
+was two bugs feeding each other.**
+
+`ensureScaledTarget` checked whether the frame's target already existed by
+looking at `scaledTargetId`, which is 0 whenever the target is not in use. So
+every switch-off and switch-on built a fresh screen-sized texture that was
+already there and still the right size, orphaning the last one — a leak per
+toggle, and a new id each time. Meanwhile the glow's bind groups were cached
+against the scratch size and the frame size, neither of which changed, so the
+bright pass went on reading a target nothing wrote to any more. What it read was
+whatever had been on screen at the moment the filter was last switched off,
+which is why the residue was bright, screen-space and perfectly still.
+
+Fixed on both sides. The target is checked against its registry *slot*, which
+survives the id going to 0, so a toggle reuses the texture instead of building
+one: 3 allocations across 35 toggles, against 37 before. And the glow caches
+against a **generation counter** bumped whenever that slot's texture is
+replaced, not against the id — because reusing a slot keeps the id and swaps the
+view underneath it, which is the same bug wearing the fix's clothes.
+
+**The general shape, and it is the second time this session:** a cache key that
+names a thing by size or by identity, when what it actually depends on is the
+*object*. The composite's partial batch swap was the same mistake in a different
+costume. A generation counter is the cheap answer when the object can be
+replaced in place.
+
+**Not done, and it is the half that was the point.** The roadmap said this was a
+comparison — compute against a *separable* fragment blur, settled with N2's
+timing rather than asserted. Only the compute side is built. On a renderer with
+10ms of slack per frame the comparison would not resolve anyway, so it wants a
+deliberate stress case (a much larger radius, or many iterations) rather than
+the game as it stands.
+
+**Superseded: the original step two.** It was going to run over
 milestone 10's low-resolution stand-in. That was chosen because the target
 already existed, but it only exists when render scale is below one, which is a
 debug setting — so the blur would have been invisible in normal play. It now

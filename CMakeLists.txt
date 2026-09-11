@@ -73,6 +73,8 @@ endfunction()
 
 embed_wgsl(quad.wgsl quadShaderWGSL quadShaderSource.h)
 embed_wgsl(mipmap.wgsl mipmapShaderWGSL mipmapShaderSource.h)
+embed_wgsl(brightpass.wgsl brightpassShaderWGSL brightpassShaderSource.h)
+embed_wgsl(blur.wgsl blurShaderWGSL blurShaderSource.h)
 
 # ---------------------------------------------------------------------------
 # engine: reusable gameplay systems. No drawing, no window, no ships.
