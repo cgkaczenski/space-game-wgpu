@@ -249,6 +249,13 @@ void cleanup()
 	tint.cleanup();
 }
 
+void reset()
+{
+	for (Impact &impact : impacts) { impact = Impact{}; }
+	nextImpact = 0;
+	flare = 0.f;
+}
+
 void setActive(bool a) { active = a; }
 bool isActive() { return active; }
 

@@ -12,6 +12,10 @@ namespace
 {
 	wgpu2d::Texture capsule;
 
+	// The pixel-art sprites, one cell each for player and enemy shots.
+	wgpu2d::Texture sheet;
+	wgpu2d::TextureAtlasPadding sheetAtlas;
+
 	// The texture's aspect, and the quad's. They have to match, or the capsule
 	// stretches: a round cap in a square texture drawn on a 3:1 quad comes out
 	// an ellipse.
@@ -76,12 +80,22 @@ bool init()
 		std::cerr << "bulletLook: could not create the capsule texture\n";
 		return false;
 	}
+
+	sheet.loadFromFileWithPixelPadding
+	(RESOURCES_PATH "spaceShip/stitchedFiles/projectiles.png", 500, true);
+	if (sheet.id == 0)
+	{
+		std::cerr << "bulletLook: could not load the bullet sprite sheet\n";
+		return false;
+	}
+	sheetAtlas = wgpu2d::TextureAtlasPadding(3, 2, sheet.GetSize().x, sheet.GetSize().y);
 	return true;
 }
 
 void cleanup()
 {
 	capsule.cleanup();
+	sheet.cleanup();
 }
 
 void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction, bool isEnemy)
@@ -104,16 +118,18 @@ void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direct
 }
 
 void drawSprite(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction,
-	bool isEnemy, wgpu2d::Texture texture, wgpu2d::TextureAtlasPadding atlas)
+	bool isEnemy)
 {
+	if (sheet.id == 0) { return; }
+
 	float angle = atan2(direction.y, -direction.x);
 	angle = glm::degrees(angle) + 90.f;
 
-	glm::vec4 textureCoords = atlas.get(1, 1);
+	glm::vec4 textureCoords = sheetAtlas.get(1, 1);
 
 	if (isEnemy)
 	{
-		textureCoords = atlas.get(0, 0);
+		textureCoords = sheetAtlas.get(0, 0);
 	}
 
 	for (int i = 0; i < 5; i++)
@@ -121,7 +137,7 @@ void drawSprite(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 dire
 		glm::vec4 color(1* (i + 4) / 5.f, 1* (i + 4) / 5.f, 1* (i + 4) / 5.f, (i+1) / 5.f);
 
 		renderer.renderRectangle({position - glm::vec2(50,50) + (float)i * 25.f * direction, 100,100},
-			texture, color, {}, angle, textureCoords);
+			sheet, color, {}, angle, textureCoords);
 	}
 }
 

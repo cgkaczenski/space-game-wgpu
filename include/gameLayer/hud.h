@@ -21,6 +21,9 @@ namespace hud
 	bool init();
 	void cleanup();
 
+	// A new round: any shake in progress stops. The textures stay.
+	void reset();
+
 	// The player took a hit. Gameplay has to say so, because nothing in here
 	// can see it happen. `strength` 1 is a full hit; hits stack.
 	void onDamage(float strength = 1.f);

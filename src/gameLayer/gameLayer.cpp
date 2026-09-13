@@ -17,7 +17,8 @@
 #include <hitboxDebug.h>
 #include <debugPanel.h>
 #include <platformTools.h>
-#include <tiledRenderer.h>
+#include <background.h>
+#include <sfx.h>
 #include <shipSprite.h>
 #include <bullet.h>
 #include <vector>
@@ -27,12 +28,22 @@
 #include <gameClock.h>
 #include <playerMove.h>
 #include <cstdio>
-#include <raudio.h>
 #include <engine/collisionSystem.h>
 #include <shipHitbox.h>
 #include <engine/cameraFollow.h>
 
-struct GameplayData
+// Everything in this block has internal linkage: no other file can name it.
+// Before roadmap R10 these were ordinary globals, reachable from anywhere with
+// one `extern` -- and a feature cannot be self-contained while its state can be
+// reached into from another translation unit.
+namespace
+{
+
+// ---- What happened this round ---------------------------------------------
+//
+// Restart throws all of this away. What was *chosen* -- control scheme, zoom,
+// toggles, tuning -- lives in the feature that owns it and survives.
+struct Session
 {
 	glm::vec2 playerPos = {100,100};
 	glm::vec2 playerVelocity = {};
@@ -47,36 +58,100 @@ struct GameplayData
 	float spawnEnemyTimerSecconds = 3;
 };
 
+Session session;
 
-GameplayData data;
-
-collision::BasicCollisionSystem collisionSystem;
+// ---- What the game owns -----------------------------------------------------
 
 wgpu2d::Renderer2D renderer;
 
-constexpr int BACKGROUNDS = 4;
+collision::BasicCollisionSystem collisionSystem;
 
-wgpu2d::Texture spaceShipsTexture;
-wgpu2d::TextureAtlasPadding spaceShipsAtlas;
+// Who owns an asset, by the rule R6 gave the device: whoever creates a thing
+// releases it, and holding it is only borrowing. An asset with one consumer
+// belongs to that consumer -- the bullet sheet to bulletLook, the backgrounds
+// to background, the shot to sfx. The ship sheet has several, the player and
+// every enemy, so the game loads it, lends it by reference, and releases it.
+wgpu2d::Texture shipSheet;
+wgpu2d::TextureAtlasPadding shipAtlas;
 
-wgpu2d::Texture bulletsTexture;
-wgpu2d::TextureAtlasPadding bulletsAtlas;
+constexpr float shipSize = 250.f;
 
-wgpu2d::Texture backgroundTexture[BACKGROUNDS];
-TiledRenderer tiledRenderer[BACKGROUNDS];
+// Enemies further than this from the player are removed. Named because the
+// zoom-out limit depends on it: past that zoom, the player would see it happen.
+constexpr float enemyDespawnDistance = 4000.f;
 
+// ---- Lifecycle --------------------------------------------------------------
+//
+// One row per feature with GPU or audio resources or per-round state. Init runs
+// down the table and cleanup runs back up it, so a feature is torn down before
+// anything it was started after. A feature is added once, here, and gets all
+// three -- three hand-kept lists had already drifted: crt was started and never
+// cleaned up, because there was no crt::cleanup to forget.
+struct Feature
+{
+	const char *name;
+	bool (*init)();
+	void (*reset)();    // null: nothing of this round to forget
+	void (*cleanup)();
+};
 
-Sound shootSound;
-bool soundEffectsEnabled = false;
+const Feature features[] = {
+	{"hud",        hud::init,        hud::reset,      hud::cleanup},
+	{"thruster",   thruster::init,   thruster::reset, thruster::cleanup},
+	{"shield",     shield::init,     shield::reset,   shield::cleanup},
+	{"bulletLook", bulletLook::init, nullptr,         bulletLook::cleanup},
+	{"cloak",      cloak::init,      nullptr,         cloak::cleanup},
+	{"crt",        crt::init,        nullptr,         crt::cleanup},
+	{"background", background::init, nullptr,         background::cleanup},
+	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
+};
+
+// How far down the table init got, so cleanup after a failed start releases
+// exactly the successes. The row that failed is cleaned in initGame itself
+// before this count moves, because it never became a success.
+int startedFeatures = 0;
 
 void restartGame()
 {
-	data = {};
+	session = {};
+
+	for (const Feature &feature : features)
+	{
+		if (feature.reset) { feature.reset(); }
+	}
+
 	// Zero dead zone and zero leash: snap straight onto the player.
 	renderer.currentCamera.position = camera::follow(
-		renderer.currentCamera.position, data.playerPos,
+		renderer.currentCamera.position, session.playerPos,
 		{(float)renderer.windowW, (float)renderer.windowH},
 		{550.f, 0.f, 0.f});
+}
+
+// The session's own controls. The game owns the session, so this is where they
+// belong -- no longer a waiting room for controls with nowhere else to go.
+void sessionDebugUi()
+{
+	ImGui::Text("Bullets count: %d", (int)session.bullets.size());
+	ImGui::Text("Enemies count: %d", (int)session.enemies.size());
+
+	if (ImGui::Button("Spawn rusher"))
+	{
+		session.enemies.push_back(enemyAi::spawnNear(session.playerPos, Enemy::Behaviour::CloseIn));
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Spawn sniper"))
+	{
+		session.enemies.push_back(enemyAi::spawnNear(session.playerPos, Enemy::Behaviour::KeepDistance));
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Reset game"))
+	{
+		restartGame();
+	}
+
+	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
+}
+
 }
 
 bool initGame()
@@ -87,93 +162,31 @@ bool initGame()
 	wgpu2d::init();
 	renderer.create();
 
-	spaceShipsTexture.loadFromFileWithPixelPadding
+	shipSheet.loadFromFileWithPixelPadding
 	(RESOURCES_PATH "spaceShip/stitchedFiles/spaceships.png", 128, true);
-	spaceShipsAtlas = wgpu2d::TextureAtlasPadding(5, 2, spaceShipsTexture.GetSize().x, spaceShipsTexture.GetSize().y);
-
-	bulletsTexture.loadFromFileWithPixelPadding
-	(RESOURCES_PATH "spaceShip/stitchedFiles/projectiles.png", 500, true);
-	bulletsAtlas = wgpu2d::TextureAtlasPadding(3, 2, bulletsTexture.GetSize().x, bulletsTexture.GetSize().y);
-
-	if (!hud::init()) { return false; }
-	if (!thruster::init()) { return false; }
-	if (!shield::init()) { return false; }
-	if (!bulletLook::init()) { return false; }
-	if (!cloak::init()) { return false; }
-	if (!crt::init()) { return false; }
-
-	shootSound = LoadSound(RESOURCES_PATH "shoot.flac");
-	if (shootSound.stream.buffer == nullptr)
+	if (shipSheet.id == 0)
 	{
-		std::cerr << "AUDIO: failed to load " << RESOURCES_PATH "shoot.flac\n";
+		std::cerr << "initGame: could not load the ship sheet\n";
+		return false;
 	}
-	SetSoundVolume(shootSound, 1.0);
+	shipAtlas = wgpu2d::TextureAtlasPadding(5, 2, shipSheet.GetSize().x, shipSheet.GetSize().y);
 
-	backgroundTexture[0].loadFromFile(RESOURCES_PATH "background1.png", true);
-	backgroundTexture[1].loadFromFile(RESOURCES_PATH "background2.png", true);
-	backgroundTexture[2].loadFromFile(RESOURCES_PATH "background3.png", true);
-	backgroundTexture[3].loadFromFile(RESOURCES_PATH "background4.png", true);
-
-	tiledRenderer[0].texture = backgroundTexture[0];
-	tiledRenderer[1].texture = backgroundTexture[1];
-	tiledRenderer[2].texture = backgroundTexture[2];
-	tiledRenderer[3].texture = backgroundTexture[3];
-
-	tiledRenderer[0].paralaxStrength = 0;
-	tiledRenderer[1].paralaxStrength = 0.2;
-	tiledRenderer[2].paralaxStrength = 0.4;
-	tiledRenderer[3].paralaxStrength = 0.7;
+	for (const Feature &feature : features)
+	{
+		if (!feature.init())
+		{
+			std::cerr << "initGame: " << feature.name << " failed to start\n";
+			// The table only walks successes. This row created something or it
+			// did not; cleanup is safe either way (a zero texture is a no-op).
+			feature.cleanup();
+			return false;
+		}
+		startedFeatures++;
+	}
 
 	restartGame();
 
 	return true;
-}
-
-
-constexpr float shipSize = 250.f;
-
-// Enemies further than this from the player are removed. Named because the
-// zoom-out limit depends on it: past that zoom, the player would see it happen.
-constexpr float enemyDespawnDistance = 4000.f;
-
-// The controls that no feature owns yet, because the state they touch has no
-// home yet either. Kept together and named so the panel holds nothing; each
-// leaves when its milestone gives it somewhere to go:
-//   health, reset, sound,
-//   counts, spawn buttons -> R10, which decides who owns `data`, the assets,
-//                          and what restart means
-// The spawn-waves toggle went to enemyAi in R9, and game speed to gameClock in
-// R8. The buttons and the counts could not follow: they need the enemy list,
-// which is still `data`'s.
-static void gameplayDebugUi()
-{
-	ImGui::Text("Bullets count: %d", (int)data.bullets.size());
-	ImGui::Text("Enemies count: %d", (int)data.enemies.size());
-
-	if (ImGui::Button("Spawn rusher"))
-	{
-		data.enemies.push_back(enemyAi::spawnNear(data.playerPos, Enemy::Behaviour::CloseIn));
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Spawn sniper"))
-	{
-		data.enemies.push_back(enemyAi::spawnNear(data.playerPos, Enemy::Behaviour::KeepDistance));
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Reset game"))
-	{
-		restartGame();
-	}
-
-	ImGui::SliderFloat("Player Health", &data.health, 0, 1);
-
-	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
-	{
-		if (!soundEffectsEnabled)
-		{
-			StopSound(shootSound);
-		}
-	}
 }
 
 bool gameLogic(float deltaTime)
@@ -222,8 +235,8 @@ bool gameLogic(float deltaTime)
 
 	// Facing is the hull; aim is the gun. They are the same vector unless the
 	// ship is turned with A/D, when the mouse aims independently.
-	const playerMove::Result player = playerMove::update(data.playerPos,
-		data.playerVelocity, data.playerFacing, mouseDirection, time.game);
+	const playerMove::Result player = playerMove::update(session.playerPos,
+		session.playerVelocity, session.playerFacing, mouseDirection, time.game);
 
 #pragma endregion
 
@@ -232,7 +245,7 @@ bool gameLogic(float deltaTime)
 	// Real time: the camera is presentation, and should keep settling while
 	// the game is slowed.
 	renderer.currentCamera.position = camera::follow(
-		renderer.currentCamera.position, data.playerPos, {(float)w, (float)h},
+		renderer.currentCamera.position, session.playerPos, {(float)w, (float)h},
 		{time.real * 550.f, 1.f, 150.f});
 
 #pragma endregion
@@ -243,11 +256,7 @@ bool gameLogic(float deltaTime)
 	renderer.currentCamera.zoom = zoomControl::update(time.real,
 		{(float)w, (float)h}, enemyDespawnDistance);
 
-	for (int i = 0; i < BACKGROUNDS; i++)
-	{
-		tiledRenderer[i].render(renderer);
-	}
-	//tiledRenderer[0].render(renderer);
+	background::draw(renderer);
 #pragma endregion
 
 #pragma region handle bulets
@@ -257,49 +266,46 @@ bool gameLogic(float deltaTime)
 	{
 		Bullet b;
 
-		b.position = data.playerPos;
+		b.position = session.playerPos;
 		b.fireDirection = player.aim; // the mouse, not necessarily the hull
 
-		data.bullets.push_back(b);
+		session.bullets.push_back(b);
 
-		if (soundEffectsEnabled)
-		{
-			PlaySound(shootSound);
-		}
+		sfx::playerShot();
 
 	}
 
 
-	for (int i = 0; i < data.bullets.size(); i++)
+	for (int i = 0; i < session.bullets.size(); i++)
 	{
 		
-		if (glm::distance(data.bullets[i].position, data.playerPos) > 5'000)
+		if (glm::distance(session.bullets[i].position, session.playerPos) > 5'000)
 		{
-			data.bullets.erase(data.bullets.begin() + i);
+			session.bullets.erase(session.bullets.begin() + i);
 			i--;
 			continue;
 		}
 
 		if (!hitboxDebug::isDamageFrozen())
 		{
-			if (!data.bullets[i].isEnemy)
+			if (!session.bullets[i].isEnemy)
 			{
 				bool breakBothLoops = false;
-				for (int e = 0; e < data.enemies.size(); e++)
+				for (int e = 0; e < session.enemies.size(); e++)
 				{
 
-					if (collisionSystem.overlaps(data.bullets[i].getHitbox(),
-						data.enemies[e].getHitbox()))
+					if (collisionSystem.overlaps(session.bullets[i].getHitbox(),
+						session.enemies[e].getHitbox()))
 					{
-						data.enemies[e].life -= 0.1;
+						session.enemies[e].life -= 0.1;
 
-						if (data.enemies[e].life <= 0)
+						if (session.enemies[e].life <= 0)
 						{
 							//kill enemy
-							data.enemies.erase(data.enemies.begin() + e);
+							session.enemies.erase(session.enemies.begin() + e);
 						}
 
-						data.bullets.erase(data.bullets.begin() + i);
+						session.bullets.erase(session.bullets.begin() + i);
 						i--;
 						breakBothLoops = true;
 						continue;
@@ -314,16 +320,16 @@ bool gameLogic(float deltaTime)
 			}
 			else
 			{
-				if (collisionSystem.overlaps(data.bullets[i].getHitbox(),
-					game::shipHitbox(data.playerPos, shipSize)))
+				if (collisionSystem.overlaps(session.bullets[i].getHitbox(),
+					game::shipHitbox(session.playerPos, shipSize)))
 				{
-					data.health -= 0.1;
+					session.health -= 0.1;
 					hud::onDamage();  // shake the HUD on the hit
 					// Relative to the ship, because the shield moves with it and
 					// the ripple has to stay anchored to the bubble.
-					shield::hit(data.bullets[i].position - data.playerPos);
+					shield::hit(session.bullets[i].position - session.playerPos);
 
-					data.bullets.erase(data.bullets.begin() + i);
+					session.bullets.erase(session.bullets.begin() + i);
 					i--;
 					continue;
 				}
@@ -331,11 +337,11 @@ bool gameLogic(float deltaTime)
 			}
 		}
 
-		data.bullets[i].update(time.game);
+		session.bullets[i].update(time.game);
 
 	}
 
-	if (data.health <= 0)
+	if (session.health <= 0)
 	{
 		//kill player
 		restartGame();
@@ -344,25 +350,25 @@ bool gameLogic(float deltaTime)
 	{
 		// Game time. This was the frame's own delta, so at 1% speed the ship
 		// healed at full rate while everything shooting at it crawled.
-		data.health += time.game * 0.05;
-		data.health = glm::clamp(data.health, 0.f, 1.f);
+		session.health += time.game * 0.05;
+		session.health = glm::clamp(session.health, 0.f, 1.f);
 	}
 
 #pragma endregion
 
 #pragma region handle enemies
 
-	enemyAi::updateSpawning(data.enemies, data.spawnEnemyTimerSecconds,
-		data.playerPos, time.game);
+	enemyAi::updateSpawning(session.enemies, session.spawnEnemyTimerSecconds,
+		session.playerPos, time.game);
 
 
-	for (int i = 0; i < data.enemies.size(); i++)
+	for (int i = 0; i < session.enemies.size(); i++)
 	{
 
-		if (glm::distance(data.playerPos, data.enemies[i].position) > enemyDespawnDistance)
+		if (glm::distance(session.playerPos, session.enemies[i].position) > enemyDespawnDistance)
 		{
 			//dispawn enemy
-			data.enemies.erase(data.enemies.begin() + i);
+			session.enemies.erase(session.enemies.begin() + i);
 			i--;
 			continue;
 		}
@@ -371,18 +377,18 @@ bool gameLogic(float deltaTime)
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
 		// collisionSystem.separation(circleA, circleB) to push them apart.
 
-		if (enemyAi::update(data.enemies[i], time.game, data.playerPos))
+		if (enemyAi::update(session.enemies[i], time.game, session.playerPos))
 		{
 			Bullet b;
-			b.position = data.enemies[i].position;
-			b.fireDirection = data.enemies[i].viewDirection;
+			b.position = session.enemies[i].position;
+			b.fireDirection = session.enemies[i].viewDirection;
 			// The gun's, copied onto the shot. Flight reads Bullet::speed.
-			b.speed = data.enemies[i].bulletSpeed;
+			b.speed = session.enemies[i].bulletSpeed;
 
 			b.isEnemy = true;
-			data.bullets.push_back(b);
+			session.bullets.push_back(b);
 
-			if (soundEffectsEnabled && !IsSoundPlaying(shootSound)) PlaySound(shootSound);
+			sfx::enemyShot();
 
 		}
 	}
@@ -391,10 +397,10 @@ bool gameLogic(float deltaTime)
 
 #pragma region render enemies
 
-	for (auto &e : data.enemies)
+	for (auto &e : session.enemies)
 	{
 		renderSpaceShip(renderer, e.position, enemyShipSize,
-			spaceShipsTexture, spaceShipsAtlas.get(e.type.x, e.type.y), e.viewDirection);
+			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection);
 	}
 
 #pragma endregion
@@ -402,18 +408,18 @@ bool gameLogic(float deltaTime)
 #pragma region render ship
 
 	// Before the hull, so the hull covers the end of the plume inside it.
-	thruster::draw(renderer, data.playerPos, shipSize, player.facing,
+	thruster::draw(renderer, session.playerPos, shipSize, player.facing,
 		player.throttle, time.game);
 
 	// Faded by the cloak. The hull going nearly transparent is half the
 	// effect; the other half is the world bending around it, which happens
 	// below when the world goes through the cloak's shader.
-	renderSpaceShip(renderer, data.playerPos, shipSize,
-		spaceShipsTexture, spaceShipsAtlas.get(3, 0), player.facing,
+	renderSpaceShip(renderer, session.playerPos, shipSize,
+		shipSheet, shipAtlas.get(3, 0), player.facing,
 		{1.f, 1.f, 1.f, cloak::shipAlpha()});
 
 	// After the hull, so the rim reads as being in front of it.
-	shield::draw(renderer, data.playerPos, shipSize, time.game);
+	shield::draw(renderer, session.playerPos, shipSize, time.game);
 
 #pragma endregion
 
@@ -424,16 +430,15 @@ bool gameLogic(float deltaTime)
 	// two run breaks a frame instead of two per bullet -- and it is the right
 	// layering anyway, since every glow belongs under every sprite.
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
-	for (auto &b : data.bullets)
+	for (auto &b : session.bullets)
 	{
 		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy);
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
-	for (auto &b : data.bullets)
+	for (auto &b : session.bullets)
 	{
-		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.isEnemy,
-			bulletsTexture, bulletsAtlas);
+		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.isEnemy);
 	}
 
 #pragma endregion
@@ -441,7 +446,7 @@ bool gameLogic(float deltaTime)
 #pragma region debug hitboxes
 
 	hitboxDebug::draw(renderer, collisionSystem,
-		game::shipHitbox(data.playerPos, shipSize), data.enemies, data.bullets);
+		game::shipHitbox(session.playerPos, shipSize), session.enemies, session.bullets);
 
 #pragma endregion
 
@@ -452,9 +457,9 @@ bool gameLogic(float deltaTime)
 	// renderer.flush(); up, the world goes into a target and comes back
 	// through the shader. hud::draw flushes again straight after, which is a
 	// no-op on an empty batch.
-	cloak::flushWorld(renderer, data.playerPos, shipSize, w, h, time.game);
+	cloak::flushWorld(renderer, session.playerPos, shipSize, w, h, time.game);
 
-	hud::draw(renderer, data.health, w, h); // flushes the world, then the HUD
+	hud::draw(renderer, session.health, w, h); // flushes the world, then the HUD
 
 #pragma endregion
 
@@ -471,7 +476,8 @@ bool gameLogic(float deltaTime)
 	ImGui::Begin("debug");
 
 	debugPanel::renderStats(time.real);
-	debugPanel::section("Game", gameplayDebugUi);
+	debugPanel::section("Session", sessionDebugUi);
+	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
@@ -492,9 +498,14 @@ bool gameLogic(float deltaTime)
 //This function might not be be called if the program is forced closed
 void closeGame()
 {
-	hud::cleanup();
-	thruster::cleanup();
-	shield::cleanup();
-	bulletLook::cleanup();
-	cloak::cleanup();
+	// Back up the table from wherever init got to. Safe to call twice.
+	for (int i = startedFeatures - 1; i >= 0; i--)
+	{
+		features[i].cleanup();
+	}
+	startedFeatures = 0;
+
+	// Loaded before the features, so released after them.
+	shipSheet.cleanup();
+	renderer.cleanup();
 }

@@ -77,6 +77,17 @@ bool init()
 void setEnabled(bool e) { enabled = e; }
 bool isEnabled() { return enabled; }
 
+void cleanup()
+{
+	// What this feature holds is the routing, not the pipeline: wgpu2d has no
+	// call to release an effect, and render::wgpuShutdown releases what it
+	// built. Leaving the final effect set would route the next frame, if there
+	// were one, through a feature that has shut down.
+	wgpu2d::clearFinalEffect();
+	wgpu2d::clearFinalGlow();
+	effect = {};
+}
+
 void apply()
 {
 

@@ -87,6 +87,12 @@ void cleanup()
 	glow.cleanup();
 }
 
+void reset()
+{
+	level = 0.f;
+	phase = 0.f;
+}
+
 void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize,
 	glm::vec2 facing, float throttle, float dt)
 {

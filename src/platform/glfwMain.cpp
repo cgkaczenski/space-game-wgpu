@@ -429,6 +429,10 @@ int main()
 #pragma region initGame
 	if (!initGame())
 	{
+		// The table walks back whatever did start; CloseAudioDevice matches
+		// the other two exit paths, after the game has unloaded its sounds.
+		closeGame();
+		CloseAudioDevice();
 		return 0;
 	}
 #pragma endregion
@@ -716,6 +720,7 @@ int main()
 		if (!gameLogic(augmentedDeltaTime))
 		{
 			closeGame();
+			CloseAudioDevice();
 			return 0;
 		}
 		phaseLogicMs = std::chrono::duration<float, std::milli>(
@@ -827,6 +832,9 @@ int main()
 	}
 
 	closeGame();
+	// The platform opened the audio device, so the platform closes it -- after
+	// the game has unloaded its sounds, which need the device to still exist.
+	CloseAudioDevice();
 
 	#if REMOVE_IMGUI == 0
 		// Before the device goes away: the backend owns GPU objects.

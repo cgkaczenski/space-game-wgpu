@@ -34,6 +34,10 @@ namespace shield
 	bool init();
 	void cleanup();
 
+	// A new round: ripples and the flare stop. Whether the shield is up is a
+	// setting, not something that happened, so it survives.
+	void reset();
+
 	// Whether the shield is up. The visual eases in and out, so this can be
 	// flipped freely.
 	void setActive(bool active);

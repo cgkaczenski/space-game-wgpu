@@ -23,8 +23,11 @@
 
 namespace bulletLook
 {
-	// Builds the capsule texture. Call once from initGame, after the renderer
-	// exists. False if the texture could not be created.
+	// Builds the capsule texture and loads the bullet sprite sheet. Call once
+	// from initGame, after the renderer exists. False if either failed.
+	//
+	// The sheet is this module's because nothing else draws from it (roadmap
+	// R10); the game used to load it and pass it into every draw.
 	bool init();
 	void cleanup();
 
@@ -38,11 +41,10 @@ namespace bulletLook
 		glm::vec2 direction, bool isEnemy);
 
 	// The art on top of the glow: five overlapping quads along the heading,
-	// fading in from the tail. Player and enemy use different cells of `atlas`.
+	// fading in from the tail. Player and enemy use different cells of the sheet.
 	//
 	// **The caller must have set `BlendMode::Alpha` already.** Same reason as
 	// `drawGlow`: the blend mode is a run break, so it is set once per pass.
 	void drawSprite(wgpu2d::Renderer2D &renderer, glm::vec2 position,
-		glm::vec2 direction, bool isEnemy,
-		wgpu2d::Texture texture, wgpu2d::TextureAtlasPadding atlas);
+		glm::vec2 direction, bool isEnemy);
 }

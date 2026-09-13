@@ -108,6 +108,15 @@ void cleanup()
 	healthTexture.cleanup();
 }
 
+void reset()
+{
+	intensity = 0.f;
+	phase = 0.f;
+	// Restart the clock too, so the first frame of the round does not see the
+	// time since the last hit as one long step.
+	timing = false;
+}
+
 void onDamage(float strength)
 {
 	if (strength <= 0.f) { return; }

@@ -24,6 +24,11 @@ namespace crt
 	// renderer exists. False if the file is missing or does not compile.
 	bool init();
 
+	// Takes the filter back off the renderer. There was no cleanup at all
+	// before roadmap R10, which is how lifecycle lists drift: this one was in
+	// the init list and missing from the other.
+	void cleanup();
+
 	// Hands the current settings to the renderer, or clears the effect when
 	// the filter is off. Call once a frame, before drawing: the sliders are
 	// read here, so a change shows up on the next frame.

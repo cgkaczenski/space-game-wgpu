@@ -20,6 +20,10 @@ namespace thruster
 	bool init();
 	void cleanup();
 
+	// A new round: the plume starts cold rather than trailing off from the
+	// last one.
+	void reset();
+
 	// Draws the plume behind a ship.
 	//
 	// `facing` is the unit vector the ship points along; the plume goes the
