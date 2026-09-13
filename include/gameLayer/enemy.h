@@ -16,6 +16,12 @@ struct Enemy
 
 	glm::vec2 viewDirection = {1,0};
 
+	// Which function enemyAi calls. Same data, same draw; the policy is not a
+	// subclass. CloseIn flies at the player. KeepDistance faces them and holds
+	// a range -- movement and facing are not the same vector.
+	enum class Behaviour { CloseIn, KeepDistance };
+	Behaviour behaviour = Behaviour::CloseIn;
+
 	// Movement. R8 decides the shape of these.
 	float speed = 1500.f;
 	float turnSpeed = 3.f;

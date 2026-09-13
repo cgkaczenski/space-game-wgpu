@@ -147,7 +147,7 @@ constexpr float shipSize = 250.f;
 // leaves when its milestone gives it somewhere to go:
 //   game speed          -> R8, where the two clock conventions become one
 //   health, reset, sound,
-//   counts, spawn button -> R10, which decides who owns `data`, the assets,
+//   counts, spawn buttons -> R10, which decides who owns `data`, the assets,
 //                          and what restart means
 // The spawn-waves toggle went to enemyAi in R9. The button and the counts
 // could not follow it: they need the enemy list, which is still `data`'s.
@@ -156,9 +156,14 @@ static void gameplayDebugUi()
 	ImGui::Text("Bullets count: %d", (int)data.bullets.size());
 	ImGui::Text("Enemies count: %d", (int)data.enemies.size());
 
-	if (ImGui::Button("Spawn enemy"))
+	if (ImGui::Button("Spawn rusher"))
 	{
-		data.enemies.push_back(enemyAi::spawnNear(data.playerPos));
+		data.enemies.push_back(enemyAi::spawnNear(data.playerPos, Enemy::Behaviour::CloseIn));
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Spawn sniper"))
+	{
+		data.enemies.push_back(enemyAi::spawnNear(data.playerPos, Enemy::Behaviour::KeepDistance));
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Reset game"))
