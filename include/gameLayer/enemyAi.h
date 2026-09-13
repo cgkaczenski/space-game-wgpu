@@ -8,8 +8,9 @@
 // functions over Enemy -- a member cannot be swapped per enemy, and neither
 // carries a renderer dependency. This lives in gameLayer, not engine: the
 // steering is generic, but chasing, hanging back, and the fire rule are this
-// game's. When R8 pulls the integration step out, the generic half has
-// somewhere to go.
+// game's. The generic half, turning an intent into motion, is
+// engine/movement since R8: each policy decides where it wants to go, and the
+// same integrator as the player's moves it.
 
 #include <enemy.h>
 #include <vector>
@@ -18,9 +19,9 @@ namespace enemyAi
 {
 	// Steers, moves, and runs the fire cooldown for one enemy, using
 	// `enemy.behaviour` to pick the policy. True when it fires this frame; the
-	// caller creates the bullet. Every part of it runs on game time:
-	// `deltaTime` is the real frame time and `speedMultiplier` the game speed.
-	bool update(Enemy &enemy, float deltaTime, glm::vec2 playerPos, float speedMultiplier);
+	// caller creates the bullet. Every part of it -- turning, moving, the
+	// cooldown -- runs on `gameDeltaTime`, already scaled (see gameClock.h).
+	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos);
 
 	// A new enemy on a ring around the player. The one-argument form picks a
 	// behaviour at random and rolls that policy's loadout.

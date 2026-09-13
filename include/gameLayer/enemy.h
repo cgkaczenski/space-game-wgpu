@@ -5,6 +5,7 @@
 // renderer, so a behaviour can be read, swapped or tested without it.
 
 #include <glm/vec2.hpp>
+#include <engine/movement.h>
 #include <shipHitbox.h>
 
 constexpr float enemyShipSize = 250.f;
@@ -22,8 +23,11 @@ struct Enemy
 	enum class Behaviour { CloseIn, KeepDistance };
 	Behaviour behaviour = Behaviour::CloseIn;
 
-	// Movement. R8 decides the shape of these.
-	float speed = 1500.f;
+	// Movement: the same integrator and options as the player. Enemies roll
+	// Instant, which is how they have always moved; a Momentum enemy is a
+	// loadout change, not new code.
+	glm::vec2 velocity = {};
+	movement::Options move = movement::instant(1500.f);
 	float turnSpeed = 3.f;
 
 	// The gun, parked here because there is no Weapon yet. bulletSpeed is the

@@ -91,6 +91,7 @@ add_library(engine STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/collisionSystem.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/cameraFollow.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/cameraZoom.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/movement.cpp"
 )
 set_property(TARGET engine PROPERTY CXX_STANDARD 17)
 target_include_directories(engine PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/")

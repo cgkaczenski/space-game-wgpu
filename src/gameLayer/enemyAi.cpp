@@ -79,11 +79,13 @@ namespace
 				gameDeltaTime * enemy.turnSpeed * directionToPlayer + enemy.viewDirection;
 		}
 
-		float length = glm::length(newDirection);
 		enemy.viewDirection = glm::normalize(newDirection);
 
-		length = glm::clamp(length, 0.1f, 3.f);
-		enemy.position += enemy.viewDirection * gameDeltaTime * enemy.speed * length;
+		// Wants to go where it looks. This used to multiply the speed by the
+		// length of newDirection -- within a few percent of 1, so a per-frame
+		// wobble rather than a feature -- and is plain full intent now.
+		movement::integrate(enemy.position, enemy.velocity, enemy.viewDirection,
+			enemy.move, gameDeltaTime);
 
 		return tickGun(enemy, gameDeltaTime, alignedTo(enemy, directionToPlayer));
 	}
@@ -117,7 +119,7 @@ namespace
 			move = directionToPlayer;
 		}
 
-		enemy.position += move * gameDeltaTime * enemy.speed;
+		movement::integrate(enemy.position, enemy.velocity, move, enemy.move, gameDeltaTime);
 
 		return tickGun(enemy, gameDeltaTime, alignedTo(enemy, directionToPlayer));
 	}
@@ -129,7 +131,7 @@ namespace
 			// Column 2 of the sheet, so they read as a different ship. Two rows
 			// so they do not all orbit the same way (keepDistance uses type.y).
 			e.type = (rand() % 2) ? glm::uvec2{2, 0} : glm::uvec2{2, 1};
-			e.speed = 1200 + rand() % 400;                 // 1200 .. 1600
+			e.move = movement::instant(1200 + rand() % 400); // 1200 .. 1600
 			e.turnSpeed = 3.5f + (rand() % 1000) / 1000.f; // 3.5 .. 4.5
 			e.fireRange = 1.7f + (rand() % 1000) / 5000.f; // 1.7 .. 1.9
 			e.fireTimeReset = 0.8f + (rand() % 1000) / 1000.f; // 0.8 .. 1.8 s
@@ -138,7 +140,7 @@ namespace
 		}
 
 		e.type = (rand() % 2) ? glm::uvec2{0, 0} : glm::uvec2{0, 1};
-		e.speed = 800 + rand() % 1000;
+		e.move = movement::instant(800 + rand() % 1000);  // 800 .. 1800
 		e.turnSpeed = 2.2f + (rand() % 1000) / 500.f;   // 2.2 .. 4.2
 		e.fireRange = 1.5f + (rand() % 1000) / 2000.f;
 		e.fireTimeReset = 0.1f + (rand() % 1000) / 500.f; // 0.1 .. 2.1 s
@@ -146,13 +148,8 @@ namespace
 	}
 }
 
-bool update(Enemy &enemy, float deltaTime, glm::vec2 playerPos, float speedMultiplier)
+bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos)
 {
-	// One clock for the whole behaviour. The cooldown and the turn used to run
-	// on real time while the movement ran on game time, so at low game speed
-	// enemies crawled but still turned and fired at full rate.
-	const float gameDeltaTime = deltaTime * speedMultiplier;
-
 	switch (enemy.behaviour)
 	{
 	case Enemy::Behaviour::CloseIn:

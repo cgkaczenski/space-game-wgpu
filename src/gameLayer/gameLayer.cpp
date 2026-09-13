@@ -24,6 +24,8 @@
 #include <enemy.h>
 #include <enemyAi.h>
 #include <zoomControl.h>
+#include <gameClock.h>
+#include <playerMove.h>
 #include <cstdio>
 #include <raudio.h>
 #include <engine/collisionSystem.h>
@@ -33,6 +35,8 @@
 struct GameplayData
 {
 	glm::vec2 playerPos = {100,100};
+	glm::vec2 playerVelocity = {};
+	glm::vec2 playerFacing = {1,0};
 
 	std::vector<Bullet> bullets;
 
@@ -64,21 +68,6 @@ TiledRenderer tiledRenderer[BACKGROUNDS];
 
 Sound shootSound;
 bool soundEffectsEnabled = false;
-float gameSpeedScale = 50.f;
-constexpr float playerMoveSpeed = 2000.f;
-
-float gameSpeedMultiplier()
-{
-	// 50 stays 1x. 100 is 1.5x. Below 50 uses an exponential curve so 0 is ~1% speed.
-	if (gameSpeedScale <= 50.f)
-	{
-		float t = gameSpeedScale / 50.f;
-		return 0.01f * glm::pow(100.f, t);
-	}
-
-	float t = (gameSpeedScale - 50.f) / 50.f;
-	return 1.f + t * 0.5f;
-}
 
 void restartGame()
 {
@@ -150,12 +139,12 @@ constexpr float enemyDespawnDistance = 4000.f;
 // The controls that no feature owns yet, because the state they touch has no
 // home yet either. Kept together and named so the panel holds nothing; each
 // leaves when its milestone gives it somewhere to go:
-//   game speed          -> R8, where the two clock conventions become one
 //   health, reset, sound,
 //   counts, spawn buttons -> R10, which decides who owns `data`, the assets,
 //                          and what restart means
-// The spawn-waves toggle went to enemyAi in R9. The button and the counts
-// could not follow it: they need the enemy list, which is still `data`'s.
+// The spawn-waves toggle went to enemyAi in R9, and game speed to gameClock in
+// R8. The buttons and the counts could not follow: they need the enemy list,
+// which is still `data`'s.
 static void gameplayDebugUi()
 {
 	ImGui::Text("Bullets count: %d", (int)data.bullets.size());
@@ -177,7 +166,6 @@ static void gameplayDebugUi()
 	}
 
 	ImGui::SliderFloat("Player Health", &data.health, 0, 1);
-	ImGui::SliderFloat("Game speed", &gameSpeedScale, 0, 100);
 
 	if (ImGui::Checkbox("Sound effects", &soundEffectsEnabled))
 	{
@@ -203,78 +191,16 @@ bool gameLogic(float deltaTime)
 	// Before anything is drawn: setting this is what routes the frame through
 	// a target, and the target has to exist before the first quad lands.
 	crt::apply();
-#pragma endregion
 
-
-
-#pragma region movement
-
-	glm::vec2 move = {};
-
-	if (
-		platform::isButtonHeld(platform::Button::W) ||
-		platform::isButtonHeld(platform::Button::Up)
-		)
-	{
-		move.y = -1;
-	}
-	if (
-		platform::isButtonHeld(platform::Button::S) ||
-		platform::isButtonHeld(platform::Button::Down)
-		)
-	{
-		move.y = 1;
-	}
-	if (
-		platform::isButtonHeld(platform::Button::A) ||
-		platform::isButtonHeld(platform::Button::Left)
-		)
-	{
-		move.x = -1;
-	}
-	if (
-		platform::isButtonHeld(platform::Button::D) ||
-		platform::isButtonHeld(platform::Button::Right)
-		)
-	{
-		move.x = 1;
-	}
-
-	const float playerThrottle = (move.x != 0 || move.y != 0) ? 1.f : 0.f;
-
-	if (move.x != 0 || move.y != 0)
-	{
-		move = glm::normalize(move);
-		move *= deltaTime * playerMoveSpeed * gameSpeedMultiplier();
-		data.playerPos += move;
-	}
-
-#pragma endregion
-
-#pragma region follow
-
-	renderer.currentCamera.position = camera::follow(
-		renderer.currentCamera.position, data.playerPos, {(float)w, (float)h},
-		{deltaTime * 550.f, 1.f, 150.f});
-
-#pragma endregion
-
-#pragma region render background
-
-	// Wall time, not game time: see zoomControl.h.
-	renderer.currentCamera.zoom = zoomControl::update(deltaTime,
-		{(float)w, (float)h}, enemyDespawnDistance);
-
-	for (int i = 0; i < BACKGROUNDS; i++)
-	{
-		tiledRenderer[i].render(renderer);
-	}
-	//tiledRenderer[0].render(renderer);
+	// The two clocks, named once (roadmap R8). The simulation takes
+	// `time.game`; camera, zoom and the panel take `time.real`.
+	const FrameTime time = gameClock::tick(deltaTime);
 #pragma endregion
 
 
 #pragma region mouse pos
 
+	// Before movement, because the mouse can steer the ship.
 	glm::vec2 mousePos = platform::getRelMousePosition();
 	glm::vec2 screenCenter(w / 2.f, h / 2.f);
 
@@ -289,8 +215,39 @@ bool gameLogic(float deltaTime)
 		mouseDirection = normalize(mouseDirection);
 	}
 
-	float spaceShipAngle = atan2(mouseDirection.y, -mouseDirection.x);
+#pragma endregion
 
+
+#pragma region movement
+
+	// Facing is the hull; aim is the gun. They are the same vector unless the
+	// ship is turned with A/D, when the mouse aims independently.
+	const playerMove::Result player = playerMove::update(data.playerPos,
+		data.playerVelocity, data.playerFacing, mouseDirection, time.game);
+
+#pragma endregion
+
+#pragma region follow
+
+	// Real time: the camera is presentation, and should keep settling while
+	// the game is slowed.
+	renderer.currentCamera.position = camera::follow(
+		renderer.currentCamera.position, data.playerPos, {(float)w, (float)h},
+		{time.real * 550.f, 1.f, 150.f});
+
+#pragma endregion
+
+#pragma region render background
+
+	// Wall time, not game time: see zoomControl.h.
+	renderer.currentCamera.zoom = zoomControl::update(time.real,
+		{(float)w, (float)h}, enemyDespawnDistance);
+
+	for (int i = 0; i < BACKGROUNDS; i++)
+	{
+		tiledRenderer[i].render(renderer);
+	}
+	//tiledRenderer[0].render(renderer);
 #pragma endregion
 
 #pragma region handle bulets
@@ -301,7 +258,7 @@ bool gameLogic(float deltaTime)
 		Bullet b;
 
 		b.position = data.playerPos;
-		b.fireDirection = mouseDirection;
+		b.fireDirection = player.aim; // the mouse, not necessarily the hull
 
 		data.bullets.push_back(b);
 
@@ -374,7 +331,7 @@ bool gameLogic(float deltaTime)
 			}
 		}
 
-		data.bullets[i].update(deltaTime, gameSpeedMultiplier());
+		data.bullets[i].update(time.game);
 
 	}
 
@@ -385,7 +342,9 @@ bool gameLogic(float deltaTime)
 	}
 	else
 	{
-		data.health += deltaTime * 0.05;
+		// Game time. This was the frame's own delta, so at 1% speed the ship
+		// healed at full rate while everything shooting at it crawled.
+		data.health += time.game * 0.05;
 		data.health = glm::clamp(data.health, 0.f, 1.f);
 	}
 
@@ -393,10 +352,8 @@ bool gameLogic(float deltaTime)
 
 #pragma region handle enemies
 
-	// Game time, like the enemies themselves: at low game speed the waves slow
-	// down with everything else instead of piling up at full rate.
 	enemyAi::updateSpawning(data.enemies, data.spawnEnemyTimerSecconds,
-		data.playerPos, deltaTime * gameSpeedMultiplier());
+		data.playerPos, time.game);
 
 
 	for (int i = 0; i < data.enemies.size(); i++)
@@ -414,7 +371,7 @@ bool gameLogic(float deltaTime)
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
 		// collisionSystem.separation(circleA, circleB) to push them apart.
 
-		if (enemyAi::update(data.enemies[i], deltaTime, data.playerPos, gameSpeedMultiplier()))
+		if (enemyAi::update(data.enemies[i], time.game, data.playerPos))
 		{
 			Bullet b;
 			b.position = data.enemies[i].position;
@@ -445,18 +402,18 @@ bool gameLogic(float deltaTime)
 #pragma region render ship
 
 	// Before the hull, so the hull covers the end of the plume inside it.
-	thruster::draw(renderer, data.playerPos, shipSize, mouseDirection,
-		playerThrottle, deltaTime * gameSpeedMultiplier());
+	thruster::draw(renderer, data.playerPos, shipSize, player.facing,
+		player.throttle, time.game);
 
 	// Faded by the cloak. The hull going nearly transparent is half the
 	// effect; the other half is the world bending around it, which happens
 	// below when the world goes through the cloak's shader.
 	renderSpaceShip(renderer, data.playerPos, shipSize,
-		spaceShipsTexture, spaceShipsAtlas.get(3, 0), mouseDirection,
+		spaceShipsTexture, spaceShipsAtlas.get(3, 0), player.facing,
 		{1.f, 1.f, 1.f, cloak::shipAlpha()});
 
 	// After the hull, so the rim reads as being in front of it.
-	shield::draw(renderer, data.playerPos, shipSize, deltaTime * gameSpeedMultiplier());
+	shield::draw(renderer, data.playerPos, shipSize, time.game);
 
 #pragma endregion
 
@@ -495,7 +452,7 @@ bool gameLogic(float deltaTime)
 	// renderer.flush(); up, the world goes into a target and comes back
 	// through the shader. hud::draw flushes again straight after, which is a
 	// no-op on an empty batch.
-	cloak::flushWorld(renderer, data.playerPos, shipSize, w, h, deltaTime * gameSpeedMultiplier());
+	cloak::flushWorld(renderer, data.playerPos, shipSize, w, h, time.game);
 
 	hud::draw(renderer, data.health, w, h); // flushes the world, then the HUD
 
@@ -513,8 +470,10 @@ bool gameLogic(float deltaTime)
 	// controls, and the panel only decides the order and the headings.
 	ImGui::Begin("debug");
 
-	debugPanel::renderStats(deltaTime);
+	debugPanel::renderStats(time.real);
 	debugPanel::section("Game", gameplayDebugUi);
+	debugPanel::section("Clock", gameClock::debugUi);
+	debugPanel::section("Player", playerMove::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemyAi::debugUi);
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
