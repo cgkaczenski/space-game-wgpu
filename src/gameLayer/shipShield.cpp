@@ -364,7 +364,7 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 void debugUi()
 {
 	bool a = active;
-	if (ImGui::Checkbox("Shield", &a)) { setActive(a); }
+	if (ImGui::Checkbox("Active", &a)) { setActive(a); }
 	ImGui::SameLine();
 	// A hit somewhere off-centre, so the debug button exercises the ripple
 	// rather than only the flare. The offset is in world units and the ship is

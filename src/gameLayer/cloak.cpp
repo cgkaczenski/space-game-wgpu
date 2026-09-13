@@ -135,7 +135,7 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 void debugUi()
 {
 	bool a = active;
-	if (ImGui::Checkbox("Cloak", &a)) { setActive(a); }
+	if (ImGui::Checkbox("Active", &a)) { setActive(a); }
 }
 
 }

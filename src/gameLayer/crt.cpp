@@ -103,13 +103,13 @@ void apply()
 void debugUi()
 {
 	bool e = enabled;
-	if (ImGui::Checkbox("CRT", &e)) { setEnabled(e); }
+	if (ImGui::Checkbox("Enabled", &e)) { setEnabled(e); }
 	if (!enabled) { return; }
 
 	// The master first, because it is the one a player would be given. The
 	// rest are separated because they go wrong at different rates: curvature
 	// reads as broken well before the scanlines do.
-	ImGui::SliderFloat("CRT strength", &strength, 0.f, 2.f);
+	ImGui::SliderFloat("Strength", &strength, 0.f, 2.f);
 	ImGui::SliderFloat("Curvature", &curvature, 0.f, 0.3f);
 	ImGui::SliderFloat("Scanlines", &scanlines, 0.f, 1.f);
 	ImGui::SliderFloat("Scanline period px", &period, 2.f, 32.f, "%.0f");
