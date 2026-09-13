@@ -6,6 +6,7 @@ platform::Button rightMouse;
 
 platform::ControllerButtons controllerButtons;
 std::string typedInput;
+float scrollY = 0.f;
 
 int platform::isButtonHeld(int key)
 {
@@ -74,6 +75,21 @@ platform::ControllerButtons platform::getControllerButtons()
 std::string platform::getTypedInput()
 {
 	return typedInput;
+}
+
+float platform::getScrollY()
+{
+	return scrollY;
+}
+
+void platform::internal::addScroll(float y)
+{
+	scrollY += y;
+}
+
+void platform::internal::resetScroll()
+{
+	scrollY = 0.f;
 }
 
 void platform::internal::setButtonState(int button, int newState)
@@ -148,6 +164,7 @@ void platform::internal::updateAllButtons(float deltaTime)
 void platform::internal::resetInputsToZero()
 {
 	resetTypedInput();
+	resetScroll();
 
 	for (int i = 0; i < platform::Button::BUTTONS_COUNT; i++)
 	{

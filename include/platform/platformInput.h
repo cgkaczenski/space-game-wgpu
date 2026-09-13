@@ -29,6 +29,8 @@ namespace platform
 			Right,
 			LeftCtrl,
 			Tab,
+			Minus,
+			Equal, // the unshifted '+' key
 			BUTTONS_COUNT, //
 		};
 
@@ -117,8 +119,14 @@ namespace platform
 	ControllerButtons getControllerButtons();
 	std::string getTypedInput();
 
+	// Vertical scroll since the last frame, in wheel notches: positive is away
+	// from the user. A trackpad sends many fractional values; they are summed.
+	float getScrollY();
+
 	namespace internal
 	{
+		void addScroll(float y);
+		void resetScroll();
 
 		void setButtonState(int button, int newState);
 

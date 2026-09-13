@@ -23,6 +23,7 @@
 #include <vector>
 #include <enemy.h>
 #include <enemyAi.h>
+#include <zoomControl.h>
 #include <cstdio>
 #include <raudio.h>
 #include <engine/collisionSystem.h>
@@ -142,6 +143,10 @@ bool initGame()
 
 constexpr float shipSize = 250.f;
 
+// Enemies further than this from the player are removed. Named because the
+// zoom-out limit depends on it: past that zoom, the player would see it happen.
+constexpr float enemyDespawnDistance = 4000.f;
+
 // The controls that no feature owns yet, because the state they touch has no
 // home yet either. Kept together and named so the panel holds nothing; each
 // leaves when its milestone gives it somewhere to go:
@@ -256,7 +261,9 @@ bool gameLogic(float deltaTime)
 
 #pragma region render background
 
-	renderer.currentCamera.zoom = 0.5;
+	// Wall time, not game time: see zoomControl.h.
+	renderer.currentCamera.zoom = zoomControl::update(deltaTime,
+		{(float)w, (float)h}, enemyDespawnDistance);
 
 	for (int i = 0; i < BACKGROUNDS; i++)
 	{
@@ -395,7 +402,7 @@ bool gameLogic(float deltaTime)
 	for (int i = 0; i < data.enemies.size(); i++)
 	{
 
-		if (glm::distance(data.playerPos, data.enemies[i].position) > 4000.f)
+		if (glm::distance(data.playerPos, data.enemies[i].position) > enemyDespawnDistance)
 		{
 			//dispawn enemy
 			data.enemies.erase(data.enemies.begin() + i);
@@ -508,6 +515,7 @@ bool gameLogic(float deltaTime)
 
 	debugPanel::renderStats(deltaTime);
 	debugPanel::section("Game", gameplayDebugUi);
+	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemyAi::debugUi);
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
 	debugPanel::section("Shield", shield::debugUi);

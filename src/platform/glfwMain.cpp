@@ -121,6 +121,16 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods
 		{
 			platform::internal::setButtonState(platform::Button::Tab, state);
 		}
+		else
+		if (key == GLFW_KEY_MINUS)
+		{
+			platform::internal::setButtonState(platform::Button::Minus, state);
+		}
+		else
+		if (key == GLFW_KEY_EQUAL)
+		{
+			platform::internal::setButtonState(platform::Button::Equal, state);
+		}
 	}
 	
 };
@@ -189,6 +199,14 @@ void characterCallback(GLFWwindow *window, unsigned int codepoint)
 	{
 		platform::internal::addToTypedInput(codepoint);
 	}
+}
+
+// Summed until the frame reads it. Registered before ImGui's backend installs
+// its own callbacks: with install_callbacks set, the backend saves whatever
+// was there and calls it after its own, so both see every event.
+void scrollCallback(GLFWwindow *window, double xoffset, double yoffset)
+{
+	platform::internal::addScroll((float)yoffset);
 }
 
 #pragma region platform functions
@@ -343,6 +361,7 @@ int main()
 	glfwSetWindowSizeCallback(wind, windowSizeCallback);
 	glfwSetCursorPosCallback(wind, cursorPositionCallback);
 	glfwSetCharCallback(wind, characterCallback);
+	glfwSetScrollCallback(wind, scrollCallback);
 
 	// Bring-up is three steps because creating a surface needs an instance and
 	// only this layer knows what a window is: the library makes the instance,
@@ -752,6 +771,8 @@ int main()
 		mouseMovedFlag = 0;
 		platform::internal::updateAllButtons(deltaTime);
 		platform::internal::resetTypedInput();
+		// Before glfwPollEvents below, so what it delivers is next frame's.
+		platform::internal::resetScroll();
 
 	#pragma endregion
 
