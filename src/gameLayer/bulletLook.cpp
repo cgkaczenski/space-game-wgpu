@@ -1,11 +1,11 @@
-#include <bulletGlow.h>
+#include <bulletLook.h>
 
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <vector>
 
-namespace bulletGlow
+namespace bulletLook
 {
 
 namespace
@@ -19,7 +19,7 @@ namespace
 	const int textureWidth = 256;
 	const float aspect = (float)textureWidth / (float)textureHeight;
 
-	// Sized against the sprite it sits under. Bullet::render lays five 100px
+	// Sized against the sprite it sits under. drawSprite lays five 100px
 	// quads along the heading at 25px steps, so the art spans roughly the
 	// bullet's position to position + 100 * direction, and its visual centre
 	// is half way along that.
@@ -73,7 +73,7 @@ bool init()
 {
 	if (!buildCapsuleTexture())
 	{
-		std::cerr << "bulletGlow: could not create the capsule texture\n";
+		std::cerr << "bulletLook: could not create the capsule texture\n";
 		return false;
 	}
 	return true;
@@ -84,14 +84,14 @@ void cleanup()
 	capsule.cleanup();
 }
 
-void draw(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction, bool isEnemy)
+void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction, bool isEnemy)
 {
 	if (capsule.id == 0) { return; }
 
 	// The capsule's long axis is +x in the texture. pushQuad rotates in gl2d's
 	// flipped (y-up) space and flips back, so a rotation of t maps +x to
 	// (cos t, -sin t) in world coordinates -- hence the negated y. This is not
-	// the angle Bullet::render uses; that one is tuned to where its sprite art
+	// the angle drawSprite uses; that one is tuned to where its sprite art
 	// points, which is a different question.
 	const float rotation = glm::degrees(std::atan2(-direction.y, direction.x));
 
@@ -101,6 +101,28 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction,
 	renderer.renderRectangle(
 		{centre - glm::vec2(glowLength * 0.5f, glowWidth * 0.5f), glowLength, glowWidth},
 		capsule, glm::vec4{color.r, color.g, color.b, 1.f}, {}, rotation);
+}
+
+void drawSprite(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction,
+	bool isEnemy, wgpu2d::Texture texture, wgpu2d::TextureAtlasPadding atlas)
+{
+	float angle = atan2(direction.y, -direction.x);
+	angle = glm::degrees(angle) + 90.f;
+
+	glm::vec4 textureCoords = atlas.get(1, 1);
+
+	if (isEnemy)
+	{
+		textureCoords = atlas.get(0, 0);
+	}
+
+	for (int i = 0; i < 5; i++)
+	{
+		glm::vec4 color(1* (i + 4) / 5.f, 1* (i + 4) / 5.f, 1* (i + 4) / 5.f, (i+1) / 5.f);
+
+		renderer.renderRectangle({position - glm::vec2(50,50) + (float)i * 25.f * direction, 100,100},
+			texture, color, {}, angle, textureCoords);
+	}
 }
 
 }

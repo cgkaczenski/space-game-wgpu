@@ -11,16 +11,18 @@
 #include <hud.h>
 #include <shipThruster.h>
 #include <shipShield.h>
-#include <bulletGlow.h>
+#include <bulletLook.h>
 #include <cloak.h>
 #include <crt.h>
 #include <hitboxDebug.h>
 #include <debugPanel.h>
 #include <platformTools.h>
 #include <tiledRenderer.h>
+#include <shipSprite.h>
 #include <bullet.h>
 #include <vector>
 #include <enemy.h>
+#include <enemyAi.h>
 #include <cstdio>
 #include <raudio.h>
 #include <engine/collisionSystem.h>
@@ -61,7 +63,6 @@ TiledRenderer tiledRenderer[BACKGROUNDS];
 
 Sound shootSound;
 bool soundEffectsEnabled = false;
-bool spawnEnemiesEnabled = false;
 float gameSpeedScale = 50.f;
 constexpr float playerMoveSpeed = 2000.f;
 
@@ -107,7 +108,7 @@ bool initGame()
 	if (!hud::init()) { return false; }
 	if (!thruster::init()) { return false; }
 	if (!shield::init()) { return false; }
-	if (!bulletGlow::init()) { return false; }
+	if (!bulletLook::init()) { return false; }
 	if (!cloak::init()) { return false; }
 	if (!crt::init()) { return false; }
 
@@ -141,35 +142,15 @@ bool initGame()
 
 constexpr float shipSize = 250.f;
 
-void spanwEnemy() 
-{
-	glm::uvec2 shipTypes[] = {{0,0}, {0,1}, {2,0}, {3, 1}};
-
-	Enemy e;
-	e.position = data.playerPos;
-
-	glm::vec2 offset(2000, 0);
-	offset = glm::vec2(  glm::vec4(offset,0,1) * glm::rotate(glm::mat4(1.f), glm::radians((float)(rand()%360)), glm::vec3(0,0, 1))  );
-
-	e.position += offset;
-
-	e.speed = 800 + rand() % 1000;
-	e.turnSpeed = 2.2f + (rand() & 1000) / 500.f;
-	e.type = shipTypes[rand() % 4];
-	e.fireRange = 1.5 + (rand() % 1000) / 2000.f;
-	e.fireTimeReset = 0.1 + (rand() % 1000) / 500;
-	e.bulletSpeed = rand() % 3000 + 1000;
-
-	data.enemies.push_back(e);
-}
-
 // The controls that no feature owns yet, because the state they touch has no
 // home yet either. Kept together and named so the panel holds nothing; each
 // leaves when its milestone gives it somewhere to go:
 //   game speed          -> R8, where the two clock conventions become one
-//   spawning, counts    -> R9, when enemy behaviour is its own thing
-//   health, reset, sound -> R10, which decides who owns `data`, the assets,
+//   health, reset, sound,
+//   counts, spawn button -> R10, which decides who owns `data`, the assets,
 //                          and what restart means
+// The spawn-waves toggle went to enemyAi in R9. The button and the counts
+// could not follow it: they need the enemy list, which is still `data`'s.
 static void gameplayDebugUi()
 {
 	ImGui::Text("Bullets count: %d", (int)data.bullets.size());
@@ -177,7 +158,7 @@ static void gameplayDebugUi()
 
 	if (ImGui::Button("Spawn enemy"))
 	{
-		spanwEnemy();
+		data.enemies.push_back(enemyAi::spawnNear(data.playerPos));
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Reset game"))
@@ -185,7 +166,6 @@ static void gameplayDebugUi()
 		restartGame();
 	}
 
-	ImGui::Checkbox("Spawn enemies", &spawnEnemiesEnabled);
 	ImGui::SliderFloat("Player Health", &data.health, 0, 1);
 	ImGui::SliderFloat("Game speed", &gameSpeedScale, 0, 100);
 
@@ -401,24 +381,10 @@ bool gameLogic(float deltaTime)
 
 #pragma region handle enemies
 
-	if (spawnEnemiesEnabled && data.enemies.size() < 15) 
-	{
-		data.spawnEnemyTimerSecconds -= deltaTime;
-
-		if (data.spawnEnemyTimerSecconds < 0)
-		{
-			data.spawnEnemyTimerSecconds = rand() % 6 + 1;
-
-			spanwEnemy();
-			if (rand() % 3 == 0)
-			{
-				spanwEnemy();
-				spanwEnemy();
-			}
-
-		}
-	
-	}
+	// Game time, like the enemies themselves: at low game speed the waves slow
+	// down with everything else instead of piling up at full rate.
+	enemyAi::updateSpawning(data.enemies, data.spawnEnemyTimerSecconds,
+		data.playerPos, deltaTime * gameSpeedMultiplier());
 
 
 	for (int i = 0; i < data.enemies.size(); i++)
@@ -436,11 +402,12 @@ bool gameLogic(float deltaTime)
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
 		// collisionSystem.separation(circleA, circleB) to push them apart.
 
-		if (data.enemies[i].update(deltaTime, data.playerPos, gameSpeedMultiplier()))
+		if (enemyAi::update(data.enemies[i], deltaTime, data.playerPos, gameSpeedMultiplier()))
 		{
 			Bullet b;
 			b.position = data.enemies[i].position;
 			b.fireDirection = data.enemies[i].viewDirection;
+			// The gun's, copied onto the shot. Flight reads Bullet::speed.
 			b.speed = data.enemies[i].bulletSpeed;
 
 			b.isEnemy = true;
@@ -457,7 +424,8 @@ bool gameLogic(float deltaTime)
 
 	for (auto &e : data.enemies)
 	{
-		e.render(renderer, spaceShipsTexture, spaceShipsAtlas);
+		renderSpaceShip(renderer, e.position, enemyShipSize,
+			spaceShipsTexture, spaceShipsAtlas.get(e.type.x, e.type.y), e.viewDirection);
 	}
 
 #pragma endregion
@@ -489,13 +457,14 @@ bool gameLogic(float deltaTime)
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
 	for (auto &b : data.bullets)
 	{
-		bulletGlow::draw(renderer, b.position, b.fireDirection, b.isEnemy);
+		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy);
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	for (auto &b : data.bullets)
 	{
-		b.render(renderer, bulletsTexture, bulletsAtlas);
+		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.isEnemy,
+			bulletsTexture, bulletsAtlas);
 	}
 
 #pragma endregion
@@ -534,6 +503,7 @@ bool gameLogic(float deltaTime)
 
 	debugPanel::renderStats(deltaTime);
 	debugPanel::section("Game", gameplayDebugUi);
+	debugPanel::section("Enemies", enemyAi::debugUi);
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
 	debugPanel::section("Shield", shield::debugUi);
 	debugPanel::section("Cloak", cloak::debugUi);
@@ -553,6 +523,6 @@ void closeGame()
 	hud::cleanup();
 	thruster::cleanup();
 	shield::cleanup();
-	bulletGlow::cleanup();
+	bulletLook::cleanup();
 	cloak::cleanup();
 }
