@@ -38,8 +38,10 @@ namespace shield
 	// setting, not something that happened, so it survives.
 	void reset();
 
-	// Whether the shield is up. The visual eases in and out, so this can be
-	// flipped freely.
+	// Whether the shield is up. Raising it eases in. Lowering a visible shield
+	// breaks it: the bubble dissolves in patches over about 0.6 s, with a
+	// bright burning edge, rather than fading. Raising it again cancels that.
+	// In play, energy decides this (gameplay roadmap C1).
 	void setActive(bool active);
 	bool isActive();
 
@@ -57,6 +59,11 @@ namespace shield
 	// with its own parameters, which is what the per-quad channel made cheap:
 	// no array in a uniform, no upper bound baked into a shader.
 	void hit(glm::vec2 offsetFromShip, float strength = 1.f);
+
+	// How long one hit's ripple runs, in game seconds. Energy waits this long
+	// before breaking the shield, so the break follows the wave rather than
+	// cutting it off.
+	float rippleSeconds();
 
 	// Draws the bubble. Call *after* the ship, so the rim reads as being in
 	// front of the hull. `dt` is game time, like the plume's.

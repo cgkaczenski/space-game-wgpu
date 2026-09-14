@@ -24,6 +24,32 @@ namespace
 	wgpu2d::Texture tint;
 
 	wgpu2d::Effect rippleEffect;
+	wgpu2d::Effect dissolveEffect;
+
+	// The break. Lowering the shield from full runs a dissolve instead of the
+	// plain fade: the bubble holds its brightness and burns away in patches.
+	// Raising it again cancels one in progress.
+	bool dissolving = false;
+	float dissolveProgress = 0.f;
+	const float dissolveSeconds = 0.6f;
+	const float dissolveEdgeWidth = 0.08f;
+	const float dissolveNoiseScale = 7.f;
+	const glm::vec4 dissolveEdgeColor = {0.75f, 0.92f, 1.0f, 1.f};
+
+	wgpu2d::Effect loadEffect(const char *path, const char *name)
+	{
+		std::ifstream file(path, std::ios::binary);
+		if (!file.is_open())
+		{
+			std::cerr << "shield: cannot read " << path << "\n";
+			return {};
+		}
+		std::stringstream ss;
+		ss << file.rdbuf();
+		wgpu2d::Effect effect = wgpu2d::createEffect(ss.str().c_str(), name);
+		if (effect.id == 0) { std::cerr << "shield: " << name << " did not compile\n"; }
+		return effect;
+	}
 
 	// The live impacts. A small fixed set, oldest replaced: a shield being hit
 	// by more than this at once has bigger problems than a missing ripple.
@@ -224,23 +250,11 @@ bool init()
 
 	// The ripple is an effect rather than another generated texture, because
 	// it is not a fixed image: where the wave is depends on where the hit
-	// landed and how long ago, and neither is knowable at init.
-	const char *path = RESOURCES_PATH "shaders/shieldRipple.wgsl";
-	std::ifstream file(path, std::ios::binary);
-	if (!file.is_open())
-	{
-		std::cerr << "shield: cannot read " << path << "\n";
-		return false;
-	}
-	std::stringstream ss;
-	ss << file.rdbuf();
-	rippleEffect = wgpu2d::createEffect(ss.str().c_str(), "shield ripple");
-	if (rippleEffect.id == 0)
-	{
-		std::cerr << "shield: ripple effect did not compile\n";
-		return false;
-	}
-	return true;
+	// landed and how long ago, and neither is knowable at init. The dissolve
+	// is an effect for the same reason: how much is left depends on time.
+	rippleEffect = loadEffect(RESOURCES_PATH "shaders/shieldRipple.wgsl", "shield ripple");
+	dissolveEffect = loadEffect(RESOURCES_PATH "shaders/shieldDissolve.wgsl", "shield dissolve");
+	return rippleEffect.id != 0 && dissolveEffect.id != 0;
 }
 
 void cleanup()
@@ -254,9 +268,26 @@ void reset()
 	for (Impact &impact : impacts) { impact = Impact{}; }
 	nextImpact = 0;
 	flare = 0.f;
+	dissolving = false;
+	dissolveProgress = 0.f;
 }
 
-void setActive(bool a) { active = a; }
+void setActive(bool a)
+{
+	if (a == active) { return; }
+	active = a;
+
+	if (!active && level > 0.004f && dissolveEffect.id != 0)
+	{
+		dissolving = true;
+		dissolveProgress = 0.f;
+	}
+	else if (active)
+	{
+		dissolving = false;
+		dissolveProgress = 0.f;
+	}
+}
 bool isActive() { return active; }
 
 void hit(glm::vec2 offsetFromShip, float strength)
@@ -277,14 +308,31 @@ void hit(glm::vec2 offsetFromShip, float strength)
 	slot.intensity = std::min(1.f, strength);
 }
 
+float rippleSeconds() { return waveLifetime; }
+
 void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt)
 {
 	if (rim.id == 0 || tint.id == 0) { return; }
 
 
-	const float target = active ? 1.f : 0.f;
-	const float rate = active ? raisePerSecond : dropPerSecond;
-	level += (target - level) * std::min(1.f, rate * std::max(0.f, dt));
+	if (dissolving)
+	{
+		// The bubble keeps its brightness while it burns away; the dissolve,
+		// not a fade, is what takes it.
+		dissolveProgress += std::max(0.f, dt) / dissolveSeconds;
+		if (dissolveProgress >= 1.f)
+		{
+			dissolving = false;
+			dissolveProgress = 0.f;
+			level = 0.f;
+		}
+	}
+	else
+	{
+		const float target = active ? 1.f : 0.f;
+		const float rate = active ? raisePerSecond : dropPerSecond;
+		level += (target - level) * std::min(1.f, rate * std::max(0.f, dt));
+	}
 	if (flare > 0.f)
 	{
 		flare *= std::exp(-flareDecayPerSecond * std::max(0.f, dt));
@@ -306,6 +354,22 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 	const glm::vec4 base = shieldColor * intensity;
 	const glm::vec4 extra = flareColor * (flare * level);
 
+	// While breaking, the glass and both rings go through the dissolve. The
+	// glass gets no glowing edge -- it is the dark half of the bubble, and a
+	// bright edge on it under alpha would only grey it -- the rings do.
+	auto beginDissolve = [&](float edgeStrength)
+	{
+		if (!dissolving) { return; }
+		wgpu2d::EffectParams params;
+		params.a = {dissolveProgress, dissolveEdgeWidth, dissolveNoiseScale, edgeStrength};
+		params.b = dissolveEdgeColor;
+		renderer.setEffect(dissolveEffect, params);
+	};
+	auto endDissolve = [&]()
+	{
+		if (dissolving) { renderer.clearEffect(); }
+	};
+
 	// 1. The glass, in alpha. This is the half additive cannot do: it pulls the
 	//    hull down and toward blue so the ship reads as being *behind*
 	//    something, rather than merely having light added in front of it.
@@ -321,7 +385,9 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 		const float glassScale = shellScale;
 		glm::vec4 color = tintColor;
 		color.a = glass;
+		beginDissolve(0.f);
 		drawDisc(renderer, tint, shipPos, shipSize, glassScale, color);
+		endDissolve();
 	}
 
 	// 2. The rim, additive, on top of the glass.
@@ -332,11 +398,15 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 		// the edge a bloom instead of a hard stop.
 		glm::vec4 halo = base * haloWeight + extra * 0.6f;
 		halo.a = 1.f; // the shape is the texture's; this is intensity only
+		beginDissolve(0.35f);
 		drawDisc(renderer, rim, shipPos, shipSize, haloScale + 0.06f * flare, halo);
+		endDissolve();
 
 		glm::vec4 shell = base * shellWeight + extra;
 		shell.a = 1.f;
+		beginDissolve(1.f);
 		drawDisc(renderer, rim, shipPos, shipSize, shellScale, shell);
+		endDissolve();
 
 		// One quad per live impact, each carrying its own point and age. They
 		// are still additive, so overlapping waves brighten where they cross,
@@ -357,7 +427,9 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 			const float remaining = 1.f - impact.elapsed / waveLifetime;
 
 			wgpu2d::EffectParams params;
-			params.a = {uv.x, uv.y, impact.elapsed, impact.intensity * remaining * level};
+			// A ripple still running when the shield breaks fades with it.
+			const float breaking = dissolving ? 1.f - dissolveProgress : 1.f;
+			params.a = {uv.x, uv.y, impact.elapsed, impact.intensity * remaining * level * breaking};
 			params.b = {waveSpeed, waveBand, 0.f, 0.f};
 
 			renderer.setEffect(rippleEffect, params);
@@ -370,9 +442,9 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 
 void debugUi()
 {
-	bool a = active;
-	if (ImGui::Checkbox("Active", &a)) { setActive(a); }
-	ImGui::SameLine();
+	// No on/off here any more: energy decides whether the shield is up, and a
+	// second switch would fight it. This only exercises the visual.
+	//
 	// A hit somewhere off-centre, so the debug button exercises the ripple
 	// rather than only the flare. The offset is in world units and the ship is
 	// 250 across, so this lands on the upper-left of the bubble.

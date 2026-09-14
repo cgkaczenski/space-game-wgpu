@@ -4,6 +4,9 @@
 // and the clamping are engine/cameraZoom; the bindings, the default and the
 // limits are here.
 //
+// The default is the zoom-out floor: as much of the level as the window allows.
+// It follows the floor as the window resizes until the player zooms in.
+//
 // The limits are not only taste. Zoomed in past 1 the pixel art is magnified
 // with nothing gained. Zoomed out, the floor is wherever the enemy despawn
 // ring would come into view: past it, the player watches enemies vanish. That

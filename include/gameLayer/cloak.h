@@ -27,7 +27,8 @@ namespace cloak
 	void cleanup();
 
 	// Whether the cloak is engaged. The distortion eases in and out, so this
-	// can be flipped freely.
+	// can be flipped freely. In play, energy decides this: E engages it and
+	// firing drops it (gameplay roadmap C1).
 	void setActive(bool active);
 	bool isActive();
 
@@ -54,7 +55,4 @@ namespace cloak
 	// a fraction of the screen would not.
 	void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 		float shipWorldSize, int width, int height, float dt);
-
-	// This feature's own debug controls (roadmap R11).
-	void debugUi();
 }

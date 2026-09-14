@@ -1,6 +1,5 @@
 #include <cloak.h>
 
-#include "imgui.h"
 #include <platformTools.h>
 
 #include <algorithm>
@@ -130,12 +129,6 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 		shipScreenRadius * radiusPerShipRadius, level * maxStrength};
 
 	renderer.drawFullscreenEffect(worldTarget.texture, effect, params);
-}
-
-void debugUi()
-{
-	bool a = active;
-	if (ImGui::Checkbox("Active", &a)) { setActive(a); }
 }
 
 }

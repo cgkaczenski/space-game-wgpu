@@ -15,12 +15,37 @@ namespace
 	wgpu2d::Texture healthBarTexture;
 	wgpu2d::Texture healthTexture;
 
+	// The health art hue-shifted to blue, frame untouched. Its own files rather
+	// than a tint: the renderer's tint multiplies, and a red fill multiplied by
+	// blue keeps only the fill's small blue channel -- it comes out near black.
+	wgpu2d::Texture energyBarTexture;
+	wgpu2d::Texture energyTexture;
+
 	// Where the bar sits, as fractions of the window so it lands the same
 	// place at any size.
 	const float barLeftPerc = 0.65f;
 	const float barTopPerc = 0.1f;
 	const float barWidthPerc = 0.3f;
 	const float barAspect = 1.f / 8.f;
+
+	// The energy bar sits under the health bar, this many bar-heights down.
+	const float energyBarStep = 1.3f;
+
+	// A background, and the fill clipped to `fraction` with its texture
+	// coordinates clipped to match so the art does not stretch.
+	void drawBar(wgpu2d::Renderer2D &renderer, glm::vec4 rect,
+		wgpu2d::Texture frame, wgpu2d::Texture fill, float fraction)
+	{
+		renderer.renderRectangle(rect, frame);
+
+		glm::vec4 fillRect = rect;
+		fillRect.z *= fraction;
+
+		glm::vec4 fillCoords = {0, 1, 1, 0};
+		fillCoords.z *= fraction;
+
+		renderer.renderRectangle(fillRect, fill, Colors_White, {}, {}, fillCoords);
+	}
 
 	// ---- The damage shake -----------------------------------------------
 	//
@@ -92,10 +117,17 @@ bool init()
 {
 	healthBarTexture.loadFromFile(RESOURCES_PATH "healthBar.png", true);
 	healthTexture.loadFromFile(RESOURCES_PATH "health.png", true);
+	energyBarTexture.loadFromFile(RESOURCES_PATH "energyBar.png", true);
+	energyTexture.loadFromFile(RESOURCES_PATH "energy.png", true);
 
 	if (healthBarTexture.id == 0 || healthTexture.id == 0)
 	{
 		std::cerr << "HUD: failed to load the health bar textures\n";
+		return false;
+	}
+	if (energyBarTexture.id == 0 || energyTexture.id == 0)
+	{
+		std::cerr << "HUD: failed to load the energy bar textures\n";
 		return false;
 	}
 	return true;
@@ -106,6 +138,8 @@ void cleanup()
 	shake.cleanup();
 	healthBarTexture.cleanup();
 	healthTexture.cleanup();
+	energyBarTexture.cleanup();
+	energyTexture.cleanup();
 }
 
 void reset()
@@ -128,7 +162,7 @@ void onDamage(float strength)
 	phase = 0.f;
 }
 
-void draw(wgpu2d::Renderer2D &renderer, float health, int width, int height)
+void draw(wgpu2d::Renderer2D &renderer, float health, float energy, int width, int height)
 {
 	// The layer below this one -- the world -- goes to the screen first, so
 	// the shake's target holds the HUD alone.
@@ -143,17 +177,12 @@ void draw(wgpu2d::Renderer2D &renderer, float health, int width, int height)
 		glui::Box bar = glui::Box().xLeftPerc(barLeftPerc).yTopPerc(barTopPerc)
 			.xDimensionPercentage(barWidthPerc).yAspectRatio(barAspect);
 
-		renderer.renderRectangle(bar, healthBarTexture);
+		const glm::vec4 healthRect = bar();
+		drawBar(renderer, healthRect, healthBarTexture, healthTexture, health);
 
-		// The fill is the same box clipped to the health fraction, with its
-		// texture coordinates clipped to match so the art does not stretch.
-		glm::vec4 fillRect = bar();
-		fillRect.z *= health;
-
-		glm::vec4 fillCoords = {0, 1, 1, 0};
-		fillCoords.z *= health;
-
-		renderer.renderRectangle(fillRect, healthTexture, Colors_White, {}, {}, fillCoords);
+		glm::vec4 energyRect = healthRect;
+		energyRect.y += healthRect.w * energyBarStep;
+		drawBar(renderer, energyRect, energyBarTexture, energyTexture, energy);
 	}
 	renderer.popCamera();
 

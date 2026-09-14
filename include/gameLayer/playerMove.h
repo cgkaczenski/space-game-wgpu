@@ -37,8 +37,14 @@ namespace playerMove
 	// `mouseDirection` is a unit vector from the ship toward the pointer.
 	// `facing` is the ship's heading, kept by the caller between frames so
 	// TurnWithKeys has something to turn.
+	//
+	// `drifting` is the cloak: no thrust, and the ship carries its velocity
+	// with no falloff at all -- the path is something the player watches, not
+	// something they control. The hull still turns as the control scheme says,
+	// so the player can line up a shot. The chosen falloff applies again the
+	// moment drifting ends.
 	Result update(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 &facing,
-		glm::vec2 mouseDirection, float gameDeltaTime);
+		glm::vec2 mouseDirection, float gameDeltaTime, bool drifting);
 
 	void debugUi();
 }

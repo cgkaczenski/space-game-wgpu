@@ -45,7 +45,7 @@ namespace
 }
 
 Result update(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 &facing,
-	glm::vec2 mouseDirection, float gameDeltaTime)
+	glm::vec2 mouseDirection, float gameDeltaTime, bool drifting)
 {
 	using platform::Button;
 
@@ -55,24 +55,42 @@ Result update(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 &facing,
 	Result result;
 	result.aim = mouseDirection;
 
-	glm::vec2 intent = {};
+	// Turning comes first and is the same whether or not the ship is drifting:
+	// the cloak takes thrust away, not the hull's heading.
 	switch (controls)
 	{
 	case Controls::MouseThrust:
+	case Controls::ScreenDirections:
 		facing = mouseDirection;
-		intent = facing * forward;
-		result.throttle = forward != 0.f ? 1.f : 0.f;
 		break;
 
 	case Controls::TurnWithKeys:
 		// Renormalised because repeated small rotations drift off unit length.
 		facing = glm::normalize(rotate(facing, right * turnSpeed * gameDeltaTime));
+		break;
+	}
+	result.facing = facing;
+
+	if (drifting)
+	{
+		// Momentum with no acceleration and no drag: exactly constant velocity,
+		// through the same integrator as everything else. No throttle, so no
+		// plume.
+		movement::integrate(position, velocity, {}, movement::momentum(0.f, 0.f),
+			gameDeltaTime);
+		return result;
+	}
+
+	glm::vec2 intent = {};
+	switch (controls)
+	{
+	case Controls::MouseThrust:
+	case Controls::TurnWithKeys:
 		intent = facing * forward;
 		result.throttle = forward != 0.f ? 1.f : 0.f;
 		break;
 
 	case Controls::ScreenDirections:
-		facing = mouseDirection;
 		intent = {right, -forward};
 		result.throttle = (right != 0.f || forward != 0.f) ? 1.f : 0.f;
 		break;
@@ -81,7 +99,6 @@ Result update(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 &facing,
 	movement::integrate(position, velocity, intent,
 		useMomentum ? momentumOptions : instantOptions, gameDeltaTime);
 
-	result.facing = facing;
 	return result;
 }
 

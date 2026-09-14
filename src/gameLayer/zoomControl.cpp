@@ -11,18 +11,21 @@ namespace zoomControl
 
 namespace
 {
-	// The zoom the game has always drawn at, so nothing looks different until
-	// someone scrolls.
-	constexpr float defaultZoom = 0.5f;
-
 	constexpr float closestZoom = 1.f;
 	constexpr float farthestZoom = 0.2f;
 
 	// Held -/= in steps per second; a wheel notch is one step.
 	constexpr float keyStepsPerSecond = 4.f;
 
-	camera::Zoom zoom = {defaultZoom, defaultZoom};
+	camera::Zoom zoom = {farthestZoom, farthestZoom};
 	camera::ZoomParams params;
+
+	// The default is as far out as this window allows. That floor moves with
+	// the window -- the game opens at 500x500 and is then fullsized -- so the
+	// zoom follows it until the player zooms in, and picks it up again if
+	// they zoom back out to it.
+	bool followingFloor = true;
+	bool firstUpdate = true;
 
 	// The furthest out the view can go before its edges reach the despawn
 	// ring. The view is framebuffer / zoom world units across, so its longer
@@ -41,13 +44,25 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 	params.minZoom = floorFor(framebufferSize, despawnDistance);
 	params.maxZoom = closestZoom;
 
+	if (followingFloor)
+	{
+		zoom.target = params.minZoom;
+		// Start there rather than easing to it from wherever the constant was.
+		if (firstUpdate) { zoom.current = params.minZoom; }
+	}
+	firstUpdate = false;
+
 	const ImGuiIO &io = ImGui::GetIO();
 
 	// Scrolling over the debug panel scrolls the panel.
 	if (!io.WantCaptureMouse)
 	{
 		const float scroll = platform::getScrollY();
-		if (scroll != 0.f) { camera::zoomBy(zoom, scroll, params); }
+		if (scroll != 0.f)
+		{
+			camera::zoomBy(zoom, scroll, params);
+			followingFloor = zoom.target <= params.minZoom;
+		}
 	}
 
 	// And typing a '-' into a panel field types it.
@@ -59,6 +74,7 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 		if (keySteps != 0.f)
 		{
 			camera::zoomBy(zoom, keySteps * keyStepsPerSecond * realDeltaTime, params);
+			followingFloor = zoom.target <= params.minZoom;
 		}
 	}
 
@@ -73,9 +89,10 @@ void debugUi()
 		ImGuiSliderFlags_Logarithmic))
 	{
 		camera::zoomTo(zoom, target, params);
+		followingFloor = zoom.target <= params.minZoom;
 	}
 	ImGui::SameLine();
-	if (ImGui::SmallButton("Reset")) { camera::zoomTo(zoom, defaultZoom, params); }
+	if (ImGui::SmallButton("Reset")) { followingFloor = true; }
 	ImGui::TextDisabled("floor %.2f for this window  (scroll, -/=)", params.minZoom);
 }
 

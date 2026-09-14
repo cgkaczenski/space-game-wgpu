@@ -27,6 +27,7 @@
 #include <zoomControl.h>
 #include <gameClock.h>
 #include <playerMove.h>
+#include <energy.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
 #include <shipHitbox.h>
@@ -90,9 +91,9 @@ constexpr float enemyDespawnDistance = 4000.f;
 struct Feature
 {
 	const char *name;
-	bool (*init)();
+	bool (*init)();     // null: nothing to load
 	void (*reset)();    // null: nothing of this round to forget
-	void (*cleanup)();
+	void (*cleanup)();  // null: nothing to release
 };
 
 const Feature features[] = {
@@ -104,7 +105,12 @@ const Feature features[] = {
 	{"crt",        crt::init,        nullptr,         crt::cleanup},
 	{"background", background::init, nullptr,         background::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
+	// After shield and cloak: its reset raises one and lowers the other.
+	{"energy",     nullptr,          energy::reset,   nullptr},
 };
+
+// A setting, so it survives restart.
+bool healthRegenEnabled = true;
 
 // How far down the table init got, so cleanup after a failed start releases
 // exactly the successes. The row that failed is cleaned in initGame itself
@@ -150,6 +156,7 @@ void sessionDebugUi()
 	}
 
 	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
+	ImGui::Checkbox("Health regen", &healthRegenEnabled);
 }
 
 }
@@ -173,12 +180,12 @@ bool initGame()
 
 	for (const Feature &feature : features)
 	{
-		if (!feature.init())
+		if (feature.init && !feature.init())
 		{
 			std::cerr << "initGame: " << feature.name << " failed to start\n";
 			// The table only walks successes. This row created something or it
 			// did not; cleanup is safe either way (a zero texture is a no-op).
-			feature.cleanup();
+			if (feature.cleanup) { feature.cleanup(); }
 			return false;
 		}
 		startedFeatures++;
@@ -231,12 +238,21 @@ bool gameLogic(float deltaTime)
 #pragma endregion
 
 
+#pragma region energy
+
+	// Before movement, because a cloaked ship drifts instead of flying.
+	if (platform::isButtonPressedOn(platform::Button::E)) { energy::cloak(); }
+	energy::update(time.game);
+
+#pragma endregion
+
 #pragma region movement
 
 	// Facing is the hull; aim is the gun. They are the same vector unless the
 	// ship is turned with A/D, when the mouse aims independently.
 	const playerMove::Result player = playerMove::update(session.playerPos,
-		session.playerVelocity, session.playerFacing, mouseDirection, time.game);
+		session.playerVelocity, session.playerFacing, mouseDirection, time.game,
+		energy::isCloaked());
 
 #pragma endregion
 
@@ -264,6 +280,9 @@ bool gameLogic(float deltaTime)
 
 	if (platform::isLMousePressed())
 	{
+		// Firing is how the player leaves the cloak, and the shot still goes out.
+		energy::uncloak();
+
 		Bullet b;
 
 		b.position = session.playerPos;
@@ -320,14 +339,22 @@ bool gameLogic(float deltaTime)
 			}
 			else
 			{
-				if (collisionSystem.overlaps(session.bullets[i].getHitbox(),
+				// A cloaked ship cannot be hit: the shot passes through and
+				// carries on, rather than vanishing on something that isn't there.
+				if (!energy::isCloaked() &&
+					collisionSystem.overlaps(session.bullets[i].getHitbox(),
 					game::shipHitbox(session.playerPos, shipSize)))
 				{
-					session.health -= 0.1;
-					hud::onDamage();  // shake the HUD on the hit
 					// Relative to the ship, because the shield moves with it and
 					// the ripple has to stay anchored to the bubble.
-					shield::hit(session.bullets[i].position - session.playerPos);
+					const energy::HitResult hit =
+						energy::onHit(session.bullets[i].position - session.playerPos);
+
+					if (hit == energy::HitResult::Damaged)
+					{
+						session.health -= 0.1;
+						hud::onDamage();  // shake the HUD when the hull is hit
+					}
 
 					session.bullets.erase(session.bullets.begin() + i);
 					i--;
@@ -350,7 +377,7 @@ bool gameLogic(float deltaTime)
 	{
 		// Game time. This was the frame's own delta, so at 1% speed the ship
 		// healed at full rate while everything shooting at it crawled.
-		session.health += time.game * 0.05;
+		if (healthRegenEnabled) { session.health += time.game * 0.05; }
 		session.health = glm::clamp(session.health, 0.f, 1.f);
 	}
 
@@ -459,7 +486,7 @@ bool gameLogic(float deltaTime)
 	// no-op on an empty batch.
 	cloak::flushWorld(renderer, session.playerPos, shipSize, w, h, time.game);
 
-	hud::draw(renderer, session.health, w, h); // flushes the world, then the HUD
+	hud::draw(renderer, session.health, energy::level(), w, h); // flushes the world, then the HUD
 
 #pragma endregion
 
@@ -480,11 +507,11 @@ bool gameLogic(float deltaTime)
 	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);
+	debugPanel::section("Energy", energy::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemyAi::debugUi);
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
 	debugPanel::section("Shield", shield::debugUi);
-	debugPanel::section("Cloak", cloak::debugUi);
 	debugPanel::section("CRT", crt::debugUi);
 
 	ImGui::End();
@@ -501,7 +528,7 @@ void closeGame()
 	// Back up the table from wherever init got to. Safe to call twice.
 	for (int i = startedFeatures - 1; i >= 0; i--)
 	{
-		features[i].cleanup();
+		if (features[i].cleanup) { features[i].cleanup(); }
 	}
 	startedFeatures = 0;
 

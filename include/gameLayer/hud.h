@@ -35,7 +35,10 @@ namespace hud
 	// underneath it. Skipping that would send the world through the shake's
 	// target along with the HUD.
 	//
+	// `health` and `energy` are 0..1. Energy is the blue bar under the health
+	// bar (gameplay roadmap C1).
+	//
 	// `width` and `height` are the framebuffer size, the same values the game
 	// passes to updateWindowMetrics.
-	void draw(wgpu2d::Renderer2D &renderer, float health, int width, int height);
+	void draw(wgpu2d::Renderer2D &renderer, float health, float energy, int width, int height);
 }
