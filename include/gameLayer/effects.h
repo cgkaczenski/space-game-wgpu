@@ -52,6 +52,18 @@ namespace effects
 	// its own ghosts. (The streaks go in drawGlow.)
 	void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet);
 
+	// An enemy's sight (gameplay roadmap C5): a faint wedge from its nose, out
+	// to its range and as wide as its cone, tinted by what it knows -- grey
+	// unaware, amber searching, red engaged. **The caller must have set
+	// `BlendMode::Additive`**; draw before the ships so the cones sit under
+	// them.
+	void drawSight(wgpu2d::Renderer2D &renderer, const Enemy &enemy);
+
+	// A small diamond over an enemy that knows about the player: solid red
+	// while engaged, pulsing amber while searching, nothing while unaware.
+	// Under alpha. `time` drives the pulse.
+	void drawAwareness(wgpu2d::Renderer2D &renderer, const Enemy &enemy, float time);
+
 	// The world shaking: a ram's impact. `strength` 1 is one hit; hits add, up
 	// to a limit. The world is shaken by moving the camera -- the HUD keeps its
 	// own screen camera, so it stays still -- and `shakeOffset` is that

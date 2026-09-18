@@ -174,6 +174,19 @@ without a second full-screen target.
 
 Cloak can only matter once enemies can lose track of the player.
 
+**Decided (first pass):** enemies see along a **cone** from the nose —
+rushers 90° wide out to 2500, snipers 60° out to 3500 — and hear anything
+within 400 at any angle. Three states: **engaged** (sees the player; fights as
+before, and only an engaged enemy fires), **searching** (lost sight: flies to
+the last known position and scans, sweeping its cone, for 4 s), **unaware**
+(never saw, or gave up: wanders in slow curves at part speed, until levels
+bring patrols). Any hit — bullet, missile, laser, ram — engages an enemy and
+turns it toward the player. Cloaked, the player is in no one's sight; cloaking
+in front of an enemy sends it to search where the player vanished. Cones are
+drawn as faint wedges — grey, amber, red by state — behind a **Vision cones**
+debug toggle, on by default; a small diamond over each enemy shows red engaged
+or pulsing amber searching.
+
 **Open questions**
 - What can an enemy see: a range, a cone, line of sight?
 - When the player cloaks, do enemies search the last known position?

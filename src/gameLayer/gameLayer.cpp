@@ -356,6 +356,9 @@ bool gameLogic(float deltaTime)
 			const glm::vec2 side = {-ram::direction().y, ram::direction().x};
 			const float which = glm::dot(enemy.position - session.playerPos, side) >= 0.f ? 1.f : -1.f;
 			const glm::vec2 away = glm::normalize(ram::direction() + side * which);
+			// Engaged first -- which turns it to face the player -- then the
+			// spin takes over until the stun runs out.
+			enemyAi::alert(enemy, session.playerPos);
 			enemyAi::stun(enemy, away * (ram::surgeSpeed() + ram::knockbackSpeed()),
 				ram::stunSeconds());
 		}
@@ -450,6 +453,10 @@ bool gameLogic(float deltaTime)
 			{
 				killEnemy(target);
 			}
+			else
+			{
+				enemyAi::alert(session.enemies[target], session.playerPos);
+			}
 		}
 	}
 
@@ -483,6 +490,11 @@ bool gameLogic(float deltaTime)
 						if (session.enemies[e].life <= 0)
 						{
 							killEnemy(e);
+						}
+						else
+						{
+							// Hit, it knows: engaged, turned toward the shooter.
+							enemyAi::alert(session.enemies[e], session.playerPos);
 						}
 
 						session.bullets.erase(session.bullets.begin() + i);
@@ -574,7 +586,8 @@ bool gameLogic(float deltaTime)
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
 		// collisionSystem.separation(circleA, circleB) to push them apart.
 
-		if (enemyAi::update(session.enemies[i], time.game, session.playerPos))
+		// Cloaked, the player is in no enemy's sight (gameplay roadmap C5).
+		if (enemyAi::update(session.enemies[i], time.game, session.playerPos, energy::isCloaked()))
 		{
 			Bullet b;
 			b.position = session.enemies[i].position;
@@ -596,11 +609,23 @@ bool gameLogic(float deltaTime)
 
 #pragma region render enemies
 
+	// What each enemy can see, under the ships (gameplay roadmap C5). A debug
+	// toggle, on by default.
+	if (enemyAi::showCones())
+	{
+		renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+		for (const auto &e : session.enemies) { effects::drawSight(renderer, e); }
+		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+	}
+
 	for (auto &e : session.enemies)
 	{
 		renderSpaceShip(renderer, e.position, enemyShipSize,
 			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection);
 	}
+
+	// What each knows: red engaged, amber searching.
+	for (const auto &e : session.enemies) { effects::drawAwareness(renderer, e, effectClock); }
 
 	// Wrecks sit where ships sit: after them, under everything else.
 	effects::drawDebris(renderer, shipSheet);

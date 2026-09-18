@@ -16,6 +16,15 @@ namespace
 {
 	wgpu2d::Texture glow;
 
+	// A sight cone: a 45-degree-each-way sector with its apex at the middle of
+	// the left edge, reaching the right edge, fading with distance. A narrower
+	// cone is the same texture drawn squashed across: scaling across keeps the
+	// sides straight lines through the apex, so the angle is exact and only the
+	// far edge bends from an arc to an ellipse, which the fade hides.
+	wgpu2d::Texture sector;
+	const int sectorLength = 128;
+	const int sectorBreadth = 256;
+
 	struct Piece
 	{
 		glm::vec2 position;
@@ -133,11 +142,39 @@ namespace
 	}
 }
 
+namespace
+{
+	bool buildSectorTexture()
+	{
+		std::vector<unsigned char> pixels((size_t)sectorLength * sectorBreadth * 4);
+		const float halfAngle = 0.785398f; // 45 degrees
+		const float edgeSoftness = 0.08f;  // radians of fade at the sides
+		for (int y = 0; y < sectorBreadth; y++)
+		{
+			for (int x = 0; x < sectorLength; x++)
+			{
+				const float fx = (x + 0.5f) / sectorLength;               // 0 .. 1 along
+				const float fy = (y + 0.5f) / sectorBreadth * 2.f - 1.f;  // -1 .. 1 across
+				const float r = std::sqrt(fx * fx + fy * fy);
+				const float angle = std::fabs(std::atan2(fy, fx));
+				const float side = std::clamp((halfAngle - angle) / edgeSoftness, 0.f, 1.f);
+				const float reach = std::clamp(1.f - r, 0.f, 1.f);
+				const float a = side * std::pow(reach, 0.6f);
+				unsigned char *p = pixels.data() + ((size_t)y * sectorLength + x) * 4;
+				p[0] = 255; p[1] = 255; p[2] = 255;
+				p[3] = (unsigned char)(std::clamp(a, 0.f, 1.f) * 255.f);
+			}
+		}
+		sector.createFromBuffer((const char *)pixels.data(), sectorLength, sectorBreadth, false, true);
+		return sector.id != 0;
+	}
+}
+
 bool init()
 {
-	if (!buildGlowTexture())
+	if (!buildGlowTexture() || !buildSectorTexture())
 	{
-		std::cerr << "effects: could not create the fireball texture\n";
+		std::cerr << "effects: could not create the fireball or sight textures\n";
 		return false;
 	}
 	return true;
@@ -146,6 +183,51 @@ bool init()
 void cleanup()
 {
 	glow.cleanup();
+	sector.cleanup();
+}
+
+void drawSight(wgpu2d::Renderer2D &renderer, const Enemy &enemy)
+{
+	if (sector.id == 0 || enemy.stunned > 0.f) { return; }
+
+	glm::vec4 color;
+	switch (enemy.awareness)
+	{
+	case Enemy::Awareness::Unaware:   color = glm::vec4(0.55f, 0.60f, 0.75f, 1.f) * 0.10f; break;
+	case Enemy::Awareness::Searching: color = glm::vec4(1.00f, 0.65f, 0.15f, 1.f) * 0.16f; break;
+	case Enemy::Awareness::Engaged:   color = glm::vec4(1.00f, 0.22f, 0.15f, 1.f) * 0.20f; break;
+	}
+	color.a = 1.f;
+
+	// The texture's 45 degrees fills its breadth; tan(angle) of that is the
+	// squash for this enemy's own cone.
+	const float range = enemy.sightRange;
+	const float breadth = 2.f * range * std::tan(enemy.sightHalfAngle);
+	const glm::vec2 dir = enemy.viewDirection;
+	const glm::vec2 centre = enemy.position + dir * (range * 0.5f);
+	const float rotation = glm::degrees(std::atan2(-dir.y, dir.x));
+	renderer.renderRectangle({centre - glm::vec2(range * 0.5f, breadth * 0.5f), range, breadth},
+		sector, color, {}, rotation);
+}
+
+void drawAwareness(wgpu2d::Renderer2D &renderer, const Enemy &enemy, float time)
+{
+	glm::vec4 color;
+	switch (enemy.awareness)
+	{
+	case Enemy::Awareness::Unaware: return;
+	case Enemy::Awareness::Engaged:
+		color = {1.0f, 0.22f, 0.16f, 1.f};
+		break;
+	case Enemy::Awareness::Searching:
+		color = {1.0f, 0.68f, 0.18f, 0.55f + 0.45f * std::sin(time * 8.f)};
+		break;
+	}
+
+	// Above the ship on screen, whatever way the ship faces.
+	const float size = enemyShipSize * 0.14f;
+	const glm::vec2 at = enemy.position + glm::vec2(0.f, -enemyShipSize * 0.72f);
+	renderer.renderRectangle({at - glm::vec2(size * 0.5f), size, size}, color, {}, 45.f);
 }
 
 void reset()

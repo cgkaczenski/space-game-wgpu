@@ -4,6 +4,8 @@
 #include "imgui.h"
 #include <glm/glm.hpp>
 #include <glm/gtx/transform.hpp>
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 namespace enemyAi
@@ -12,8 +14,81 @@ namespace enemyAi
 namespace
 {
 	bool spawningEnabled = false;
+	bool conesVisible = true;
 
 	constexpr size_t maxEnemies = 15;
+
+	// Sight and search (gameplay roadmap C5).
+	float hearingRadius = 400.f;        // noticed at any angle this close
+	float searchSeconds = 4.f;          // scanning at the last known position
+	float scanRate = 1.2f;              // radians per second, sweeping while scanning
+	float arriveDistance = 200.f;       // close enough to the last known position
+	float wanderSpeedFraction = 0.45f;  // of its top speed, while unaware
+
+	float randomBetween(float a, float b)
+	{
+		return a + (b - a) * (rand() / (float)RAND_MAX);
+	}
+
+	glm::vec2 rotated(glm::vec2 v, float radians)
+	{
+		const float c = std::cos(radians), s = std::sin(radians);
+		return {v.x * c - v.y * s, v.x * s + v.y * c};
+	}
+
+	// Turns the enemy's facing toward `direction` (unit) by at most rate * dt.
+	void turnToward(Enemy &enemy, glm::vec2 direction, float rate, float dt)
+	{
+		const glm::vec2 v = enemy.viewDirection;
+		const float angle = std::atan2(v.x * direction.y - v.y * direction.x, glm::dot(v, direction));
+		enemy.viewDirection = glm::normalize(rotated(v, std::clamp(angle, -rate * dt, rate * dt)));
+	}
+
+	bool canSee(const Enemy &enemy, glm::vec2 playerPos, bool playerHidden)
+	{
+		if (playerHidden) { return false; }
+		const glm::vec2 toPlayer = playerPos - enemy.position;
+		const float distance = glm::length(toPlayer);
+		if (distance <= hearingRadius) { return true; }
+		if (distance > enemy.sightRange) { return false; }
+		const float cosine = glm::dot(toPlayer / distance, enemy.viewDirection);
+		return cosine >= std::cos(enemy.sightHalfAngle);
+	}
+
+	// Lost the player: fly to where it was last seen, then turn slowly to scan
+	// for it. The sweep is visible, because the cone turns with the nose.
+	void search(Enemy &enemy, float dt)
+	{
+		const glm::vec2 toLast = enemy.lastKnown - enemy.position;
+		const float distance = glm::length(toLast);
+		if (distance > arriveDistance)
+		{
+			turnToward(enemy, toLast / distance, enemy.turnSpeed, dt);
+			movement::integrate(enemy.position, enemy.velocity, enemy.viewDirection, enemy.move, dt);
+			return;
+		}
+
+		movement::integrate(enemy.position, enemy.velocity, {}, enemy.move, dt);
+		const float sweep = (enemy.id % 2u) ? scanRate : -scanRate;
+		enemy.viewDirection = glm::normalize(rotated(enemy.viewDirection, sweep * dt));
+		enemy.searchLeft -= dt;
+		if (enemy.searchLeft <= 0.f) { enemy.awareness = Enemy::Awareness::Unaware; }
+	}
+
+	// Nothing to go on: drift in slow curves at part speed, changing the curve
+	// every couple of seconds. Patrols replace this once levels give places.
+	void wander(Enemy &enemy, float dt)
+	{
+		enemy.wanderTimer -= dt;
+		if (enemy.wanderTimer <= 0.f)
+		{
+			enemy.wanderTurn = randomBetween(-0.8f, 0.8f);
+			enemy.wanderTimer = randomBetween(1.5f, 3.f);
+		}
+		enemy.viewDirection = glm::normalize(rotated(enemy.viewDirection, enemy.wanderTurn * dt));
+		movement::integrate(enemy.position, enemy.velocity,
+			enemy.viewDirection * wanderSpeedFraction, enemy.move, dt);
+	}
 
 	// Sniper's hang-back ring. Spawn offset is 2000, so they appear already
 	// near this range and hold it rather than charging in.
@@ -136,6 +211,10 @@ namespace
 			e.fireRange = 1.7f + (rand() % 1000) / 5000.f; // 1.7 .. 1.9
 			e.fireTimeReset = 0.8f + (rand() % 1000) / 1000.f; // 0.8 .. 1.8 s
 			e.bulletSpeed = 2800 + rand() % 1200;          // 2800 .. 4000
+			// Further and narrower than a rusher: it spots the player first,
+			// and keeps its distance while it does.
+			e.sightRange = 3500.f;
+			e.sightHalfAngle = 0.524f;                    // 30 degrees either side
 			return;
 		}
 
@@ -157,7 +236,18 @@ void stun(Enemy &enemy, glm::vec2 push, float seconds)
 	enemy.spinRate = (rand() % 2) ? turns : -turns;
 }
 
-bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos)
+void alert(Enemy &enemy, glm::vec2 playerPos)
+{
+	enemy.awareness = Enemy::Awareness::Engaged;
+	enemy.lastKnown = playerPos;
+	const glm::vec2 toPlayer = playerPos - enemy.position;
+	const float distance = glm::length(toPlayer);
+	if (distance > 0.001f) { enemy.viewDirection = toPlayer / distance; }
+}
+
+bool showCones() { return conesVisible; }
+
+bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden)
 {
 	if (enemy.stunned > 0.f)
 	{
@@ -169,6 +259,33 @@ bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos)
 		const glm::vec2 v = enemy.viewDirection;
 		enemy.viewDirection = {v.x * std::cos(a) - v.y * std::sin(a), v.x * std::sin(a) + v.y * std::cos(a)};
 		return false;
+	}
+
+	if (canSee(enemy, playerPos, playerHidden))
+	{
+		enemy.awareness = Enemy::Awareness::Engaged;
+		enemy.lastKnown = playerPos;
+	}
+	else if (enemy.awareness == Enemy::Awareness::Engaged)
+	{
+		// Just lost sight -- out of the cone, or cloaked in front of it. Go to
+		// where the player was.
+		enemy.awareness = Enemy::Awareness::Searching;
+		enemy.searchLeft = searchSeconds;
+	}
+
+	switch (enemy.awareness)
+	{
+	case Enemy::Awareness::Searching:
+		search(enemy, gameDeltaTime);
+		return false;
+
+	case Enemy::Awareness::Unaware:
+		wander(enemy, gameDeltaTime);
+		return false;
+
+	case Enemy::Awareness::Engaged:
+		break;
 	}
 
 	switch (enemy.behaviour)
@@ -230,6 +347,12 @@ void updateSpawning(std::vector<Enemy> &enemies, float &timerSeconds,
 void debugUi()
 {
 	ImGui::Checkbox("Spawn waves", &spawningEnabled);
+	ImGui::SameLine();
+	ImGui::Checkbox("Vision cones", &conesVisible);
+	ImGui::SliderFloat("Hearing", &hearingRadius, 0.f, 1500.f, "%.0f");
+	ImGui::SliderFloat("Search time", &searchSeconds, 0.5f, 15.f, "%.1f s");
+	ImGui::SliderFloat("Scan speed", &scanRate, 0.2f, 5.f, "%.1f rad/s");
+	ImGui::SliderFloat("Wander speed", &wanderSpeedFraction, 0.f, 1.f, "%.2f");
 }
 
 }

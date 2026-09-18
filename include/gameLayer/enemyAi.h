@@ -21,7 +21,20 @@ namespace enemyAi
 	// `enemy.behaviour` to pick the policy. True when it fires this frame; the
 	// caller creates the bullet. Every part of it -- turning, moving, the
 	// cooldown -- runs on `gameDeltaTime`, already scaled (see gameClock.h).
-	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos);
+	//
+	// It only fights what it can see (gameplay roadmap C5): the player within
+	// its cone, or within earshot at any angle, and never while `playerHidden`
+	// -- cloaked. Seeing engages it; losing sight sends it to search where it
+	// last saw the player; a search that finds nothing leaves it unaware, and
+	// an unaware enemy wanders. Only an engaged enemy fires.
+	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden);
+
+	// Something of the player's hit it: it engages at once, turned toward
+	// where the player is, whatever it could see.
+	void alert(Enemy &enemy, glm::vec2 playerPos);
+
+	// The debug toggle for drawing sight cones. On by default.
+	bool showCones();
 
 	// Rammed: knocked along `push`, spinning, and disabled for `seconds`.
 	// While disabled, `update` moves it by the fading push and turns it, and

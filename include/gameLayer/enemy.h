@@ -51,6 +51,19 @@ struct Enemy
 	glm::vec2 knockback = {};     // world units per second, fading
 	float spinRate = 0.f;         // radians per second
 
+	// What it knows (gameplay roadmap C5). It sees along a cone from its nose,
+	// and hears anything very close. Engaged is the old behaviour -- it knows
+	// where the player is. Searching flies to where it last saw the player and
+	// scans. Unaware wanders.
+	enum class Awareness { Unaware, Engaged, Searching };
+	Awareness awareness = Awareness::Unaware;
+	glm::vec2 lastKnown = {};     // where it last saw the player
+	float searchLeft = 0.f;       // seconds of scanning left at lastKnown
+	float wanderTurn = 0.f;       // radians per second, while unaware
+	float wanderTimer = 0.f;      // until the next change of wander turn
+	float sightRange = 2500.f;
+	float sightHalfAngle = 0.785f; // radians: 45 degrees either side
+
 	collision::Circle getHitbox() const
 	{
 		return game::shipHitbox(position, enemyShipSize);
