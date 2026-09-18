@@ -39,4 +39,14 @@ namespace thruster
 	// plume that is inside it.
 	void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize,
 		glm::vec2 facing, float throttle, float dt);
+
+	// The same plume with no memory: the caller supplies how lit it is and
+	// where in its flicker, so any number of things can have one -- a missile's
+	// exhaust -- without disturbing the ship's easing. `draw` above is this
+	// plus the player's own easing and clock.
+	//
+	// **The caller must have set `BlendMode::Additive`**, as for bullet glows:
+	// setting it inside would break a draw run per missile.
+	void drawPlume(wgpu2d::Renderer2D &renderer, glm::vec2 position, float size,
+		glm::vec2 facing, float level, float phase, glm::vec4 color);
 }

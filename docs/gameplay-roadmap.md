@@ -102,6 +102,16 @@ Homing, piercing, and so on — only if C2 wants them.
 - **Laser:** a beam across the screen that stops at the first thing it hits,
   doing constant damage while it touches. Blocked by shields, and cannot break
   one. Fires while held for up to 5 s, then cools down.
+- Split in two: **C3a** the missile, **C3b** the laser.
+- C3a, after the first playtest: the missile **faces the mouse** from the
+  moment it fires and is **pushed sideways** out from alternating wings with
+  its motor off (0.3 s, 700 u/s across the line of fire, keeping pace with the
+  ship). Then the motor lights from zero and it **accelerates hard** — 14000
+  u/s² to 6000 — while the slide fades, turning at 3 rad/s plus 6 rad/s for
+  every second of chase. The exhaust brightens with its speed. With no target
+  when fired, it keeps to where the player aimed. All debug sliders.
+- Open for C3b: releasing the laser before 5 s — full cooldown, or does the
+  unused time carry over?
 - Engine ideas taken: the beam as the capsule stretched, bloomed by the CRT
   glow, with the sheet's tileable beam segment available; the missile's
   exhaust as the ship's plume scaled down; a ripple ring on the locked target.

@@ -26,10 +26,35 @@ enum class BulletStyle : unsigned char
 	Laser,
 };
 
+// How a shot flies. The switch R9 anticipated: a motion kind on the data, not a
+// class per bullet. Straight is `update` alone; a missile is also steered each
+// frame by weapons::steerMissiles before it moves (gameplay roadmap C3).
+enum class BulletMotion : unsigned char
+{
+	Straight,
+	Missile,
+};
+
 struct Bullet
 {
 	glm::vec2 position = {};
 	glm::vec2 fireDirection = {};
+
+	BulletMotion motion = BulletMotion::Straight;
+
+	// Missile state. `age` is seconds since launch. `targetId` is the enemy it
+	// homes on, 0 for none -- never had one, or it died. `aimDirection` is
+	// where to head with no target: where the player aimed, or, once a target
+	// is lost, the heading it had then, so it flies on straight.
+	float age = 0.f;
+	unsigned int targetId = 0;
+	glm::vec2 aimDirection = {};
+
+	// Velocity that is not along `fireDirection`. Zero for every ordinary
+	// shot. A missile is launched with the ship's velocity plus a push out
+	// from the wing, so it slides sideways while facing where it was aimed,
+	// and that drift fades once its motor lights.
+	glm::vec2 drift = {};
 
 	// What the weapon that fired it gave it (gameplay roadmap C2). The
 	// defaults are the old single bullet, which is also what enemies fire.
@@ -40,7 +65,7 @@ struct Bullet
 	// Game time, already scaled by the game speed (see gameClock.h).
 	void update(float gameDeltaTime)
 	{
-		position += fireDirection * gameDeltaTime * speed;
+		position += (fireDirection * speed + drift) * gameDeltaTime;
 	}
 
 	collision::Circle getHitbox() const

@@ -109,13 +109,22 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize,
 	}
 	phase += dt;
 
-	const float flicker = 1.f + flickerDepth * std::sin(6.2831853f * flickerHz * phase);
-	const glm::vec2 back = -facing;
-
 	// One setBlendMode around the whole plume. It costs no extra draw run in
 	// practice: the glow is its own texture, so the batch was breaking here
 	// anyway.
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+	drawPlume(renderer, shipPos, shipSize, facing, level, phase, coreColor);
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+}
+
+void drawPlume(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize,
+	glm::vec2 facing, float level, float phase, glm::vec4 color)
+{
+	if (glow.id == 0 || level <= 0.f) { return; }
+
+	const float flicker = 1.f + flickerDepth * std::sin(6.2831853f * flickerHz * phase);
+	const glm::vec2 back = -facing;
+
 	for (int i = 0; i < puffCount; i++)
 	{
 		// i / puffCount, not i / (puffCount - 1): the latter puts t at exactly
@@ -127,13 +136,12 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize,
 		const float size = shipSize * (nearSize + (farSize - nearSize) * t);
 		const float fade = (1.f - t) * (1.f - t);
 
-		glm::vec4 color = coreColor * (level * flicker * fade);
-		color.a = 1.f; // the falloff is the texture's; this is intensity only
+		glm::vec4 puff = color * (level * flicker * fade);
+		puff.a = 1.f; // the falloff is the texture's; this is intensity only
 
 		const glm::vec2 centre = shipPos + back * distance;
-		renderer.renderRectangle({centre - glm::vec2(size * 0.5f), size, size}, glow, color);
+		renderer.renderRectangle({centre - glm::vec2(size * 0.5f), size, size}, glow, puff);
 	}
-	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 }
 
 }

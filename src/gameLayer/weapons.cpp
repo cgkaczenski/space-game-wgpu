@@ -4,6 +4,8 @@
 #include "platformInput.h"
 
 #include <algorithm>
+#include <cmath>
+#include <glm/geometric.hpp>
 
 namespace weapons
 {
@@ -14,6 +16,7 @@ namespace
 	{
 		const char *name;
 		BulletStyle style;
+		BulletMotion motion;
 		float cooldown;    // seconds before it can fire again, from the first shot
 		float damage;      // per shot; an enemy has 1 life
 		float size;        // scales the sprite, the glow and the hitbox
@@ -27,11 +30,60 @@ namespace
 	// Longer than first proposed, at the author's request: a cooldown is a
 	// decision the player makes, and under a second it is only a rate of fire.
 	Weapon weapons[slotCount] = {
-		{"Burst laser", BulletStyle::Standard, 0.8f, 0.1f, 1.0f, 3000.f, 2, 0.08f, -1, true},
-		{"Heavy laser", BulletStyle::Heavy,    2.0f, 0.3f, 1.5f, 2600.f, 1, 0.f,   -1, true},
-		{"Missile",     BulletStyle::Missile,  3.0f, 0.5f, 1.2f, 2000.f, 1, 0.f,    5, true},
-		{"Laser",       BulletStyle::Laser,    4.0f, 0.4f, 1.0f, 0.f,    1, 0.f,   -1, false},
+		{"Burst laser", BulletStyle::Standard, BulletMotion::Straight, 0.8f, 0.1f, 1.0f, 3000.f, 2, 0.08f, -1, true},
+		{"Heavy laser", BulletStyle::Heavy,    BulletMotion::Straight, 2.0f, 0.3f, 1.5f, 2600.f, 1, 0.f,   -1, true},
+		{"Missile",     BulletStyle::Missile,  BulletMotion::Missile,  3.0f, 0.5f, 1.2f, 6000.f, 1, 0.f,    5, true},
+		{"Laser",       BulletStyle::Laser,    BulletMotion::Straight, 4.0f, 0.4f, 1.0f, 0.f,    1, 0.f,   -1, false},
 	};
+
+	// Missile flight (gameplay roadmap C3). The weapon's `speed` above is the
+	// motor's top speed. The launch is a sideways push with the motor off; the
+	// motor then lights from zero and accelerates hard, which is what makes
+	// the missile visibly pick up steam rather than just fly.
+	float launchSeconds = 0.3f;      // pushed out from the wing, motor off
+	float launchPush = 700.f;        // sideways speed of that push, world units/s
+	float driftFade = 4.f;           // per second: how fast the push and the
+	                                 // ship's inherited velocity fade once lit
+	float missileAccel = 14000.f;    // world units per second squared, once lit
+	float turnRateStart = 3.f;       // radians per second as the chase begins
+	float turnRateGrowth = 6.f;      // added per second of chase: the no-miss rule
+	float launchSideFraction = 0.45f; // of the ship's size, out to the wing
+
+	// Alternates, so a salvo leaves from both sides.
+	float nextSide = 1.f;
+
+	// The enemy nearest `point`, or 0 if there are none.
+	unsigned int nearestTo(glm::vec2 point, const std::vector<Enemy> *enemies)
+	{
+		if (!enemies) { return 0; }
+		unsigned int best = 0;
+		float bestDistance = 0.f;
+		for (const Enemy &e : *enemies)
+		{
+			const float d = glm::distance(point, e.position);
+			if (best == 0 || d < bestDistance) { best = e.id; bestDistance = d; }
+		}
+		return best;
+	}
+
+	const Enemy *findEnemy(unsigned int id, const std::vector<Enemy> &enemies)
+	{
+		if (id == 0) { return nullptr; }
+		for (const Enemy &e : enemies) { if (e.id == id) { return &e; } }
+		return nullptr;
+	}
+
+	// Turns unit vector `from` toward unit vector `to` by at most `maxRadians`.
+	glm::vec2 turnToward(glm::vec2 from, glm::vec2 to, float maxRadians)
+	{
+		const float cross = from.x * to.y - from.y * to.x;
+		const float dot = from.x * to.x + from.y * to.y;
+		const float angle = std::atan2(cross, dot); // signed, -pi..pi
+		const float step = std::clamp(angle, -maxRadians, maxRadians);
+		const float c = std::cos(step);
+		const float s = std::sin(step);
+		return glm::normalize(glm::vec2(from.x * c - from.y * s, from.x * s + from.y * c));
+	}
 
 	int selected = 0;
 	float cooldownLeft[slotCount] = {};
@@ -59,15 +111,34 @@ namespace
 		pendingShots = 0; // a burst belongs to the weapon that started it
 	}
 
-	Bullet shot(const Weapon &w, glm::vec2 origin, glm::vec2 aim)
+	Bullet shot(const Weapon &w, const FireContext &context)
 	{
 		Bullet b;
-		b.position = origin;
-		b.fireDirection = aim;
+		b.position = context.origin;
+		b.fireDirection = context.aim;
 		b.speed = w.speed;
 		b.damage = w.damage;
 		b.size = w.size;
 		b.style = w.style;
+		b.motion = w.motion;
+
+		if (w.motion == BulletMotion::Missile)
+		{
+			// Facing where the player aimed from the first frame, motor off,
+			// sliding sideways: the ship's own velocity, so it keeps pace, plus
+			// a push out from the wing it left. Sideways is relative to the aim,
+			// so the salvo fans out either side of the line of fire.
+			const glm::vec2 side = glm::vec2(-context.aim.y, context.aim.x) * nextSide;
+			nextSide = -nextSide;
+			b.position += side * (context.shipSize * launchSideFraction);
+
+			b.fireDirection = context.aim;
+			b.speed = 0.f;
+			b.drift = context.shipVelocity + side * launchPush;
+
+			b.aimDirection = context.aim;
+			b.targetId = nearestTo(context.mouseWorld, context.enemies);
+		}
 		return b;
 	}
 }
@@ -103,7 +174,7 @@ void handleInput()
 	}
 }
 
-int update(float gameDeltaTime, bool triggerHeld, glm::vec2 origin, glm::vec2 aim,
+int update(float gameDeltaTime, bool triggerHeld, const FireContext &context,
 	std::vector<Bullet> &out)
 {
 	for (float &left : cooldownLeft) { left = std::max(0.f, left - gameDeltaTime); }
@@ -115,7 +186,7 @@ int update(float gameDeltaTime, bool triggerHeld, glm::vec2 origin, glm::vec2 ai
 		pendingTimer -= gameDeltaTime;
 		while (pendingShots > 0 && pendingTimer <= 0.f)
 		{
-			out.push_back(shot(weapons[pendingSlot], origin, aim));
+			out.push_back(shot(weapons[pendingSlot], context));
 			fired++;
 			pendingShots--;
 			pendingTimer += weapons[pendingSlot].burstGap;
@@ -125,7 +196,7 @@ int update(float gameDeltaTime, bool triggerHeld, glm::vec2 origin, glm::vec2 ai
 	const Weapon &w = weapons[selected];
 	if (triggerHeld && pendingShots == 0 && cooldownLeft[selected] <= 0.f && usable(selected))
 	{
-		out.push_back(shot(w, origin, aim));
+		out.push_back(shot(w, context));
 		fired++;
 
 		if (w.maxAmmo >= 0) { ammo[selected]--; }
@@ -140,6 +211,56 @@ int update(float gameDeltaTime, bool triggerHeld, glm::vec2 origin, glm::vec2 ai
 	}
 
 	return fired;
+}
+
+void steerMissiles(std::vector<Bullet> &bullets, const std::vector<Enemy> &enemies,
+	float gameDeltaTime)
+{
+	for (Bullet &b : bullets)
+	{
+		if (b.motion != BulletMotion::Missile) { continue; }
+
+		b.age += gameDeltaTime;
+		if (b.age < launchSeconds) { continue; } // still sliding out, motor off
+
+		// Lit: the sideways slide and the ship's velocity fade as the motor
+		// takes over. Exact exponential, so it fades the same at any frame rate.
+		b.drift *= std::exp(-driftFade * gameDeltaTime);
+
+		// The target, if it is still there. Gone -- killed, despawned, or later
+		// cloaked -- the missile keeps the heading it has and homes no more.
+		glm::vec2 wanted = b.aimDirection;
+		if (b.targetId != 0)
+		{
+			if (const Enemy *target = findEnemy(b.targetId, enemies))
+			{
+				const glm::vec2 toTarget = target->position - b.position;
+				const float distance = glm::length(toTarget);
+				if (distance > 0.001f) { wanted = toTarget / distance; }
+			}
+			else
+			{
+				b.targetId = 0;
+				b.aimDirection = b.fireDirection;
+				wanted = b.aimDirection;
+			}
+		}
+
+		const float chase = b.age - launchSeconds;
+		const float turnRate = turnRateStart + turnRateGrowth * chase;
+		b.fireDirection = turnToward(b.fireDirection, wanted, turnRate * gameDeltaTime);
+
+		const Weapon &missile = weapons[2];
+		b.speed = std::min(missile.speed, b.speed + missileAccel * gameDeltaTime);
+	}
+}
+
+float missileThrottle(const Bullet &bullet)
+{
+	if (bullet.motion != BulletMotion::Missile || bullet.age < launchSeconds) { return 0.f; }
+	// A little lit the moment it ignites, full at top speed.
+	const float topSpeed = weapons[2].speed;
+	return topSpeed > 0.f ? 0.25f + 0.75f * std::min(1.f, bullet.speed / topSpeed) : 1.f;
 }
 
 SlotView slot(int index)
@@ -177,6 +298,16 @@ void debugUi()
 				ImGui::Text("Ammo %d / %d", ammo[i], w.maxAmmo);
 				ImGui::SameLine();
 				if (ImGui::SmallButton("Refill")) { ammo[i] = w.maxAmmo; }
+			}
+			if (w.motion == BulletMotion::Missile)
+			{
+				ImGui::SliderFloat("Launch", &launchSeconds, 0.f, 1.5f, "%.2f s");
+				ImGui::SliderFloat("Side push", &launchPush, 0.f, 3000.f, "%.0f");
+				ImGui::SliderFloat("Drift fade", &driftFade, 0.f, 20.f, "%.1f /s");
+				ImGui::SliderFloat("Acceleration", &missileAccel, 500.f, 50000.f, "%.0f",
+					ImGuiSliderFlags_Logarithmic);
+				ImGui::SliderFloat("Turn rate", &turnRateStart, 0.5f, 12.f, "%.1f rad/s");
+				ImGui::SliderFloat("Turn growth", &turnRateGrowth, 0.f, 30.f, "%.1f rad/s per s");
 			}
 			ImGui::TreePop();
 		}

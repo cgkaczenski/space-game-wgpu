@@ -162,7 +162,10 @@ bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos)
 
 Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour)
 {
+	static unsigned int nextId = 1; // 0 means "no enemy"
+
 	Enemy e;
+	e.id = nextId++;
 	e.behaviour = behaviour;
 	e.position = playerPos;
 

@@ -285,8 +285,21 @@ bool gameLogic(float deltaTime)
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
 	const bool trigger = platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
-	const int shots = weapons::update(time.game, trigger, session.playerPos,
-		player.aim, session.bullets); // the mouse, not necessarily the hull
+	// The mouse in the world, for a missile's target. The view rect is the
+	// world area on screen, so the pointer's fraction of the window is its
+	// fraction of that.
+	const glm::vec4 view = renderer.getViewRect();
+	const glm::vec2 mouseWorld = glm::vec2(view.x, view.y)
+		+ mousePos / glm::vec2((float)w, (float)h) * glm::vec2(view.z, view.w);
+
+	weapons::FireContext fire;
+	fire.origin = session.playerPos;
+	fire.aim = player.aim; // the mouse, not necessarily the hull
+	fire.shipVelocity = session.playerVelocity;
+	fire.shipSize = shipSize;
+	fire.mouseWorld = mouseWorld;
+	fire.enemies = &session.enemies;
+	const int shots = weapons::update(time.game, trigger, fire, session.bullets);
 	if (shots > 0)
 	{
 		// Firing is how the player leaves the cloak, and the shot still goes out.
@@ -294,6 +307,9 @@ bool gameLogic(float deltaTime)
 		for (int s = 0; s < shots; s++) { sfx::playerShot(); }
 	}
 
+
+	// Before anything moves: missiles turn and speed up, then fly with the rest.
+	weapons::steerMissiles(session.bullets, session.enemies, time.game);
 
 	for (int i = 0; i < session.bullets.size(); i++)
 	{
@@ -430,6 +446,19 @@ bool gameLogic(float deltaTime)
 			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection);
 	}
 
+	// A missile's lock on its target: a pulsing green ring, until impact.
+	for (const auto &b : session.bullets)
+	{
+		if (b.motion != BulletMotion::Missile || b.targetId == 0) { continue; }
+		for (const auto &e : session.enemies)
+		{
+			if (e.id != b.targetId) { continue; }
+			const float pulse = 0.75f + 0.25f * std::sin(b.age * 12.f);
+			shield::drawLockRing(renderer, e.position, enemyShipSize * 1.4f,
+				glm::vec4(0.30f, 0.85f, 0.35f, 1.f) * pulse);
+		}
+	}
+
 #pragma endregion
 
 #pragma region render ship
@@ -459,6 +488,13 @@ bool gameLogic(float deltaTime)
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
 	for (auto &b : session.bullets)
 	{
+		if (b.motion == BulletMotion::Missile)
+		{
+			// The ship's plume, small and green: out while the missile is
+			// pushed clear, then brightening as it picks up speed.
+			thruster::drawPlume(renderer, b.position, 130.f * b.size, b.fireDirection,
+				weapons::missileThrottle(b), b.age, glm::vec4(0.30f, 0.85f, 0.35f, 1.f));
+		}
 		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);

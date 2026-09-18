@@ -12,6 +12,11 @@ constexpr float enemyShipSize = 250.f;
 
 struct Enemy
 {
+	// Stable for the enemy's life, never reused. The enemy list is erased from
+	// as enemies die or leave, so an index is not an identity; a missile keeps
+	// its target by this.
+	unsigned int id = 0;
+
 	glm::uvec2 type = {}; //used to index into the texture atlas
 	glm::vec2 position = {};
 
