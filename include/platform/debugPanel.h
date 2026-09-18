@@ -10,9 +10,10 @@
 
 namespace debugPanel
 {
-	// The last frame's cost and counts, and the render scale slider. `deltaTime`
-	// is the loop's own, smoothed here so it can be read.
-	void renderStats(float deltaTime);
+	// The last frame's cost and counts, the frame-time graph with its pacing
+	// switch, and the render scale slider. The CPU figure is the frame's
+	// measured time, not the paced step the game was given.
+	void renderStats();
 
 	// Draws one feature's controls under a heading, with the heading pushed
 	// onto ImGui's ID stack.

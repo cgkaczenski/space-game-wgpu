@@ -502,7 +502,7 @@ bool gameLogic(float deltaTime)
 	// controls, and the panel only decides the order and the headings.
 	ImGui::Begin("debug");
 
-	debugPanel::renderStats(time.real);
+	debugPanel::renderStats();
 	debugPanel::section("Session", sessionDebugUi);
 	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);

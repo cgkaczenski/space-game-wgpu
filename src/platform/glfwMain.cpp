@@ -13,6 +13,7 @@
 #include <render/wgpu2d.h>
 #include <glfw3webgpu.h>   // glfwCreateWindowWGPUSurface: the app owns the window
 #include <platform/wgpuMetalLayer.h>
+#include <framePacing.h>
 #include <fstream>
 #include <sstream>
 #include <cstdio>
@@ -335,7 +336,8 @@ int main()
 	// No OpenGL context: WebGPU drives the window's Metal layer through a surface.
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-	// WGPU_OFFSCREEN=1 runs with the window hidden. With WGPU_SCREENSHOT_FRAME
+	// WGPU_OFFSCREEN=1 runs with the window hidden, at the monitor's size (see
+	// below). With WGPU_SCREENSHOT_FRAME
 	// that is a scriptable capture of a real frame -- the whole pipeline, ImGui
 	// included -- without a window appearing.
 	//
@@ -353,6 +355,39 @@ int main()
 
 	int w = 500;
 	int h = 500;
+
+	// Hidden runs take the primary monitor's size, so what they measure is what
+	// a fullsized window costs. At 500x500 the fill-rate problems -- the CRT's
+	// full-screen target, the glow, four full-screen parallax layers -- are a
+	// fraction of their real size and never show up. The video mode is in
+	// screen coordinates, so on a Retina display the framebuffer is twice it,
+	// the same as a window the player fullsizes.
+	if (offscreen)
+	{
+		if (const GLFWvidmode *mode = glfwGetVideoMode(glfwGetPrimaryMonitor()))
+		{
+			w = mode->width;
+			h = mode->height;
+		}
+	}
+
+	// WGPU_WINDOW_SIZE=WxH wins over both, hidden or not, so a run can match a
+	// specific machine's fullsized window exactly. In screen coordinates, like
+	// glfwCreateWindow's own arguments.
+	if (const char *size = getenv("WGPU_WINDOW_SIZE"))
+	{
+		int sw = 0, sh = 0;
+		if (std::sscanf(size, "%dx%d", &sw, &sh) == 2 && sw > 0 && sh > 0)
+		{
+			w = sw;
+			h = sh;
+		}
+		else
+		{
+			std::cerr << "WGPU_WINDOW_SIZE: expected WxH, got \"" << size << "\"\n";
+		}
+	}
+
 	wind = glfwCreateWindow(w, h, "geam", nullptr, nullptr);
 
 	glfwSetKeyCallback(wind, keyCallback);
@@ -471,7 +506,16 @@ int main()
 		float deltaTime = (std::chrono::duration_cast<std::chrono::nanoseconds>(start - stop)).count() / 1000000000.0;
 		stop = std::chrono::high_resolution_clock::now();
 
-		float augmentedDeltaTime = deltaTime;
+		// Paced to the display: whole refreshes, with the remainder carried.
+		// See platform/framePacing.h for the jitter this removes. The refresh
+		// is the primary monitor's; GLFW reports 0 when it cannot tell, and
+		// framePacing falls back to 60 then.
+		float refreshHz = 0.f;
+		if (const GLFWvidmode *mode = glfwGetVideoMode(glfwGetPrimaryMonitor()))
+		{
+			refreshHz = (float)mode->refreshRate;
+		}
+		float augmentedDeltaTime = framePacing::step(deltaTime, refreshHz);
 		if (augmentedDeltaTime > 1.f / 10) { augmentedDeltaTime = 1.f / 10; }
 	
 	#pragma endregion

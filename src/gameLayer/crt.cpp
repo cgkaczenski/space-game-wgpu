@@ -14,7 +14,7 @@ namespace
 {
 	wgpu2d::Effect effect;
 
-	bool enabled = false;
+	bool enabled = true;
 
 	// The master knob, and the parts it scales. Defaults chosen to read as a
 	// monitor rather than as a filter: the curvature is the first thing to look
