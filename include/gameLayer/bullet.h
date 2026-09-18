@@ -15,10 +15,27 @@ constexpr float bulletHitboxRadius = 20.f;
 // Trail sprites sit ahead of `position`; keep radius and shift the circle to the nose.
 constexpr float bulletHitboxForwardOffset = 100.f;
 
+// Which weapon's look a shot has. Data, so the drawing can pick art and colour
+// without knowing about weapons. Laser is here for the HUD icon and for C3's
+// beam; no Bullet carries it yet.
+enum class BulletStyle : unsigned char
+{
+	Standard,
+	Heavy,
+	Missile,
+	Laser,
+};
+
 struct Bullet
 {
 	glm::vec2 position = {};
 	glm::vec2 fireDirection = {};
+
+	// What the weapon that fired it gave it (gameplay roadmap C2). The
+	// defaults are the old single bullet, which is also what enemies fire.
+	float damage = 0.1f;
+	float size = 1.f;    // scales the sprite, the glow and the hitbox
+	BulletStyle style = BulletStyle::Standard;
 
 	// Game time, already scaled by the game speed (see gameClock.h).
 	void update(float gameDeltaTime)
@@ -28,7 +45,8 @@ struct Bullet
 
 	collision::Circle getHitbox() const
 	{
-		return {position + fireDirection * bulletHitboxForwardOffset, bulletHitboxRadius};
+		return {position + fireDirection * (bulletHitboxForwardOffset * size),
+			bulletHitboxRadius * size};
 	}
 
 	bool isEnemy = 0;

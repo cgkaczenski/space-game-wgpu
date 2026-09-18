@@ -132,6 +132,11 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods
 		{
 			platform::internal::setButtonState(platform::Button::Equal, state);
 		}
+		else
+		if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT)
+		{
+			platform::internal::setButtonState(platform::Button::Shift, state);
+		}
 	}
 	
 };
@@ -207,7 +212,7 @@ void characterCallback(GLFWwindow *window, unsigned int codepoint)
 // was there and calls it after its own, so both see every event.
 void scrollCallback(GLFWwindow *window, double xoffset, double yoffset)
 {
-	platform::internal::addScroll((float)yoffset);
+	platform::internal::addScroll((float)xoffset, (float)yoffset);
 }
 
 #pragma region platform functions

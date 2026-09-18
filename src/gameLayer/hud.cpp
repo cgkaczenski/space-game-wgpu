@@ -1,5 +1,6 @@
 #include <hud.h>
 
+#include <bulletLook.h>
 #include <glui/glui.h>      // layout only (Frame, Box)
 #include <platformTools.h>
 
@@ -45,6 +46,74 @@ namespace
 		fillCoords.z *= fraction;
 
 		renderer.renderRectangle(fillRect, fill, Colors_White, {}, {}, fillCoords);
+	}
+
+	// ---- Weapon slots ---------------------------------------------------
+	//
+	// Plain rectangles and the bullets' own art: no new textures. Sized by the
+	// window's height, so the row is the same fraction of the screen at any
+	// size, and centred along the bottom.
+	const float slotSizePerc = 0.085f;    // of the window height
+	const float slotGapPerc = 0.25f;      // of a slot
+	const float slotBottomPerc = 0.05f;   // clearance under the row, of the height
+
+	const glm::vec4 slotFrame = {0.35f, 0.35f, 0.48f, 0.9f};
+	const glm::vec4 slotFrameSelected = {1.0f, 0.86f, 0.55f, 1.f};
+	const glm::vec4 slotBackground = {0.05f, 0.04f, 0.11f, 0.85f};
+	const glm::vec4 cooldownShade = {0.f, 0.f, 0.f, 0.6f};
+	const glm::vec4 unusableShade = {0.f, 0.f, 0.f, 0.65f};
+	const glm::vec4 pipFull = {0.55f, 1.0f, 0.40f, 1.f};
+	const glm::vec4 pipEmpty = {0.18f, 0.20f, 0.22f, 0.9f};
+
+	void drawSlots(wgpu2d::Renderer2D &renderer, const WeaponSlot *slots, int count,
+		int width, int height)
+	{
+		if (!slots || count <= 0) { return; }
+
+		const float size = height * slotSizePerc;
+		const float gap = size * slotGapPerc;
+		const float total = count * size + (count - 1) * gap;
+		const float left = (width - total) * 0.5f;
+		const float top = height - size - height * slotBottomPerc;
+
+		for (int i = 0; i < count; i++)
+		{
+			const WeaponSlot &s = slots[i];
+			const float x = left + i * (size + gap);
+			const float border = size * (s.selected ? 0.08f : 0.035f);
+
+			renderer.renderRectangle(glm::vec4{x - border, top - border,
+				size + 2.f * border, size + 2.f * border},
+				s.selected ? slotFrameSelected : slotFrame);
+			renderer.renderRectangle(glm::vec4{x, top, size, size}, slotBackground);
+
+			bulletLook::drawIcon(renderer, {x + size * 0.5f, top + size * 0.5f}, size * 0.8f, s.style);
+
+			// Cooling down, the icon is shaded from the top and uncovered as it
+			// recharges; one that cannot fire at all is shaded throughout.
+			if (!s.usable)
+			{
+				renderer.renderRectangle(glm::vec4{x, top, size, size}, unusableShade);
+			}
+			else if (s.ready < 1.f)
+			{
+				renderer.renderRectangle(glm::vec4{x, top, size, size * (1.f - s.ready)}, cooldownShade);
+			}
+
+			if (s.maxAmmo > 0)
+			{
+				const float pip = size * 0.12f;
+				const float pipGap = pip * 0.5f;
+				const float row = s.maxAmmo * pip + (s.maxAmmo - 1) * pipGap;
+				const float pipLeft = x + (size - row) * 0.5f;
+				const float pipTop = top + size + border + pip * 0.6f;
+				for (int a = 0; a < s.maxAmmo; a++)
+				{
+					renderer.renderRectangle(glm::vec4{pipLeft + a * (pip + pipGap), pipTop, pip, pip},
+						a < s.ammo ? pipFull : pipEmpty);
+				}
+			}
+		}
 	}
 
 	// ---- The damage shake -----------------------------------------------
@@ -162,7 +231,8 @@ void onDamage(float strength)
 	phase = 0.f;
 }
 
-void draw(wgpu2d::Renderer2D &renderer, float health, float energy, int width, int height)
+void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
+	const WeaponSlot *slots, int slotCount, int width, int height)
 {
 	// The layer below this one -- the world -- goes to the screen first, so
 	// the shake's target holds the HUD alone.
@@ -183,6 +253,8 @@ void draw(wgpu2d::Renderer2D &renderer, float health, float energy, int width, i
 		glm::vec4 energyRect = healthRect;
 		energyRect.y += healthRect.w * energyBarStep;
 		drawBar(renderer, energyRect, energyBarTexture, energyTexture, energy);
+
+		drawSlots(renderer, slots, slotCount, width, height);
 	}
 	renderer.popCamera();
 

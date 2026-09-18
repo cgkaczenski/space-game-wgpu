@@ -20,6 +20,13 @@
 // atlas cell.
 
 #include <render/wgpu2d.h>
+#include <bullet.h>
+
+// Each style has its own cell of the sprite sheet and its own glow colour:
+// burst the pink bolt, heavy the orange one, missile the green one, laser the
+// cyan beam segment (whose tileable twin C3's beam can use). Enemies keep the
+// cyan bolt whatever the style. `size` scales sprite and glow together, and is
+// the same number the bullet's hitbox is scaled by.
 
 namespace bulletLook
 {
@@ -38,7 +45,8 @@ namespace bulletLook
 	// laziness: setting it inside would break a draw run twice per bullet
 	// instead of twice per frame. Draw every glow, then every sprite.
 	void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position,
-		glm::vec2 direction, bool isEnemy);
+		glm::vec2 direction, bool isEnemy,
+		BulletStyle style = BulletStyle::Standard, float size = 1.f);
 
 	// The art on top of the glow: five overlapping quads along the heading,
 	// fading in from the tail. Player and enemy use different cells of the sheet.
@@ -46,5 +54,13 @@ namespace bulletLook
 	// **The caller must have set `BlendMode::Alpha` already.** Same reason as
 	// `drawGlow`: the blend mode is a run break, so it is set once per pass.
 	void drawSprite(wgpu2d::Renderer2D &renderer, glm::vec2 position,
-		glm::vec2 direction, bool isEnemy);
+		glm::vec2 direction, bool isEnemy,
+		BulletStyle style = BulletStyle::Standard, float size = 1.f);
+
+	// One shot of `style`, pointing up and centred in a box `height` tall: a
+	// HUD icon. Sets its own blend modes, glow then sprite, and leaves Alpha
+	// set -- fine for a handful of icons, where the per-bullet passes above
+	// could not afford it.
+	void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float height,
+		BulletStyle style);
 }

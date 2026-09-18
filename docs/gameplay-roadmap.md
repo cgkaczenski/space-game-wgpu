@@ -66,10 +66,20 @@ second HUD bar (new textures, or the health bar's reused).
 
 ### C2. Multiple weapons with different behaviour
 
-**Open questions**
-- How many to start with, and what makes each one worth switching to?
-- How the player switches (keys, wheel, pickups?).
-- Ammo, heat, energy, or free?
+**Decided (first pass)**
+- Four weapons, each with its own cooldown, held to auto-fire:
+  1. **Burst laser** — two shots in quick succession, then the cooldown.
+  2. **Heavy laser** — one larger shot doing triple a regular shot's damage.
+  3. **Missile** — special ammunition, 5 for now (pickups later). Its flight
+     is C3.
+  4. **Laser** — a beam, C3; selectable in the meantime but does not fire.
+- Keys **1–4** or the **wheel** (wrapping) select. An empty weapon can be
+  selected but not fired. **Shift + wheel** zooms.
+- A slot row centred along the bottom of the HUD: icon, cooldown shade,
+  selected frame, ammo pips. No key numbers.
+- Cooldowns longer than first proposed; all tunable in the debug panel.
+
+**Still open**
 - Do enemies get the same weapons?
 
 **Engine ideas**
@@ -82,6 +92,19 @@ second HUD bar (new textures, or the health bar's reused).
 ### C3. Bullets that behave differently in flight
 
 Homing, piercing, and so on — only if C2 wants them.
+
+**Decided for C2's weapons**
+- **Missile:** targets the enemy nearest the mouse when fired. It leaves at
+  the player's speed, travelling parallel to the player, then steadily speeds
+  up and homes. It cannot miss unless the target cloaks (enemies cannot yet).
+  If the target dies first, it flies on in the same direction with no more
+  homing, and can still hit something else.
+- **Laser:** a beam across the screen that stops at the first thing it hits,
+  doing constant damage while it touches. Blocked by shields, and cannot break
+  one. Fires while held for up to 5 s, then cools down.
+- Engine ideas taken: the beam as the capsule stretched, bloomed by the CRT
+  glow, with the sheet's tileable beam segment available; the missile's
+  exhaust as the ship's plume scaled down; a ripple ring on the locked target.
 
 **Engine ideas**
 - A motion kind on `Bullet` with a switch, not a class per bullet (R9).

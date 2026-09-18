@@ -31,6 +31,7 @@ namespace platform
 			Tab,
 			Minus,
 			Equal, // the unshifted '+' key
+			Shift, // either one
 			BUTTONS_COUNT, //
 		};
 
@@ -123,9 +124,13 @@ namespace platform
 	// from the user. A trackpad sends many fractional values; they are summed.
 	float getScrollY();
 
+	// Horizontal scroll, the same way. macOS turns Shift + a mouse wheel into
+	// horizontal scrolling, so a Shift-wheel notch arrives here, not on y.
+	float getScrollX();
+
 	namespace internal
 	{
-		void addScroll(float y);
+		void addScroll(float x, float y);
 		void resetScroll();
 
 		void setButtonState(int button, int newState);

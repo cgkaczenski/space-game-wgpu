@@ -28,6 +28,7 @@
 #include <gameClock.h>
 #include <playerMove.h>
 #include <energy.h>
+#include <weapons.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
 #include <shipHitbox.h>
@@ -107,6 +108,7 @@ const Feature features[] = {
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
 	// After shield and cloak: its reset raises one and lowers the other.
 	{"energy",     nullptr,          energy::reset,   nullptr},
+	{"weapons",    nullptr,          weapons::reset,  nullptr},
 };
 
 // A setting, so it survives restart.
@@ -278,20 +280,18 @@ bool gameLogic(float deltaTime)
 #pragma region handle bulets
 
 
-	if (platform::isLMousePressed())
+	weapons::handleInput();
+
+	// Held, not clicked: the selected weapon fires whenever it is ready.
+	// Clicks on the debug panel are the panel's.
+	const bool trigger = platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
+	const int shots = weapons::update(time.game, trigger, session.playerPos,
+		player.aim, session.bullets); // the mouse, not necessarily the hull
+	if (shots > 0)
 	{
 		// Firing is how the player leaves the cloak, and the shot still goes out.
 		energy::uncloak();
-
-		Bullet b;
-
-		b.position = session.playerPos;
-		b.fireDirection = player.aim; // the mouse, not necessarily the hull
-
-		session.bullets.push_back(b);
-
-		sfx::playerShot();
-
+		for (int s = 0; s < shots; s++) { sfx::playerShot(); }
 	}
 
 
@@ -316,7 +316,7 @@ bool gameLogic(float deltaTime)
 					if (collisionSystem.overlaps(session.bullets[i].getHitbox(),
 						session.enemies[e].getHitbox()))
 					{
-						session.enemies[e].life -= 0.1;
+						session.enemies[e].life -= session.bullets[i].damage;
 
 						if (session.enemies[e].life <= 0)
 						{
@@ -459,13 +459,13 @@ bool gameLogic(float deltaTime)
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
 	for (auto &b : session.bullets)
 	{
-		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy);
+		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	for (auto &b : session.bullets)
 	{
-		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.isEnemy);
+		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
 	}
 
 #pragma endregion
@@ -486,7 +486,15 @@ bool gameLogic(float deltaTime)
 	// no-op on an empty batch.
 	cloak::flushWorld(renderer, session.playerPos, shipSize, w, h, time.game);
 
-	hud::draw(renderer, session.health, energy::level(), w, h); // flushes the world, then the HUD
+	hud::WeaponSlot slots[weapons::slotCount];
+	for (int s = 0; s < weapons::slotCount; s++)
+	{
+		const weapons::SlotView v = weapons::slot(s);
+		slots[s] = {v.style, v.ready, v.ammo, v.maxAmmo, v.selected, v.usable};
+	}
+
+	// Flushes the world, then the HUD.
+	hud::draw(renderer, session.health, energy::level(), slots, weapons::slotCount, w, h);
 
 #pragma endregion
 
@@ -508,6 +516,7 @@ bool gameLogic(float deltaTime)
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);
 	debugPanel::section("Energy", energy::debugUi);
+	debugPanel::section("Weapons", weapons::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemyAi::debugUi);
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);

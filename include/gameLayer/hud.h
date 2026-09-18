@@ -13,9 +13,22 @@
 // this file and nothing else.
 
 #include <render/wgpu2d.h>
+#include <bullet.h>
 
 namespace hud
 {
+	// One weapon slot as the HUD draws it (gameplay roadmap C2). Values, not
+	// the weapons module's own type, so the HUD does not depend on it.
+	struct WeaponSlot
+	{
+		BulletStyle style = BulletStyle::Standard;
+		float ready = 1.f;   // 0 just fired .. 1 ready
+		int ammo = -1;       // -1: unlimited, no pips
+		int maxAmmo = -1;
+		bool selected = false;
+		bool usable = true;
+	};
+
 	// Loads the HUD's textures. Call once from initGame, after the renderer
 	// exists. False if a texture failed to load.
 	bool init();
@@ -36,9 +49,12 @@ namespace hud
 	// target along with the HUD.
 	//
 	// `health` and `energy` are 0..1. Energy is the blue bar under the health
-	// bar (gameplay roadmap C1).
+	// bar (gameplay roadmap C1). `slots` is the weapon row, drawn centred along
+	// the bottom: an icon each, a shade over the part still cooling down, the
+	// selected one framed brighter, and ammo as pips underneath.
 	//
 	// `width` and `height` are the framebuffer size, the same values the game
 	// passes to updateWindowMetrics.
-	void draw(wgpu2d::Renderer2D &renderer, float health, float energy, int width, int height);
+	void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
+		const WeaponSlot *slots, int slotCount, int width, int height);
 }

@@ -42,6 +42,25 @@ namespace
 	const glm::vec4 playerColor = {1.00f, 0.30f, 0.85f, 1.f}; // plasma
 	const glm::vec4 enemyColor = {0.35f, 0.70f, 1.00f, 1.f};  // ice
 
+	struct Look
+	{
+		glm::ivec2 cell;  // in the 3x2 sheet
+		glm::vec4 glow;
+	};
+
+	Look lookFor(BulletStyle style, bool isEnemy)
+	{
+		if (isEnemy) { return {{0, 0}, enemyColor}; }
+		switch (style)
+		{
+		case BulletStyle::Standard: return {{1, 1}, playerColor};
+		case BulletStyle::Heavy:    return {{1, 0}, {1.00f, 0.42f, 0.12f, 1.f}};  // ember
+		case BulletStyle::Missile:  return {{0, 1}, {0.45f, 1.00f, 0.30f, 1.f}};  // acid
+		case BulletStyle::Laser:    return {{2, 0}, {0.30f, 0.90f, 1.00f, 1.f}};  // cyan
+		}
+		return {{1, 1}, playerColor};
+	}
+
 	// Distance to a horizontal line segment, faded. Worked in half-height
 	// units so the caps come out round: v spans [-1, 1] over the height and u
 	// spans [-aspect, aspect] over the width, which makes a unit of u and a
@@ -98,7 +117,8 @@ void cleanup()
 	sheet.cleanup();
 }
 
-void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction, bool isEnemy)
+void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction, bool isEnemy,
+	BulletStyle style, float size)
 {
 	if (capsule.id == 0) { return; }
 
@@ -109,36 +129,51 @@ void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direct
 	// points, which is a different question.
 	const float rotation = glm::degrees(std::atan2(-direction.y, direction.x));
 
-	const glm::vec2 centre = position + direction * centreAhead;
-	const glm::vec4 color = (isEnemy ? enemyColor : playerColor) * intensity;
+	const float length = glowLength * size;
+	const float width = glowWidth * size;
+	const glm::vec2 centre = position + direction * (centreAhead * size);
+	const glm::vec4 color = lookFor(style, isEnemy).glow * intensity;
 
 	renderer.renderRectangle(
-		{centre - glm::vec2(glowLength * 0.5f, glowWidth * 0.5f), glowLength, glowWidth},
+		{centre - glm::vec2(length * 0.5f, width * 0.5f), length, width},
 		capsule, glm::vec4{color.r, color.g, color.b, 1.f}, {}, rotation);
 }
 
 void drawSprite(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction,
-	bool isEnemy)
+	bool isEnemy, BulletStyle style, float size)
 {
 	if (sheet.id == 0) { return; }
 
 	float angle = atan2(direction.y, -direction.x);
 	angle = glm::degrees(angle) + 90.f;
 
-	glm::vec4 textureCoords = sheetAtlas.get(1, 1);
+	const glm::ivec2 cell = lookFor(style, isEnemy).cell;
+	const glm::vec4 textureCoords = sheetAtlas.get(cell.x, cell.y);
 
-	if (isEnemy)
-	{
-		textureCoords = sheetAtlas.get(0, 0);
-	}
+	const float quad = 100.f * size;
+	const float step = 25.f * size;
 
 	for (int i = 0; i < 5; i++)
 	{
 		glm::vec4 color(1* (i + 4) / 5.f, 1* (i + 4) / 5.f, 1* (i + 4) / 5.f, (i+1) / 5.f);
 
-		renderer.renderRectangle({position - glm::vec2(50,50) + (float)i * 25.f * direction, 100,100},
+		renderer.renderRectangle({position - glm::vec2(quad * 0.5f) + (float)i * step * direction, quad, quad},
 			sheet, color, {}, angle, textureCoords);
 	}
+}
+
+void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float height, BulletStyle style)
+{
+	// The trail spans from half a quad behind `position` to 150 units ahead of
+	// it at size 1, so its middle is 50 ahead: start 50 behind the centre.
+	const glm::vec2 up = {0.f, -1.f};
+	const float size = height / 200.f;
+	const glm::vec2 position = centre - up * (50.f * size);
+
+	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+	drawGlow(renderer, position, up, false, style, size * 0.8f);
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+	drawSprite(renderer, position, up, false, style, size);
 }
 
 }

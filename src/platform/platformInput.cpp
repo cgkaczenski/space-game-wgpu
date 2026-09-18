@@ -6,6 +6,7 @@ platform::Button rightMouse;
 
 platform::ControllerButtons controllerButtons;
 std::string typedInput;
+float scrollX = 0.f;
 float scrollY = 0.f;
 
 int platform::isButtonHeld(int key)
@@ -82,13 +83,20 @@ float platform::getScrollY()
 	return scrollY;
 }
 
-void platform::internal::addScroll(float y)
+float platform::getScrollX()
 {
+	return scrollX;
+}
+
+void platform::internal::addScroll(float x, float y)
+{
+	scrollX += x;
 	scrollY += y;
 }
 
 void platform::internal::resetScroll()
 {
+	scrollX = 0.f;
 	scrollY = 0.f;
 }
 

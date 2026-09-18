@@ -54,10 +54,14 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 
 	const ImGuiIO &io = ImGui::GetIO();
 
-	// Scrolling over the debug panel scrolls the panel.
-	if (!io.WantCaptureMouse)
+	// Shift + wheel: the wheel alone switches weapons (weapons.h). Scrolling
+	// over the debug panel scrolls the panel.
+	if (!io.WantCaptureMouse && platform::isButtonHeld(platform::Button::Shift))
 	{
-		const float scroll = platform::getScrollY();
+		// A mouse wheel with Shift held arrives as horizontal scroll on macOS;
+		// a trackpad still reports vertical. Whichever moved.
+		float scroll = platform::getScrollY();
+		if (scroll == 0.f) { scroll = platform::getScrollX(); }
 		if (scroll != 0.f)
 		{
 			camera::zoomBy(zoom, scroll, params);
@@ -93,7 +97,7 @@ void debugUi()
 	}
 	ImGui::SameLine();
 	if (ImGui::SmallButton("Reset")) { followingFloor = true; }
-	ImGui::TextDisabled("floor %.2f for this window  (scroll, -/=)", params.minZoom);
+	ImGui::TextDisabled("floor %.2f for this window  (shift+scroll, -/=)", params.minZoom);
 }
 
 }
