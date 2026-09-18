@@ -131,6 +131,27 @@ Homing, piercing, and so on — only if C2 wants them.
 
 Enemies currently vanish when killed, and ships pass through each other.
 
+**Decided — C4a, deaths:** a small explosion — a white-hot flash inside an
+orange fireball that swells and fades over 1.1 s — and the enemy's own sprite
+cut into six pieces that fly apart spinning, then slow, darken and **stay** as
+a wreck field, still turning a little. 400 pieces are kept (about 66 kills);
+past that the oldest fade out. Every kill goes through one function, whatever
+did it. Tunable under Explosions in the debug panel. The missile's lock is a
+**dashed red box** round its target, dashes marching.
+
+**Decided — C4b, the ram:** Space. The shield becomes a thicker, brighter arc
+facing forward, and the ship surges toward the mouse at about 5000 for 0.5 s,
+past its normal top speed, then its momentum settings take over. Ships still
+pass through each other outside a ram. An enemy rammed takes 0.4 damage (each
+at most once per ram; one ram can hit several), is knocked back along the ram
+and spins, disabled — no moving, no firing — for 2 s. The world shakes on each
+impact; the player takes no damage. It works whatever the energy bar says and
+spends none, blocks shots from the front while it lasts, and uncloaks. 8 s
+cooldown, shown as a fifth slot with a shield icon set apart to the left of the
+weapon row. Engine ideas taken: the world shake is the HUD's LayerEffect on the
+world layer; the front shield is the bubble squashed into an arc, with the
+ripple on each impact.
+
 **Open questions**
 - How should a kill feel — burst, dissolve, debris?
 - Should ships collide with each other, and does ramming do damage?

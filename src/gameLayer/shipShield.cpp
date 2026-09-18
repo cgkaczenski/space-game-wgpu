@@ -310,16 +310,6 @@ void hit(glm::vec2 offsetFromShip, float strength)
 
 float rippleSeconds() { return waveLifetime; }
 
-void drawLockRing(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float diameter,
-	glm::vec4 color)
-{
-	if (rim.id == 0) { return; }
-	color.a = 1.f; // the shape is the texture's; this is intensity only
-	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
-	renderer.renderRectangle({centre - glm::vec2(diameter * 0.5f), diameter, diameter}, rim, color);
-	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
-}
-
 void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt)
 {
 	if (rim.id == 0 || tint.id == 0) { return; }

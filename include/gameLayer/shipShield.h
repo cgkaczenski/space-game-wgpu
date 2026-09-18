@@ -65,12 +65,6 @@ namespace shield
 	// cutting it off.
 	float rippleSeconds();
 
-	// The shield's glowing rim, as a ring anywhere: a missile's lock on its
-	// target (gameplay roadmap C3). Additive, and sets its own blend mode --
-	// there are only ever a few. `diameter` is the ring's outer edge.
-	void drawLockRing(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float diameter,
-		glm::vec4 color);
-
 	// Draws the bubble. Call *after* the ship, so the rim reads as being in
 	// front of the hull. `dt` is game time, like the plume's.
 	void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt);

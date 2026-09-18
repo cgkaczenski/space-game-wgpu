@@ -29,6 +29,7 @@
 #include <playerMove.h>
 #include <energy.h>
 #include <weapons.h>
+#include <effects.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
 #include <shipHitbox.h>
@@ -106,6 +107,7 @@ const Feature features[] = {
 	{"crt",        crt::init,        nullptr,         crt::cleanup},
 	{"background", background::init, nullptr,         background::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
+	{"effects",    effects::init,    effects::reset,  effects::cleanup},
 	// After shield and cloak: its reset raises one and lowers the other.
 	{"energy",     nullptr,          energy::reset,   nullptr},
 	{"weapons",    nullptr,          weapons::reset,  nullptr},
@@ -133,6 +135,15 @@ void restartGame()
 		renderer.currentCamera.position, session.playerPos,
 		{(float)renderer.windowW, (float)renderer.windowH},
 		{550.f, 0.f, 0.f});
+}
+
+// Every kill goes through here, whatever did it, so every death explodes the
+// same way (gameplay roadmap C4). Leaving the despawn ring is not a death.
+void killEnemy(int index)
+{
+	const Enemy &e = session.enemies[index];
+	effects::enemyKilled(e, shipAtlas.get(e.type.x, e.type.y));
+	session.enemies.erase(session.enemies.begin() + index);
 }
 
 // How far a ray from inside the view travels before leaving it. The laser
@@ -350,7 +361,7 @@ bool gameLogic(float deltaTime)
 			session.enemies[target].life -= beam.damagePerSecond * time.game;
 			if (session.enemies[target].life <= 0.f)
 			{
-				session.enemies.erase(session.enemies.begin() + target);
+				killEnemy(target);
 			}
 		}
 	}
@@ -384,8 +395,7 @@ bool gameLogic(float deltaTime)
 
 						if (session.enemies[e].life <= 0)
 						{
-							//kill enemy
-							session.enemies.erase(session.enemies.begin() + e);
+							killEnemy(e);
 						}
 
 						session.bullets.erase(session.bullets.begin() + i);
@@ -486,6 +496,8 @@ bool gameLogic(float deltaTime)
 
 #pragma endregion
 
+	effects::update(time.game);
+
 #pragma region render enemies
 
 	for (auto &e : session.enemies)
@@ -494,16 +506,17 @@ bool gameLogic(float deltaTime)
 			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection);
 	}
 
-	// A missile's lock on its target: a pulsing green ring, until impact.
+	// Wrecks sit where ships sit: after them, under everything else.
+	effects::drawDebris(renderer, shipSheet);
+
+	// A missile's lock on its target: a dashed red box, until impact.
 	for (const auto &b : session.bullets)
 	{
 		if (b.motion != BulletMotion::Missile || b.targetId == 0) { continue; }
 		for (const auto &e : session.enemies)
 		{
 			if (e.id != b.targetId) { continue; }
-			const float pulse = 0.75f + 0.25f * std::sin(b.age * 12.f);
-			shield::drawLockRing(renderer, e.position, enemyShipSize * 1.4f,
-				glm::vec4(0.30f, 0.85f, 0.35f, 1.f) * pulse);
+			effects::drawTargetBox(renderer, e.position, enemyShipSize * 1.3f, b.age);
 		}
 	}
 
@@ -546,6 +559,7 @@ bool gameLogic(float deltaTime)
 		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
 	}
 	if (beam.firing) { bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamHit, effectClock); }
+	effects::drawGlow(renderer);
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	for (auto &b : session.bullets)
@@ -603,6 +617,7 @@ bool gameLogic(float deltaTime)
 	debugPanel::section("Player", playerMove::debugUi);
 	debugPanel::section("Energy", energy::debugUi);
 	debugPanel::section("Weapons", weapons::debugUi);
+	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemyAi::debugUi);
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
