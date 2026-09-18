@@ -45,6 +45,11 @@ void hitStop(float seconds)
 	stopLeft = std::max(stopLeft, seconds);
 }
 
+void reset()
+{
+	stopLeft = 0.f;
+}
+
 void debugUi()
 {
 	ImGui::SliderFloat("Game speed", &gameSpeedScale, 0, 100);

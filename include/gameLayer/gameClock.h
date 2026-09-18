@@ -32,5 +32,9 @@ namespace gameClock
 	// A second stop during one extends it to the longer of the two.
 	void hitStop(float seconds);
 
+	// A new round: any hit-stop in progress is something that happened, so it
+	// does not carry into the next. The speed slider is a setting and stays.
+	void reset();
+
 	void debugUi();
 }

@@ -131,6 +131,11 @@ namespace
 		b.size = w.size;
 		b.style = w.style;
 		b.motion = w.motion;
+		// The weapon's speed is muzzle velocity: how fast it leaves the gun,
+		// not how fast it goes through the world. Without the ship's own
+		// velocity a forward shot sits still relative to a ship that has
+		// caught up, and raising top speed past the weapon lets you outrun it.
+		b.drift = context.shipVelocity;
 
 		if (w.motion == BulletMotion::Missile)
 		{
@@ -144,7 +149,7 @@ namespace
 
 			b.fireDirection = context.aim;
 			b.speed = 0.f;
-			b.drift = context.shipVelocity + side * launchPush;
+			b.drift += side * launchPush;
 
 			b.aimDirection = context.aim;
 			b.targetId = nearestTo(context.mouseWorld, context.enemies);

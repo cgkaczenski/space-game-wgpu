@@ -312,6 +312,9 @@ Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour)
 		glm::radians((float)(rand() % 360)), glm::vec3(0, 0, 1)));
 
 	e.position += offset;
+	// Outward: a default +X facing would look at the player from the west
+	// half of the ring and engage on spawn, skipping unaware wander (C5).
+	e.viewDirection = glm::normalize(offset);
 	rollLoadout(e);
 	return e;
 }

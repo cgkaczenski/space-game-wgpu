@@ -51,12 +51,13 @@ bool tryStart(glm::vec2 direction)
 	return true;
 }
 
-void update(float gameDeltaTime)
+void update(float gameDeltaTime, glm::vec2 aim)
 {
 	cooldownLeft = std::max(0.f, cooldownLeft - gameDeltaTime);
 
 	if (windupLeft > 0.f)
 	{
+		heading = aim; // still lining up: the dip and the prow follow the mouse
 		windupLeft -= gameDeltaTime;
 		if (windupLeft <= 0.f)
 		{
@@ -112,7 +113,12 @@ void debugUi()
 	ImGui::SliderFloat("Wind-up", &windup, 0.f, 0.5f, "%.2f s");
 	ImGui::SliderFloat("Surge time", &duration, 0.1f, 2.f, "%.2f s");
 	ImGui::SliderFloat("Surge speed", &speed, 1000.f, 12000.f, "%.0f");
-	ImGui::SliderFloat("Cooldown", &cooldown, 0.5f, 20.f, "%.1f s");
+	if (ImGui::SliderFloat("Cooldown", &cooldown, 0.f, 20.f, "%.1f s"))
+	{
+		// The leftover wait was started from the old value; keep it from
+		// outlasting a shorter setting, and a 0 cooldown is ready now.
+		cooldownLeft = std::min(cooldownLeft, cooldown);
+	}
 	ImGui::SliderFloat("Damage", &damage, 0.f, 2.f, "%.2f");
 	ImGui::SliderFloat("Stun", &stun, 0.f, 6.f, "%.1f s");
 	ImGui::SliderFloat("Knockback", &knockback, 0.f, 8000.f, "%.0f");

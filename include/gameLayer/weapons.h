@@ -46,9 +46,9 @@ namespace weapons
 	// Shift it zooms (zoomControl).
 	void handleInput();
 
-	// Where a shot starts and what it can see. A missile needs more than a
-	// bolt: the ship's velocity to launch alongside it, the mouse in the world
-	// to pick a target, and the enemies to pick from.
+	// Where a shot starts and what it can see. Every shot leaves with the
+	// ship's velocity (muzzle speed is extra). A missile also needs the mouse
+	// in the world to pick a target, and the enemies to pick from.
 	struct FireContext
 	{
 		glm::vec2 origin = {};

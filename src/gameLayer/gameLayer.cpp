@@ -131,6 +131,9 @@ int startedFeatures = 0;
 void restartGame()
 {
 	session = {};
+	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
+	// audio, and gameplay modules. The speed slider is a setting and stays.
+	gameClock::reset();
 
 	for (const Feature &feature : features)
 	{
@@ -274,7 +277,12 @@ bool gameLogic(float deltaTime)
 #pragma region energy
 
 	// Before movement, because a cloaked ship drifts instead of flying.
-	if (platform::isButtonPressedOn(platform::Button::E)) { energy::cloak(); }
+	// Not during a ram: the ram uncloaks on start, and E would otherwise
+	// cloak again while the prow is out -- invulnerable and still striking.
+	if (platform::isButtonPressedOn(platform::Button::E) && !ram::barrierUp())
+	{
+		energy::cloak();
+	}
 	energy::update(time.game);
 
 #pragma endregion
@@ -285,7 +293,7 @@ bool gameLogic(float deltaTime)
 	// ship is turned with A/D, when the mouse aims independently.
 	// The ram, before flying: Space starts it toward the mouse, and ramming
 	// uncloaks, as firing does (gameplay roadmap C4b).
-	ram::update(time.game);
+	ram::update(time.game, mouseDirection);
 	if (!ImGui::GetIO().WantCaptureKeyboard && platform::isButtonPressedOn(platform::Button::Space)
 		&& ram::tryStart(mouseDirection))
 	{
@@ -500,7 +508,7 @@ bool gameLogic(float deltaTime)
 						session.bullets.erase(session.bullets.begin() + i);
 						i--;
 						breakBothLoops = true;
-						continue;
+						break;
 					}
 
 				}

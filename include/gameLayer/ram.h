@@ -1,11 +1,12 @@
 #pragma once
 
 // The ram (gameplay roadmap C4b). Space winds up for a moment -- the ship
-// dips back as a prow of shield brightens in front of it -- then surges
-// toward the mouse, past its normal top speed. Anything the prow strikes
-// takes damage, is knocked aside spinning and is disabled for a while; the
-// game freezes for an instant on the hit, the world shakes, and the player
-// takes nothing. Outside a ram, ships pass through each other as always.
+// dips back as a prow of shield brightens in front of it, turning with the
+// mouse -- then surges the way it is facing, past its normal top speed.
+// Anything the prow strikes takes damage, is knocked aside spinning and is
+// disabled for a while; the game freezes for an instant on the hit, the world
+// shakes, and the player takes nothing. Outside a ram, ships pass through
+// each other as always.
 //
 // This holds the timing and the rules' numbers. The game does the collision,
 // because it owns the enemies; the shield draws the prow; effects draws the
@@ -19,11 +20,14 @@ namespace ram
 	void reset();
 
 	// Space. Starts a ram along `direction` (unit) if it is off cooldown, and
-	// returns whether it did.
+	// returns whether it did. The heading then follows the mouse until the
+	// surge, so the lunge goes where you are pointing when it leaves, not
+	// where you were pointing when you pressed Space.
 	bool tryStart(glm::vec2 direction);
 
-	// Game time.
-	void update(float gameDeltaTime);
+	// Game time. `aim` is unit, toward the mouse: during the wind-up the
+	// heading tracks it; during the surge it is ignored.
+	void update(float gameDeltaTime, glm::vec2 aim);
 
 	bool windingUp();   // the dip before the surge
 	bool active();      // the surge itself: the only time it strikes

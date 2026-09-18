@@ -50,10 +50,11 @@ struct Bullet
 	unsigned int targetId = 0;
 	glm::vec2 aimDirection = {};
 
-	// Velocity that is not along `fireDirection`. Zero for every ordinary
-	// shot. A missile is launched with the ship's velocity plus a push out
-	// from the wing, so it slides sideways while facing where it was aimed,
-	// and that drift fades once its motor lights.
+	// Velocity that is not along `fireDirection`. Player shots carry the
+	// ship's velocity here, so muzzle speed is on top of how the gun is
+	// already moving -- a forward shot cannot be caught by raising top speed.
+	// A missile adds a push out from the wing as well, and that whole drift
+	// fades once its motor lights.
 	glm::vec2 drift = {};
 
 	// What the weapon that fired it gave it (gameplay roadmap C2). The
