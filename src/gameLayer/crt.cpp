@@ -44,6 +44,17 @@ namespace
 	bool glowOn = true;
 	wgpu2d::FinalGlow glow;
 
+	// How warm the bright end of the picture runs, 0 to 1. One knob for two
+	// things: the shader pulls highlights toward `warmColour`, and the glow is
+	// tinted toward it. The planet art is blue-white, and a blue-white bloom
+	// over it at full brightness was hard to look at; a warm phosphor is also
+	// closer to how a real tube's highlights sat.
+	float warmth = 0.5f;
+
+	// Kept in step with `warmTint` in resources/shaders/crt.wgsl: the effect
+	// has no free parameter left to carry a colour, only the amount.
+	const glm::vec3 warmColour = {1.0f, 0.80f, 0.58f};
+
 	bool readFile(const char *path, std::string &out)
 	{
 		std::ifstream file(path, std::ios::binary);
@@ -102,12 +113,20 @@ void apply()
 
 	// The glow rides on the frame's target, which only exists while a final
 	// effect is set -- so it follows the filter rather than switching on alone.
-	if (glowOn && glow.intensity > 0.f) { wgpu2d::setFinalGlow(glow); }
+	if (glowOn && glow.intensity > 0.f)
+	{
+		// Scaled to unit luminance, so the tint turns the halo amber without
+		// making it dimmer: red goes a little above 1, which is fine for a
+		// colour that is added rather than blended.
+		const float warmLuma = glm::dot(warmColour, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+		glow.tint = glm::mix(glm::vec3(1.f), warmColour / warmLuma, warmth);
+		wgpu2d::setFinalGlow(glow);
+	}
 	else { wgpu2d::clearFinalGlow(); }
 
 	wgpu2d::EffectParams params;
 	params.a = {strength, curvature, scanlines, mask};
-	params.b = {period, vignette, fringing, 0.f};
+	params.b = {period, vignette, fringing, warmth};
 	wgpu2d::setFinalEffect(effect, params);
 }
 
@@ -121,6 +140,7 @@ void debugUi()
 	// rest are separated because they go wrong at different rates: curvature
 	// reads as broken well before the scanlines do.
 	ImGui::SliderFloat("Strength", &strength, 0.f, 2.f);
+	ImGui::SliderFloat("Warmth", &warmth, 0.f, 1.f);
 	ImGui::SliderFloat("Curvature", &curvature, 0.f, 0.3f);
 	ImGui::SliderFloat("Scanlines", &scanlines, 0.f, 1.f);
 	ImGui::SliderFloat("Scanline period px", &period, 2.f, 32.f, "%.0f");

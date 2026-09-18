@@ -197,6 +197,11 @@ namespace wgpu2d
 		float knee = 0.25f;      // how soft that cut is; 0 is a hard edge
 		float sigma = 3.0f;      // blur width, in half-resolution texels
 		float intensity = 0.7f;  // how much of the blur is added back
+
+		// Multiplies the glow as it is added back. White leaves the bloom the
+		// colour of what bloomed; a warm tint makes a blue-white highlight
+		// throw an amber halo, which is how a phosphor glow reads.
+		glm::vec3 tint = {1.f, 1.f, 1.f};
 	};
 	// Milestone 10's low-resolution path, as a control rather than only as an
 	// environment variable.

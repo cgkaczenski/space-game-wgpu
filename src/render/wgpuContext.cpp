@@ -2610,8 +2610,11 @@ namespace
 		// is under it instead of replacing it.
 		wgpu2d::Texture handle;
 		handle.id = g.glowScratchA;
-		const float k = g.finalGlow.intensity;
-		const glm::vec4 tint[4] = { {k,k,k,1}, {k,k,k,1}, {k,k,k,1}, {k,k,k,1} };
+		// Intensity and tint are one multiply on the quad's vertex colour, so a
+		// coloured glow costs nothing over a grey one.
+		const glm::vec3 k = g.finalGlow.intensity * g.finalGlow.tint;
+		const glm::vec4 c = {k.r, k.g, k.b, 1.f};
+		const glm::vec4 tint[4] = { c, c, c, c };
 		pushQuad(wgpu2d::Camera{}, wgpu2d::BlendMode::Additive, 0, wgpu2d::EffectParams{},
 			glm::vec4{0, 0, (float)frame.width, (float)frame.height},
 			handle, tint, {}, 0.f, WGPU2D_DefaultTextureCoords);

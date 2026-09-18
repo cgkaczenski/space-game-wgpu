@@ -23,9 +23,34 @@ struct EffectUniforms {
     resolution: vec4f, // xy = pixels, zw = 1 / pixels
     time: vec4f,       // x = seconds
     a: vec4f,          // x = master, y = curvature, z = scanlines, w = mask
-    b: vec4f,          // x = scanline period in pixels, y = vignette, z = fringing
+    b: vec4f,          // x = scanline period in pixels, y = vignette, z = fringing, w = warmth
 };
 @group(2) @binding(0) var<uniform> effect: EffectUniforms;
+
+// Where warm highlights head. Kept in step with `warmColour` in crt.cpp, which
+// tints the glow toward the same colour; only the amount is a parameter.
+const warmTint = vec3f(1.0, 0.80, 0.58);
+const lumaWeights = vec3f(0.2126, 0.7152, 0.0722);
+
+// Where the highlight shoulder begins. Below it colour is untouched; above it
+// values ease toward 1 instead of passing it, so the very brightest art keeps
+// some detail after the brightness restore rather than clipping into a flat
+// sheet.
+//
+// High on purpose. At 0.75 it also flattened the glow: a halo is added
+// brightness, and a curve that compresses everything above 0.75 compresses
+// exactly what the halo added. It is a limit on burn-out, not a tone curve.
+const shoulderStart = 0.9;
+
+// A soft ceiling. Continuous with the identity at `shoulderStart` in value and
+// slope, so there is no visible band where it takes over, and it approaches 1
+// without reaching it.
+fn shoulder(c: vec3f) -> vec3f
+{
+    let k = shoulderStart;
+    let over = max(c - vec3f(k), vec3f(0.0));
+    return min(c, vec3f(k)) + (1.0 - k) * (vec3f(1.0) - exp(-over / (1.0 - k)));
+}
 
 // The glass. Pushes the coordinate outward by the square of its distance from
 // the centre, which is a barrel distortion: nothing moves in the middle and
@@ -49,9 +74,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let period = effect.b.x;
     let vignette = effect.b.y * master;
     let fringing = effect.b.z * master;
+    let warmth = clamp(effect.b.w, 0.0, 1.0);
 
-    // TEMPORARY: b.w = 1 replaces the bend with a flat 2-pixel shift, to tell
-    // "the bend is wrong" apart from "any off-centre sample is wrong". Remove.
     let uv = bend(in.uv, curvature);
 
     // Sampling is textureSampleLevel rather than textureSample because a
@@ -80,6 +104,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let blue = textureSampleLevel(spriteTexture, spriteSampler,
             bend(in.uv, curvature - scale), 0.0).b;
         colour = vec3f(red, colour.g, blue);
+    }
+
+    // Warm highlights. Only the bright end moves -- chosen by luminance, so
+    // dark colours are left alone -- and it moves toward amber *at the same
+    // luminance*: blue comes down, red comes up, and the pixel is as bright as
+    // it was. That is what keeps the glow. The glow is already in `colour`
+    // here (it was added to the frame before this pass), and the first version
+    // multiplied by amber instead, which dimmed exactly the pixels the glow had
+    // brightened -- about a third of the halo at a bright edge was lost.
+    if (warmth > 0.0) {
+        let luma = dot(colour, lumaWeights);
+        let highlight = smoothstep(0.45, 0.95, luma);
+        let warmed = luma * warmTint / dot(warmTint, lumaWeights);
+        colour = mix(colour, warmed, warmth * highlight);
     }
 
     // Outside the tube, black rather than the clamped edge texel: the sampler
@@ -137,15 +175,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     // Capped, so a slider at its limit brightens rather than blows out.
     colour = colour * min(gain, 2.0);
 
+    // The restore just lifted the bright rows past 1 wherever the art was
+    // already near it -- on the planet, all of its highlights. Ease them in.
+    colour = shoulder(colour);
+
     // The corners of the tube are further from the gun and dimmer for it.
     if (vignette > 0.0) {
         let centred = uv * 2.0 - 1.0;
         colour = colour * (1.0 - vignette * dot(centred, centred) * 0.5);
     }
 
-    // TEMPORARY: b.w = 1 skips the outside-the-tube mask, so a black region
-    // can be attributed to the sample or to the mask. Remove.
-    // TEMPORARY: identical control flow, so the two runs differ only in what
-    // is shown, not in what is computed. Remove.
     return vec4f(colour * inside, 1.0);
 }
