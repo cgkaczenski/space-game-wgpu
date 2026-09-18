@@ -110,8 +110,14 @@ Homing, piercing, and so on — only if C2 wants them.
   u/s² to 6000 — while the slide fades, turning at 3 rad/s plus 6 rad/s for
   every second of chase. The exhaust brightens with its speed. With no target
   when fired, it keeps to where the player aimed. All debug sliders.
-- Open for C3b: releasing the laser before 5 s — full cooldown, or does the
-  unused time carry over?
+- C3b, the laser: **5 s of charge** that drains while the beam is on and is
+  **kept when released**; only an empty charge starts the 4 s cooldown, whose
+  end refills it. The HUD slot shows the charge draining. The beam is traced,
+  not flown: it reaches the edge of the view unless an enemy's hitbox is in
+  the way, and burns the first one at 0.4 life per second while it touches.
+  Drawn as the glow capsule stretched along it plus the sheet's cyan beam
+  segment tiled and scrolling, with a flickering burst where it hits. Firing
+  it uncloaks. Shield blocking waits for enemies to have shields.
 - Engine ideas taken: the beam as the capsule stretched, bloomed by the CRT
   glow, with the sheet's tileable beam segment available; the missile's
   exhaust as the ship's plume scaled down; a ripple ring on the locked target.

@@ -65,3 +65,25 @@ glm::vec2 BasicCollisionSystem::separation(const Circle &a, const Circle &b) con
 }
 
 } // namespace collision
+
+namespace collision
+{
+
+float rayToCircle(glm::vec2 origin, glm::vec2 direction, const Circle &circle)
+{
+	// |origin + t*direction - centre|^2 = r^2 is a quadratic in t with a = 1,
+	// since direction is unit. The smaller root is where the ray enters.
+	const glm::vec2 fromCentre = origin - circle.center;
+	const float c = glm::dot(fromCentre, fromCentre) - circle.radius * circle.radius;
+	if (c <= 0.f) { return 0.f; } // starts inside
+
+	const float b = glm::dot(fromCentre, direction);
+	if (b > 0.f) { return -1.f; } // outside and pointing away
+
+	const float discriminant = b * b - c;
+	if (discriminant < 0.f) { return -1.f; } // passes by
+
+	return -b - std::sqrt(discriminant);
+}
+
+} // namespace collision

@@ -46,6 +46,12 @@ public:
 	virtual glm::vec2 separation(const Circle &a, const Circle &b) const = 0;
 };
 
+// How far along a ray it first touches `circle`, or a negative number if it
+// never does. `direction` must be unit length. A ray that starts inside the
+// circle touches it at 0. For beams: the first thing a beam reaches is the
+// smallest non-negative result across what it could hit.
+float rayToCircle(glm::vec2 origin, glm::vec2 direction, const Circle &circle);
+
 class BasicCollisionSystem final : public ICollisionSystem
 {
 public:

@@ -57,6 +57,17 @@ namespace bulletLook
 		glm::vec2 direction, bool isEnemy,
 		BulletStyle style = BulletStyle::Standard, float size = 1.f);
 
+	// The laser beam from `start` to `end` (gameplay roadmap C3b), in two
+	// halves like a bullet: the glow under additive, the core over alpha.
+	// The glow is the capsule stretched to the beam's length, and a bright
+	// burst where the beam stops; the core tiles the sheet's cyan beam
+	// segment, scrolling with `time` so the beam reads as moving. `hit` is
+	// whether the end is on something, for the burst.
+	void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
+		bool hit, float time);
+	void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
+		float time);
+
 	// One shot of `style`, pointing up and centred in a box `height` tall: a
 	// HUD icon. Sets its own blend modes, glow then sprite, and leaves Alpha
 	// set -- fine for a handful of icons, where the per-bullet passes above

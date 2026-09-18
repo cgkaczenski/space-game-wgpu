@@ -24,17 +24,27 @@ namespace
 		int burstCount;    // shots per trigger
 		float burstGap;    // seconds between shots of a burst
 		int maxAmmo;       // -1: unlimited
-		bool firesYet;     // the laser's beam is C3
 	};
 
 	// Longer than first proposed, at the author's request: a cooldown is a
 	// decision the player makes, and under a second it is only a rate of fire.
 	Weapon weapons[slotCount] = {
-		{"Burst laser", BulletStyle::Standard, BulletMotion::Straight, 0.8f, 0.1f, 1.0f, 3000.f, 2, 0.08f, -1, true},
-		{"Heavy laser", BulletStyle::Heavy,    BulletMotion::Straight, 2.0f, 0.3f, 1.5f, 2600.f, 1, 0.f,   -1, true},
-		{"Missile",     BulletStyle::Missile,  BulletMotion::Missile,  3.0f, 0.5f, 1.2f, 6000.f, 1, 0.f,    5, true},
-		{"Laser",       BulletStyle::Laser,    BulletMotion::Straight, 4.0f, 0.4f, 1.0f, 0.f,    1, 0.f,   -1, false},
+		{"Burst laser", BulletStyle::Standard, BulletMotion::Straight, 0.8f, 0.1f, 1.0f, 3000.f, 2, 0.08f, -1},
+		{"Heavy laser", BulletStyle::Heavy,    BulletMotion::Straight, 2.0f, 0.3f, 1.5f, 2600.f, 1, 0.f,   -1},
+		{"Missile",     BulletStyle::Missile,  BulletMotion::Missile,  3.0f, 0.5f, 1.2f, 6000.f, 1, 0.f,    5},
+		// The laser's damage is per second while the beam touches, not per shot.
+		{"Laser",       BulletStyle::Laser,    BulletMotion::Straight, 4.0f, 0.4f, 1.0f, 0.f,    1, 0.f,   -1},
 	};
+	constexpr int missileSlot = 2;
+	constexpr int laserSlot = 3;
+
+	// The laser's charge, in seconds of beam (gameplay roadmap C3b). It drains
+	// while the beam is on and is kept when the trigger is released; only an
+	// empty charge starts the cooldown, and the cooldown's end refills it.
+	float laserChargeSeconds = 5.f;
+	float laserCharge = 5.f;
+	bool laserWasFiring = false;
+	Beam currentBeam;
 
 	// Missile flight (gameplay roadmap C3). The weapon's `speed` above is the
 	// motor's top speed. The launch is a sideways push with the motor off; the
@@ -101,7 +111,7 @@ namespace
 
 	bool usable(int i)
 	{
-		return weapons[i].firesYet && (weapons[i].maxAmmo < 0 || ammo[i] > 0);
+		return weapons[i].maxAmmo < 0 || ammo[i] > 0;
 	}
 
 	void select(int i)
@@ -151,6 +161,9 @@ void reset()
 		ammo[i] = weapons[i].maxAmmo;
 	}
 	pendingShots = 0;
+	laserCharge = laserChargeSeconds;
+	laserWasFiring = false;
+	currentBeam = {};
 }
 
 void handleInput()
@@ -179,6 +192,10 @@ int update(float gameDeltaTime, bool triggerHeld, const FireContext &context,
 {
 	for (float &left : cooldownLeft) { left = std::max(0.f, left - gameDeltaTime); }
 
+	// An emptied laser comes back full when its cooldown ends.
+	if (laserCharge <= 0.f && cooldownLeft[laserSlot] <= 0.f) { laserCharge = laserChargeSeconds; }
+
+	currentBeam = {};
 	int fired = 0;
 
 	if (pendingShots > 0)
@@ -194,6 +211,32 @@ int update(float gameDeltaTime, bool triggerHeld, const FireContext &context,
 	}
 
 	const Weapon &w = weapons[selected];
+
+	if (selected == laserSlot)
+	{
+		// Not a bullet: a beam for as long as the trigger is held and there is
+		// charge. Released, the charge stays where it is.
+		const bool firing = triggerHeld && cooldownLeft[laserSlot] <= 0.f && laserCharge > 0.f;
+		if (firing)
+		{
+			laserCharge -= gameDeltaTime;
+			currentBeam.firing = true;
+			currentBeam.started = !laserWasFiring;
+			currentBeam.direction = context.aim;
+			currentBeam.origin = context.origin + context.aim * (context.shipSize * 0.4f);
+			currentBeam.damagePerSecond = w.damage;
+
+			if (laserCharge <= 0.f)
+			{
+				laserCharge = 0.f;
+				cooldownLeft[laserSlot] = w.cooldown;
+			}
+		}
+		laserWasFiring = firing;
+		return fired;
+	}
+	laserWasFiring = false;
+
 	if (triggerHeld && pendingShots == 0 && cooldownLeft[selected] <= 0.f && usable(selected))
 	{
 		out.push_back(shot(w, context));
@@ -250,7 +293,7 @@ void steerMissiles(std::vector<Bullet> &bullets, const std::vector<Enemy> &enemi
 		const float turnRate = turnRateStart + turnRateGrowth * chase;
 		b.fireDirection = turnToward(b.fireDirection, wanted, turnRate * gameDeltaTime);
 
-		const Weapon &missile = weapons[2];
+		const Weapon &missile = weapons[missileSlot];
 		b.speed = std::min(missile.speed, b.speed + missileAccel * gameDeltaTime);
 	}
 }
@@ -259,9 +302,11 @@ float missileThrottle(const Bullet &bullet)
 {
 	if (bullet.motion != BulletMotion::Missile || bullet.age < launchSeconds) { return 0.f; }
 	// A little lit the moment it ignites, full at top speed.
-	const float topSpeed = weapons[2].speed;
+	const float topSpeed = weapons[missileSlot].speed;
 	return topSpeed > 0.f ? 0.25f + 0.75f * std::min(1.f, bullet.speed / topSpeed) : 1.f;
 }
+
+Beam beam() { return currentBeam; }
 
 SlotView slot(int index)
 {
@@ -269,6 +314,12 @@ SlotView slot(int index)
 	SlotView view;
 	view.style = w.style;
 	view.ready = w.cooldown > 0.f ? 1.f - cooldownLeft[index] / w.cooldown : 1.f;
+	if (index == laserSlot && cooldownLeft[index] <= 0.f)
+	{
+		// Between cooldowns the slot shows the charge left, so the shade
+		// grows as the beam drains and stays put when it is released.
+		view.ready = laserChargeSeconds > 0.f ? laserCharge / laserChargeSeconds : 1.f;
+	}
 	view.ammo = w.maxAmmo < 0 ? -1 : ammo[index];
 	view.maxAmmo = w.maxAmmo;
 	view.selected = index == selected;
@@ -282,8 +333,8 @@ void debugUi()
 	{
 		Weapon &w = weapons[i];
 		ImGui::PushID(i);
-		const bool open = ImGui::TreeNode("weapon", "%d  %s%s%s", i + 1, w.name,
-			i == selected ? "  (selected)" : "", w.firesYet ? "" : "  -- beam is C3");
+		const bool open = ImGui::TreeNode("weapon", "%d  %s%s", i + 1, w.name,
+			i == selected ? "  (selected)" : "");
 		if (open)
 		{
 			ImGui::SliderFloat("Cooldown", &w.cooldown, 0.1f, 10.f, "%.2f s");
@@ -298,6 +349,11 @@ void debugUi()
 				ImGui::Text("Ammo %d / %d", ammo[i], w.maxAmmo);
 				ImGui::SameLine();
 				if (ImGui::SmallButton("Refill")) { ammo[i] = w.maxAmmo; }
+			}
+			if (i == laserSlot)
+			{
+				ImGui::SliderFloat("Charge", &laserChargeSeconds, 0.5f, 15.f, "%.1f s");
+				ImGui::Text("Left %.1f s", laserCharge);
 			}
 			if (w.motion == BulletMotion::Missile)
 			{

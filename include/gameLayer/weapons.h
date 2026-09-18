@@ -10,7 +10,9 @@
 //   1  Burst laser   two shots in quick succession, then the cooldown
 //   2  Heavy laser   one larger shot, three times a burst shot's damage
 //   3  Missile       5 rounds, homing on the enemy nearest the mouse (C3a)
-//   4  Laser         a held beam. Selectable, but the beam itself is C3
+//   4  Laser         a held beam (C3b). 5 s of charge that drains while it
+//                    fires and is kept when released; empty, it cools down
+//                    and comes back full
 //
 // Cooldowns tick for every slot at once, so switching does not reset them.
 // Selecting is by keys 1-4 or the wheel (wrapping); an empty weapon can be
@@ -77,6 +79,19 @@ namespace weapons
 	// How lit a missile's exhaust is: 0 during the launch push, then rising
 	// with its speed, so the pick-up is visible.
 	float missileThrottle(const Bullet &bullet);
+
+	// The laser this frame, as `update` left it. The beam is not a bullet: the
+	// game traces it against the enemies and applies `damagePerSecond` to the
+	// first one it touches, times the frame's game time.
+	struct Beam
+	{
+		bool firing = false;
+		bool started = false;       // the first frame of a pull, for the sound
+		glm::vec2 origin = {};      // the ship's nose
+		glm::vec2 direction = {};   // unit, toward the mouse
+		float damagePerSecond = 0.f;
+	};
+	Beam beam();
 
 	SlotView slot(int index);
 

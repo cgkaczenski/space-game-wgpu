@@ -162,6 +162,73 @@ void drawSprite(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 dire
 	}
 }
 
+namespace
+{
+	// The beam's proportions. The core is the sprite art; the glow is wider
+	// and softer, and the CRT's own glow blooms it further.
+	const float beamCoreWidth = 44.f;
+	const float beamGlowWidth = 120.f;
+	const float beamScrollSpeed = 900.f; // world units per second, along the beam
+	const float impactSize = 260.f;
+}
+
+void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
+	bool hit, float time)
+{
+	if (capsule.id == 0) { return; }
+	const glm::vec2 along = end - start;
+	const float length = glm::length(along);
+	if (length < 1.f) { return; }
+	const glm::vec2 direction = along / length;
+
+	// As drawGlow: the capsule's long axis is +x, rotated in flipped space.
+	const float rotation = glm::degrees(std::atan2(-direction.y, direction.x));
+	const glm::vec4 color = lookFor(BulletStyle::Laser, false).glow * intensity;
+	const glm::vec2 centre = (start + end) * 0.5f;
+
+	// A little longer than the beam, so its rounded ends do not stop short.
+	const float glowLength = length + beamGlowWidth;
+	renderer.renderRectangle(
+		{centre - glm::vec2(glowLength * 0.5f, beamGlowWidth * 0.5f), glowLength, beamGlowWidth},
+		capsule, glm::vec4{color.r, color.g, color.b, 1.f}, {}, rotation);
+
+	if (hit)
+	{
+		// Where it burns: a round flare, flickering. The capsule's middle
+		// drawn short is round enough.
+		const float flicker = 0.8f + 0.2f * std::sin(time * 55.f);
+		const float size = impactSize * flicker;
+		const glm::vec4 burst = color * 1.2f;
+		renderer.renderRectangle({end - glm::vec2(size * 0.5f, size * 0.5f / aspect * 2.f),
+			size, size / aspect * 2.f}, capsule, glm::vec4{burst.r, burst.g, burst.b, 1.f}, {}, rotation);
+	}
+}
+
+void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end, float time)
+{
+	if (sheet.id == 0) { return; }
+	const glm::vec2 along = end - start;
+	const float length = glm::length(along);
+	if (length < 1.f) { return; }
+	const glm::vec2 direction = along / length;
+
+	// As drawSprite: the art points up in its cell.
+	const float angle = glm::degrees(std::atan2(direction.y, -direction.x)) + 90.f;
+	const glm::ivec2 cell = lookFor(BulletStyle::Laser, false).cell;
+	const glm::vec4 textureCoords = sheetAtlas.get(cell.x, cell.y);
+
+	// Square tiles along the beam, the first shifted back by the scroll so the
+	// pattern travels outward. The part behind `start` sits under the hull.
+	const float tile = beamCoreWidth;
+	const float offset = std::fmod(time * beamScrollSpeed, tile);
+	for (float d = -offset; d < length; d += tile)
+	{
+		const glm::vec2 centre = start + direction * (d + tile * 0.5f);
+		renderer.renderRectangle({centre - glm::vec2(tile * 0.5f), tile, tile},
+			sheet, Colors_White, {}, angle, textureCoords);
+	}
+}
+
 void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float height, BulletStyle style)
 {
 	// The trail spans from half a quad behind `position` to 150 units ahead of

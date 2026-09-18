@@ -135,6 +135,18 @@ void restartGame()
 		{550.f, 0.f, 0.f});
 }
 
+// How far a ray from inside the view travels before leaving it. The laser
+// reaches "all the way across the screen": to the edge of what is shown.
+float distanceToViewEdge(glm::vec2 origin, glm::vec2 direction, glm::vec4 view)
+{
+	float reach = 1e9f;
+	if (direction.x > 0.f) { reach = std::min(reach, (view.x + view.z - origin.x) / direction.x); }
+	if (direction.x < 0.f) { reach = std::min(reach, (view.x - origin.x) / direction.x); }
+	if (direction.y > 0.f) { reach = std::min(reach, (view.y + view.w - origin.y) / direction.y); }
+	if (direction.y < 0.f) { reach = std::min(reach, (view.y - origin.y) / direction.y); }
+	return std::max(reach, 0.f);
+}
+
 // The session's own controls. The game owns the session, so this is where they
 // belong -- no longer a waiting room for controls with nowhere else to go.
 void sessionDebugUi()
@@ -305,6 +317,42 @@ bool gameLogic(float deltaTime)
 		// Firing is how the player leaves the cloak, and the shot still goes out.
 		energy::uncloak();
 		for (int s = 0; s < shots; s++) { sfx::playerShot(); }
+	}
+
+	// The laser: traced, not flown. It reaches the edge of the view unless an
+	// enemy is in the way, and burns the first one it touches for as long as
+	// it touches it (gameplay roadmap C3b). Enemies have no shields yet; when
+	// they do, a shielded enemy is where the beam stops without its damage.
+	static float effectClock = 0.f; // drives the beam's scroll and flicker
+	effectClock += time.game;
+
+	const weapons::Beam beam = weapons::beam();
+	glm::vec2 beamEnd = {};
+	bool beamHit = false;
+	if (beam.firing)
+	{
+		energy::uncloak();
+		if (beam.started) { sfx::playerShot(); }
+
+		float reach = distanceToViewEdge(beam.origin, beam.direction, view);
+		int target = -1;
+		for (int e = 0; e < (int)session.enemies.size(); e++)
+		{
+			const float t = collision::rayToCircle(beam.origin, beam.direction,
+				session.enemies[e].getHitbox());
+			if (t >= 0.f && t < reach) { reach = t; target = e; }
+		}
+		beamEnd = beam.origin + beam.direction * reach;
+		beamHit = target >= 0;
+
+		if (beamHit && !hitboxDebug::isDamageFrozen())
+		{
+			session.enemies[target].life -= beam.damagePerSecond * time.game;
+			if (session.enemies[target].life <= 0.f)
+			{
+				session.enemies.erase(session.enemies.begin() + target);
+			}
+		}
 	}
 
 
@@ -497,12 +545,14 @@ bool gameLogic(float deltaTime)
 		}
 		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
 	}
+	if (beam.firing) { bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamHit, effectClock); }
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	for (auto &b : session.bullets)
 	{
 		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
 	}
+	if (beam.firing) { bulletLook::drawBeamCore(renderer, beam.origin, beamEnd, effectClock); }
 
 #pragma endregion
 
