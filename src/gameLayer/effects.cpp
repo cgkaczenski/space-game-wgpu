@@ -1,5 +1,6 @@
 #include <effects.h>
 
+#include <shipSprite.h>
 #include "imgui.h"
 
 #include <algorithm>
@@ -37,6 +38,35 @@ namespace
 	std::vector<Piece> pieces;
 	std::vector<Blast> blasts;
 
+	// The ram's trail. Ghosts are copies of the ship left where it was; streaks
+	// are thin lines of light laid in space along the ram, standing still, so
+	// the ship rushing past them is what makes them read as speed.
+	struct Ghost
+	{
+		glm::vec2 position;
+		glm::vec2 facing;
+		glm::vec4 uv;
+		float size;
+		float age;
+	};
+	struct Streak
+	{
+		glm::vec2 position;
+		glm::vec2 direction;
+		float length;
+		float age;
+	};
+	std::vector<Ghost> ghosts;
+	std::vector<Streak> streaks;
+	float ghostEvery = 0.035f;      // seconds between afterimages
+	float ghostLife = 0.25f;
+	float ghostTimer = 0.f;
+	float streaksPerSecond = 70.f;
+	float streakLife = 0.22f;
+	float streakTimer = 0.f;
+	const float streakWidth = 14.f;
+	const glm::vec4 streakColor = {0.60f, 0.85f, 1.0f, 1.f};
+
 	// The cell is cut into a grid: 3 across, 2 down, so the pieces are the
 	// size of chunks of hull rather than slivers.
 	const int piecesAcross = 3;
@@ -57,6 +87,15 @@ namespace
 
 	float blastLife = 1.1f;         // seconds
 	float blastGrowth = 2.2f;       // final size, in ship sizes
+
+	// The world shake. The HUD's shake numbers, in world units instead of
+	// pixels: two frequencies so it does not read as one diagonal slide.
+	float shakeIntensity = 0.f;     // 1 is one impact
+	float shakePhase = 0.f;
+	float shakeAmplitude = 45.f;    // world units at intensity 1
+	float shakeDecay = 8.f;         // per second
+	const float shakeFrequencyX = 19.f;
+	const float shakeFrequencyY = 24.f;
 
 	// Hot core to orange rim. Above 1 on purpose, as the bullet glows are and
 	// the plume is not: an explosion should burn out to white at its centre
@@ -113,6 +152,66 @@ void reset()
 {
 	pieces.clear();
 	blasts.clear();
+	ghosts.clear();
+	streaks.clear();
+	shakeIntensity = 0.f;
+}
+
+void ramTrail(glm::vec2 shipPos, glm::vec2 direction, float shipSize, glm::vec4 shipCell,
+	float gameDeltaTime)
+{
+	ghostTimer -= gameDeltaTime;
+	if (ghostTimer <= 0.f)
+	{
+		ghosts.push_back({shipPos, direction, shipCell, shipSize, 0.f});
+		ghostTimer += ghostEvery;
+	}
+
+	// Laid around the ship, ahead of and beside it, so it is about to rush
+	// past them rather than leaving them already behind.
+	const glm::vec2 side = {-direction.y, direction.x};
+	streakTimer -= gameDeltaTime;
+	while (streakTimer <= 0.f)
+	{
+		Streak s;
+		s.position = shipPos + side * randomBetween(-1.3f, 1.3f) * shipSize
+			+ direction * randomBetween(-0.5f, 1.5f) * shipSize;
+		s.direction = direction;
+		s.length = randomBetween(250.f, 550.f);
+		s.age = 0.f;
+		streaks.push_back(s);
+		streakTimer += 1.f / streaksPerSecond;
+	}
+}
+
+void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet)
+{
+	for (const Ghost &g : ghosts)
+	{
+		const float fade = 1.f - g.age / ghostLife;
+		// Pale and cool, and fading fast: a trace of where it was, not a ship.
+		const glm::vec4 tint = {0.75f, 0.90f, 1.0f, 0.45f * fade};
+		renderSpaceShip(renderer, g.position, g.size, shipSheet, g.uv, g.facing, tint);
+	}
+}
+
+void shake(float strength)
+{
+	shakeIntensity = std::min(1.5f, shakeIntensity + strength);
+	shakePhase = 0.f; // each impact restarts the oscillation, as the HUD's does
+}
+
+glm::vec2 shakeOffset(float realDeltaTime)
+{
+	if (shakeIntensity <= 0.f) { return {}; }
+	const float dt = std::min(realDeltaTime, 0.1f);
+	shakePhase += dt;
+	shakeIntensity *= std::exp(-shakeDecay * dt);
+	if (shakeIntensity < 0.002f) { shakeIntensity = 0.f; return {}; }
+
+	const float amplitude = shakeAmplitude * shakeIntensity;
+	return {amplitude * std::sin(6.2831853f * shakeFrequencyX * shakePhase),
+		amplitude * std::sin(6.2831853f * shakeFrequencyY * shakePhase + 1.1f)};
 }
 
 void enemyKilled(const Enemy &enemy, glm::vec4 cell)
@@ -197,6 +296,14 @@ void update(float gameDeltaTime)
 	for (Blast &b : blasts) { b.age += gameDeltaTime; }
 	blasts.erase(std::remove_if(blasts.begin(), blasts.end(),
 		[](const Blast &b) { return b.age >= blastLife; }), blasts.end());
+
+	for (Ghost &g : ghosts) { g.age += gameDeltaTime; }
+	ghosts.erase(std::remove_if(ghosts.begin(), ghosts.end(),
+		[](const Ghost &g) { return g.age >= ghostLife; }), ghosts.end());
+
+	for (Streak &s : streaks) { s.age += gameDeltaTime; }
+	streaks.erase(std::remove_if(streaks.begin(), streaks.end(),
+		[](const Streak &s) { return s.age >= streakLife; }), streaks.end());
 }
 
 void drawDebris(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet)
@@ -219,6 +326,18 @@ void drawDebris(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet)
 void drawGlow(wgpu2d::Renderer2D &renderer)
 {
 	if (glow.id == 0) { return; }
+
+	// Streaks: the soft glow stretched long and thin along the ram. The glow
+	// texture is round, so the quad's shape is the streak's.
+	for (const Streak &s : streaks)
+	{
+		const float fade = 1.f - s.age / streakLife;
+		glm::vec4 color = streakColor * (1.2f * fade);
+		color.a = 1.f;
+		const float rotation = glm::degrees(std::atan2(-s.direction.y, s.direction.x));
+		renderer.renderRectangle({s.position - glm::vec2(s.length * 0.5f, streakWidth * 0.5f),
+			s.length, streakWidth}, glow, color, {}, rotation);
+	}
 	for (const Blast &b : blasts)
 	{
 		const float t = b.age / blastLife;              // 0 .. 1
@@ -295,6 +414,9 @@ void debugUi()
 	ImGui::SliderFloat("Debris speed", &debrisSpeedMax, 100.f, 3000.f, "%.0f");
 	ImGui::SliderFloat("Debris spin", &debrisSpinMax, 0.f, 1440.f, "%.0f deg/s");
 	ImGui::SliderFloat("Fireball life", &blastLife, 0.1f, 2.f, "%.2f s");
+	ImGui::SliderFloat("Shake size", &shakeAmplitude, 0.f, 200.f, "%.0f");
+	ImGui::SliderFloat("Shake decay", &shakeDecay, 1.f, 30.f, "%.1f /s");
+	if (ImGui::SmallButton("Test shake")) { shake(1.f); }
 	ImGui::SliderFloat("Fireball size", &blastGrowth, 0.2f, 5.f, "%.1f");
 }
 

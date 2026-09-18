@@ -1,6 +1,7 @@
 #include <hud.h>
 
 #include <bulletLook.h>
+#include <shipShield.h>
 #include <glui/glui.h>      // layout only (Frame, Box)
 #include <platformTools.h>
 
@@ -66,7 +67,7 @@ namespace
 	const glm::vec4 pipEmpty = {0.18f, 0.20f, 0.22f, 0.9f};
 
 	void drawSlots(wgpu2d::Renderer2D &renderer, const WeaponSlot *slots, int count,
-		int width, int height)
+		float ramReady, int width, int height)
 	{
 		if (!slots || count <= 0) { return; }
 
@@ -75,6 +76,21 @@ namespace
 		const float total = count * size + (count - 1) * gap;
 		const float left = (width - total) * 0.5f;
 		const float top = height - size - height * slotBottomPerc;
+
+		// The ram, set apart to the left: not a weapon you select, a move you
+		// make, so it sits outside the row.
+		{
+			const float x = left - size - gap * 3.f;
+			const float border = size * 0.035f;
+			renderer.renderRectangle(glm::vec4{x - border, top - border,
+				size + 2.f * border, size + 2.f * border}, slotFrame);
+			renderer.renderRectangle(glm::vec4{x, top, size, size}, slotBackground);
+			shield::drawIcon(renderer, {x + size * 0.5f, top + size * 0.5f}, size * 0.8f);
+			if (ramReady < 1.f)
+			{
+				renderer.renderRectangle(glm::vec4{x, top, size, size * (1.f - ramReady)}, cooldownShade);
+			}
+		}
 
 		for (int i = 0; i < count; i++)
 		{
@@ -232,7 +248,7 @@ void onDamage(float strength)
 }
 
 void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
-	const WeaponSlot *slots, int slotCount, int width, int height)
+	const WeaponSlot *slots, int slotCount, float ramReady, int width, int height)
 {
 	// The layer below this one -- the world -- goes to the screen first, so
 	// the shake's target holds the HUD alone.
@@ -254,7 +270,7 @@ void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 		energyRect.y += healthRect.w * energyBarStep;
 		drawBar(renderer, energyRect, energyBarTexture, energyTexture, energy);
 
-		drawSlots(renderer, slots, slotCount, width, height);
+		drawSlots(renderer, slots, slotCount, ramReady, width, height);
 	}
 	renderer.popCamera();
 

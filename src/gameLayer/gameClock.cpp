@@ -2,6 +2,7 @@
 
 #include "imgui.h"
 #include <glm/glm.hpp>
+#include <algorithm>
 
 namespace gameClock
 {
@@ -24,9 +25,24 @@ namespace
 	}
 }
 
+namespace
+{
+	float stopLeft = 0.f; // seconds of real time
+}
+
 FrameTime tick(float realDeltaTime)
 {
+	if (stopLeft > 0.f)
+	{
+		stopLeft -= realDeltaTime;
+		return {realDeltaTime, 0.f};
+	}
 	return {realDeltaTime, realDeltaTime * gameSpeedMultiplier()};
+}
+
+void hitStop(float seconds)
+{
+	stopLeft = std::max(stopLeft, seconds);
 }
 
 void debugUi()

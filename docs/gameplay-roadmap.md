@@ -139,18 +139,24 @@ past that the oldest fade out. Every kill goes through one function, whatever
 did it. Tunable under Explosions in the debug panel. The missile's lock is a
 **dashed red box** round its target, dashes marching.
 
-**Decided — C4b, the ram:** Space. The shield becomes a thicker, brighter arc
-facing forward, and the ship surges toward the mouse at about 5000 for 0.5 s,
-past its normal top speed, then its momentum settings take over. Ships still
-pass through each other outside a ram. An enemy rammed takes 0.4 damage (each
-at most once per ram; one ram can hit several), is knocked back along the ram
-and spins, disabled — no moving, no firing — for 2 s. The world shakes on each
-impact; the player takes no damage. It works whatever the energy bar says and
-spends none, blocks shots from the front while it lasts, and uncloaks. 8 s
-cooldown, shown as a fifth slot with a shield icon set apart to the left of the
-weapon row. Engine ideas taken: the world shake is the HUD's LayerEffect on the
-world layer; the front shield is the bubble squashed into an arc, with the
-ripple on each impact.
+**Decided — C4b, the ram:** Space. A 0.1 s **wind-up** first: the ship dips
+back as the shield gathers into a **prow** — two thick white-hot bars meeting in
+a point ahead of the nose, no blue glass — then the ship surges toward the mouse
+at about 6000 for 0.8 s, past its normal top speed, then its momentum settings
+take over. **Afterimages** of the ship fall behind it and **streaks** of light
+rush past; the **camera leans** ahead and eases back. Ships still pass through
+each other outside a ram. An enemy rammed takes 0.4 damage (each at most once
+per ram; one ram can hit several), is knocked **aside** — 45° off the ram,
+toward the side it was on, faster than the surge, so the ship passes it rather
+than running it down — and spins, disabled — no moving, no firing — for 2 s.
+On each strike the game **freezes for 60 ms** (hit-stop), the prow flares and
+the world shakes; the player takes no damage. It works whatever the energy bar
+says and spends none, blocks shots from the front while the prow is out, and
+uncloaks. 8 s cooldown, shown as a fifth slot with a shield icon set apart to
+the left of the weapon row. All of it on debug sliders. The world shake and
+the lean move the camera rather than running the world through the HUD's
+LayerEffect: the same result, since the HUD keeps its own screen camera,
+without a second full-screen target.
 
 **Open questions**
 - How should a kill feel — burst, dissolve, debris?

@@ -65,6 +65,19 @@ namespace shield
 	// cutting it off.
 	float rippleSeconds();
 
+	// The ram (gameplay roadmap C4b): while `level` is above 0, draw replaces
+	// the bubble with a prow -- two thick bright bars meeting in a point ahead
+	// of the nose -- facing `direction`, lit by `level`, whatever the energy bar
+	// says: the ram spends no energy. Call every frame.
+	void setRam(float level, glm::vec2 direction);
+
+	// The prow struck something: it flares brighter and thicker for a moment.
+	void ramImpact();
+
+	// The shield's rim as a small icon, for the HUD's ram slot. Sets its own
+	// blend mode and leaves Alpha set.
+	void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size);
+
 	// Draws the bubble. Call *after* the ship, so the rim reads as being in
 	// front of the hull. `dt` is game time, like the plume's.
 	void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt);

@@ -23,6 +23,11 @@ namespace enemyAi
 	// cooldown -- runs on `gameDeltaTime`, already scaled (see gameClock.h).
 	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos);
 
+	// Rammed: knocked along `push`, spinning, and disabled for `seconds`.
+	// While disabled, `update` moves it by the fading push and turns it, and
+	// neither steers nor fires. It recovers facing wherever it ended up.
+	void stun(Enemy &enemy, glm::vec2 push, float seconds);
+
 	// A new enemy on a ring around the player. The one-argument form picks a
 	// behaviour at random and rolls that policy's loadout.
 	Enemy spawnNear(glm::vec2 playerPos);

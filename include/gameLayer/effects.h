@@ -41,5 +41,24 @@ namespace effects
 	// the march. Plain rectangles, under alpha.
 	void drawTargetBox(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size, float time);
 
+	// The ram's trail, called every frame of the surge: afterimages of the ship
+	// dropped behind every few hundredths of a second, fading, and thin streaks
+	// of light left in space for the ship to rush past. `shipCell` is the
+	// player's texture coordinates in the ship sheet.
+	void ramTrail(glm::vec2 shipPos, glm::vec2 direction, float shipSize, glm::vec4 shipCell,
+		float gameDeltaTime);
+
+	// The afterimages, under alpha. Draw before the ship, so it sits on top of
+	// its own ghosts. (The streaks go in drawGlow.)
+	void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet);
+
+	// The world shaking: a ram's impact. `strength` 1 is one hit; hits add, up
+	// to a limit. The world is shaken by moving the camera -- the HUD keeps its
+	// own screen camera, so it stays still -- and `shakeOffset` is that
+	// movement, advanced by `realDeltaTime`: wall time, like the HUD's shake,
+	// so a slowed game still shakes at full speed.
+	void shake(float strength);
+	glm::vec2 shakeOffset(float realDeltaTime);
+
 	void debugUi();
 }

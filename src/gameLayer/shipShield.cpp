@@ -23,6 +23,10 @@ namespace
 	wgpu2d::Texture rim;
 	wgpu2d::Texture tint;
 
+	// The ram's prow bars. Built further down, beside the prow that uses them.
+	wgpu2d::Texture band;
+	bool buildBandTexture();
+
 	wgpu2d::Effect rippleEffect;
 	wgpu2d::Effect dissolveEffect;
 
@@ -242,7 +246,7 @@ namespace
 
 bool init()
 {
-	if (!buildShellTexture() || !buildTintTexture())
+	if (!buildShellTexture() || !buildTintTexture() || !buildBandTexture())
 	{
 		std::cerr << "shield: could not create the bubble textures\n";
 		return false;
@@ -261,6 +265,7 @@ void cleanup()
 {
 	rim.cleanup();
 	tint.cleanup();
+	band.cleanup();
 }
 
 void reset()
@@ -310,9 +315,120 @@ void hit(glm::vec2 offsetFromShip, float strength)
 
 float rippleSeconds() { return waveLifetime; }
 
+namespace
+{
+	float ramLevel = 0.f;
+	glm::vec2 ramDirection = {1.f, 0.f};
+	float ramFlash = 0.f; // spikes on a strike, decays
+
+	// The prow: two thick bars of shield swept back from a point ahead of the
+	// nose, like a ship's bow. A bar is a glowing capsule -- a bright core line
+	// with a soft glow round it and rounded ends -- in its own texture, because
+	// the rim's is the whole lit shell and read as a filled cap. Where the two
+	// bars meet they overlap, and under additive that is the hottest point:
+	// the prow leads with it.
+	const int barWidth = 256;
+	const int barHeight = 64;
+	const float barAspect = (float)barWidth / (float)barHeight;
+
+	const float prowTip = 0.72f;       // of the ship's size, ahead of centre
+	const float prowSweep = 38.f;      // degrees each bar is swept back
+	const float prowLength = 0.95f;    // of the ship's size, per bar
+	const float prowBrightness = 1.7f;
+
+	bool buildBandTexture()
+	{
+		std::vector<unsigned char> pixels((size_t)barWidth * barHeight * 4);
+		const float halfLength = barAspect - 1.f;
+		for (int y = 0; y < barHeight; y++)
+		{
+			for (int x = 0; x < barWidth; x++)
+			{
+				// Half-height units, so the ends come out round (as bulletLook's
+				// capsule does it).
+				const float u = ((x + 0.5f) / barWidth * 2.f - 1.f) * barAspect;
+				const float v = (y + 0.5f) / barHeight * 2.f - 1.f;
+				const float beyond = std::max(0.f, std::fabs(u) - halfLength);
+				const float d = std::sqrt(beyond * beyond + v * v);
+				const float core = std::exp(-std::pow(d / 0.32f, 2.f));
+				const float glow = 0.5f * std::exp(-std::pow(d / 0.75f, 2.f));
+				const float edge = std::clamp((1.f - d) / 0.15f, 0.f, 1.f);
+				unsigned char *p = pixels.data() + ((size_t)y * barWidth + x) * 4;
+				p[0] = 255; p[1] = 255; p[2] = 255;
+				p[3] = (unsigned char)(std::clamp((core + glow) * edge, 0.f, 1.f) * 255.f);
+			}
+		}
+		band.createFromBuffer((const char *)pixels.data(), barWidth, barHeight, false, true);
+		return band.id != 0;
+	}
+
+	void drawArc(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt)
+	{
+		if (band.id == 0) { return; }
+		ramFlash *= std::exp(-10.f * std::max(0.f, dt));
+
+		const glm::vec2 forward = ramDirection;
+		const glm::vec2 side = {-forward.y, forward.x};
+		const glm::vec2 tip = shipPos + forward * (shipSize * prowTip);
+
+		const float swell = 1.f + 0.3f * ramFlash;
+		const float length = shipSize * prowLength * swell;
+		const float thickness = length / barAspect; // keeps the ends round
+
+		// White-hot like a struck shield, not the shield blue; brighter on a
+		// strike. Only its glow keeps a trace of blue.
+		glm::vec4 color = flareColor * (prowBrightness * ramLevel * (1.f + 1.5f * ramFlash));
+		color.a = 1.f;
+
+		const float sweep = glm::radians(prowSweep);
+		renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+		for (float which : {-1.f, 1.f})
+		{
+			// Back from the tip and out to one side. The capsule's long axis
+			// is +x, rotated in the renderer's flipped space: an angle t maps
+			// +x to (cos t, -sin t) on screen, hence the negated y.
+			const glm::vec2 along = -forward * std::cos(sweep) + side * (which * std::sin(sweep));
+			const glm::vec2 centre = tip + along * (length * 0.5f - thickness * 0.35f);
+			const float rotation = glm::degrees(std::atan2(-along.y, along.x));
+			renderer.renderRectangle({centre - glm::vec2(length * 0.5f, thickness * 0.5f), length, thickness},
+				band, color, {}, rotation);
+		}
+		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+	}
+}
+
+void setRam(float level, glm::vec2 direction)
+{
+	ramLevel = level;
+	ramDirection = direction;
+}
+
+void ramImpact()
+{
+	ramFlash = 1.f;
+}
+
+void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size)
+{
+	if (rim.id == 0) { return; }
+	glm::vec4 color = shieldColor * 1.2f;
+	color.a = 1.f;
+	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+	renderer.renderRectangle({centre - glm::vec2(size * 0.5f), size, size}, rim, color);
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+}
+
 void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt)
 {
 	if (rim.id == 0 || tint.id == 0) { return; }
+
+	// Ramming: the prow instead of the bubble. The bubble's own state -- how far
+	// up, any break in progress -- waits and carries on after.
+	if (ramLevel > 0.f)
+	{
+		drawArc(renderer, shipPos, shipSize, dt);
+		return;
+	}
 
 
 	if (dissolving)

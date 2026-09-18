@@ -44,6 +44,13 @@ struct Enemy
 
 	float life = 1.f;
 
+	// Disabled after being rammed (gameplay roadmap C4b): no steering, no
+	// firing, just carried along by the blow and spinning, until `stunned`
+	// runs out. See enemyAi::stun.
+	float stunned = 0.f;          // seconds left
+	glm::vec2 knockback = {};     // world units per second, fading
+	float spinRate = 0.f;         // radians per second
+
 	collision::Circle getHitbox() const
 	{
 		return game::shipHitbox(position, enemyShipSize);

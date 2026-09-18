@@ -148,8 +148,29 @@ namespace
 	}
 }
 
+void stun(Enemy &enemy, glm::vec2 push, float seconds)
+{
+	enemy.stunned = seconds;
+	enemy.knockback = push;
+	// A fast tumble either way, so two rammed ships do not turn in step.
+	const float turns = 6.f + (rand() % 1000) / 200.f; // 6 .. 11 rad/s
+	enemy.spinRate = (rand() % 2) ? turns : -turns;
+}
+
 bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos)
 {
+	if (enemy.stunned > 0.f)
+	{
+		enemy.stunned -= gameDeltaTime;
+		enemy.position += enemy.knockback * gameDeltaTime;
+		enemy.knockback *= std::exp(-4.f * gameDeltaTime);
+
+		const float a = enemy.spinRate * gameDeltaTime;
+		const glm::vec2 v = enemy.viewDirection;
+		enemy.viewDirection = {v.x * std::cos(a) - v.y * std::sin(a), v.x * std::sin(a) + v.y * std::cos(a)};
+		return false;
+	}
+
 	switch (enemy.behaviour)
 	{
 	case Enemy::Behaviour::CloseIn:

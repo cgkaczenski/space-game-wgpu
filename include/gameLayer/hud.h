@@ -55,6 +55,8 @@ namespace hud
 	//
 	// `width` and `height` are the framebuffer size, the same values the game
 	// passes to updateWindowMetrics.
+	// `ramReady` (0 just used .. 1 ready) is the ram's slot: a shield icon set
+	// apart to the left of the weapon row, shaded the same way while it cools.
 	void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
-		const WeaponSlot *slots, int slotCount, int width, int height);
+		const WeaponSlot *slots, int slotCount, float ramReady, int width, int height);
 }

@@ -30,6 +30,7 @@
 #include <energy.h>
 #include <weapons.h>
 #include <effects.h>
+#include <ram.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
 #include <shipHitbox.h>
@@ -108,6 +109,7 @@ const Feature features[] = {
 	{"background", background::init, nullptr,         background::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
 	{"effects",    effects::init,    effects::reset,  effects::cleanup},
+	{"ram",        nullptr,          ram::reset,      nullptr},
 	// After shield and cloak: its reset raises one and lowers the other.
 	{"energy",     nullptr,          energy::reset,   nullptr},
 	{"weapons",    nullptr,          weapons::reset,  nullptr},
@@ -115,6 +117,11 @@ const Feature features[] = {
 
 // A setting, so it survives restart.
 bool healthRegenEnabled = true;
+
+// Where the camera is before the world shake. Follow chases from here, and the
+// shake is added on top each frame, so the shake never becomes where the
+// camera thinks it is.
+glm::vec2 cameraBase = {};
 
 // How far down the table init got, so cleanup after a failed start releases
 // exactly the successes. The row that failed is cleaned in initGame itself
@@ -131,10 +138,11 @@ void restartGame()
 	}
 
 	// Zero dead zone and zero leash: snap straight onto the player.
-	renderer.currentCamera.position = camera::follow(
-		renderer.currentCamera.position, session.playerPos,
+	cameraBase = camera::follow(
+		cameraBase, session.playerPos,
 		{(float)renderer.windowW, (float)renderer.windowH},
 		{550.f, 0.f, 0.f});
+	renderer.currentCamera.position = cameraBase;
 }
 
 // Every kill goes through here, whatever did it, so every death explodes the
@@ -275,9 +283,83 @@ bool gameLogic(float deltaTime)
 
 	// Facing is the hull; aim is the gun. They are the same vector unless the
 	// ship is turned with A/D, when the mouse aims independently.
-	const playerMove::Result player = playerMove::update(session.playerPos,
-		session.playerVelocity, session.playerFacing, mouseDirection, time.game,
-		energy::isCloaked());
+	// The ram, before flying: Space starts it toward the mouse, and ramming
+	// uncloaks, as firing does (gameplay roadmap C4b).
+	ram::update(time.game);
+	if (!ImGui::GetIO().WantCaptureKeyboard && platform::isButtonPressedOn(platform::Button::Space)
+		&& ram::tryStart(mouseDirection))
+	{
+		energy::uncloak();
+	}
+	shield::setRam(ram::barrierLevel(), ram::direction());
+
+	playerMove::Result player;
+	if (ram::windingUp())
+	{
+		// The wind-up: a moment's dip back, facing the ram, while the prow
+		// brightens. The anticipation is what makes the lunge read as heavy.
+		session.playerVelocity = -ram::direction() * ram::windupBackSpeed();
+		session.playerPos += session.playerVelocity * time.game;
+		session.playerFacing = ram::direction();
+		player.facing = ram::direction();
+		player.aim = mouseDirection;
+		player.throttle = 0.f;
+	}
+	else if (ram::active())
+	{
+		// The surge overrides flying: straight along the ram, past the normal
+		// top speed. When it ends the ship still has this velocity, and the
+		// momentum settings take it from there -- the speed cap brings it back.
+		session.playerVelocity = ram::direction() * ram::surgeSpeed();
+		session.playerPos += session.playerVelocity * time.game;
+		session.playerFacing = ram::direction();
+		player.facing = ram::direction();
+		player.aim = mouseDirection;
+		player.throttle = 1.f;
+
+		effects::ramTrail(session.playerPos, ram::direction(), shipSize,
+			shipAtlas.get(3, 0), time.game);
+	}
+	else
+	{
+		player = playerMove::update(session.playerPos, session.playerVelocity,
+			session.playerFacing, mouseDirection, time.game, energy::isCloaked());
+	}
+
+	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
+	// enemy once per ram; the player takes nothing.
+	if (ram::active())
+	{
+		const collision::Circle front = {session.playerPos + ram::direction() * (shipSize * 0.3f),
+			shipSize * 0.65f};
+		for (int e = 0; e < (int)session.enemies.size(); e++)
+		{
+			Enemy &enemy = session.enemies[e];
+			if (!collisionSystem.overlaps(front, enemy.getHitbox()) || !ram::firstHit(enemy.id)) { continue; }
+
+			// The instant of contact: the game stops dead for a moment, the prow
+			// flares, the world shakes -- then the enemy goes.
+			gameClock::hitStop(ram::hitStopSeconds());
+			shield::ramImpact();
+			effects::shake(1.f);
+			if (!hitboxDebug::isDamageFrozen()) { enemy.life -= ram::hitDamage(); }
+			if (enemy.life <= 0.f)
+			{
+				killEnemy(e);
+				e--;
+				continue;
+			}
+			// Knocked aside, not ahead: 45 degrees off the ram toward whichever
+			// side of the ship it was on, faster than the ram itself. Straight
+			// ahead, the ship -- still surging -- caught the enemy it had just
+			// struck and ran through it; aside, the ship passes it.
+			const glm::vec2 side = {-ram::direction().y, ram::direction().x};
+			const float which = glm::dot(enemy.position - session.playerPos, side) >= 0.f ? 1.f : -1.f;
+			const glm::vec2 away = glm::normalize(ram::direction() + side * which);
+			enemyAi::stun(enemy, away * (ram::surgeSpeed() + ram::knockbackSpeed()),
+				ram::stunSeconds());
+		}
+	}
 
 #pragma endregion
 
@@ -285,9 +367,14 @@ bool gameLogic(float deltaTime)
 
 	// Real time: the camera is presentation, and should keep settling while
 	// the game is slowed.
-	renderer.currentCamera.position = camera::follow(
-		renderer.currentCamera.position, session.playerPos, {(float)w, (float)h},
+	cameraBase = camera::follow(
+		cameraBase, session.playerPos, {(float)w, (float)h},
 		{time.real * 550.f, 1.f, 150.f});
+
+	// The world shake rides on top: the whole world moves, background and all,
+	// and the HUD, drawn with its own screen camera, stays still.
+	renderer.currentCamera.position = cameraBase + effects::shakeOffset(time.real)
+		+ ram::cameraLean(); // and leans ahead while ramming
 
 #pragma endregion
 
@@ -419,6 +506,15 @@ bool gameLogic(float deltaTime)
 					collisionSystem.overlaps(session.bullets[i].getHitbox(),
 					game::shipHitbox(session.playerPos, shipSize)))
 				{
+					// The ram's prow takes shots from the front while it is out.
+					if (ram::barrierUp() && glm::dot(session.bullets[i].position - session.playerPos,
+						ram::direction()) > 0.f)
+					{
+						session.bullets.erase(session.bullets.begin() + i);
+						i--;
+						continue;
+					}
+
 					// Relative to the ship, because the shield moves with it and
 					// the ripple has to stay anchored to the bubble.
 					const energy::HitResult hit =
@@ -524,6 +620,9 @@ bool gameLogic(float deltaTime)
 
 #pragma region render ship
 
+	// The ram's afterimages, under everything of the ship's own.
+	effects::drawAfterimages(renderer, shipSheet);
+
 	// Before the hull, so the hull covers the end of the plume inside it.
 	thruster::draw(renderer, session.playerPos, shipSize, player.facing,
 		player.throttle, time.game);
@@ -594,7 +693,8 @@ bool gameLogic(float deltaTime)
 	}
 
 	// Flushes the world, then the HUD.
-	hud::draw(renderer, session.health, energy::level(), slots, weapons::slotCount, w, h);
+	hud::draw(renderer, session.health, energy::level(), slots, weapons::slotCount,
+		ram::ready(), w, h);
 
 #pragma endregion
 
@@ -618,6 +718,7 @@ bool gameLogic(float deltaTime)
 	debugPanel::section("Energy", energy::debugUi);
 	debugPanel::section("Weapons", weapons::debugUi);
 	debugPanel::section("Explosions", effects::debugUi);
+	debugPanel::section("Ram", ram::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemyAi::debugUi);
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);

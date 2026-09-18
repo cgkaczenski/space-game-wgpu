@@ -26,5 +26,11 @@ namespace gameClock
 {
 	FrameTime tick(float realDeltaTime);
 
+	// Freeze game time for `seconds` of real time: a hit-stop, the instant of
+	// stillness that makes an impact read as landing (the ram, C4b). Real time
+	// runs on, so the camera, the shake and the zoom keep moving through it.
+	// A second stop during one extends it to the longer of the two.
+	void hitStop(float seconds);
+
 	void debugUi();
 }
