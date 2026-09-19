@@ -23,7 +23,7 @@ struct EffectUniforms {
     resolution: vec4f, // xy = pixels, zw = 1 / pixels
     time: vec4f,       // x = seconds
     a: vec4f,          // xy = ship centre in pixels, z = radius, w = strength
-    b: vec4f,
+    b: vec4f,          // x = the shimmer's clock, in game seconds
 };
 @group(2) @binding(0) var<uniform> effect: EffectUniforms;
 
@@ -54,7 +54,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         }
 
         // A travelling ripple, so the field shimmers instead of sitting still.
-        let ripple = sin(distance * 0.09 - effect.time.x * 5.0);
+        // On the game's clock, not `time.x` (wall time), so a pause or a
+        // hit-stop holds it still with everything else.
+        let ripple = sin(distance * 0.09 - effect.b.x * 5.0);
 
         let offsetPixels = direction * falloff * strength * (10.0 + 8.0 * ripple);
         uv = uv + offsetPixels * effect.resolution.zw;

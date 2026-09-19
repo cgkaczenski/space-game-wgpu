@@ -198,6 +198,24 @@ or pulsing amber searching.
 ### L1. Game states
 Playing, paused, extracted, dead, restart. R10 defined what restart means.
 
+**Decided (first pass):** no words on screen — every state is shown by what
+the world does, since `wgpu2d` has no text yet.
+- **Paused:** **Escape** toggles it, and losing window focus pauses. Only
+  Escape resumes — coming back to the window stays paused. Game time stops, so
+  everything on it freezes mid-motion: ships, bullets, explosions, the beam,
+  the shield ripple. The world goes **desaturated and dim**; the HUD stays
+  crisp. The camera, zoom and debug panel keep working.
+- **Dead:** at zero health the player's ship explodes the way enemies do (C4a,
+  fireball and its own sprite as debris). The world runs on at normal speed
+  with the controls off and the camera on the wreck; enemies lose the player as
+  if cloaked. Then the **CRT collapses to static**, like a set switching off,
+  and the game restarts on its own — no key.
+- **Extracted:** the ship **warps out** — stretches and shoots forward along
+  its heading with the ram's afterimages and streaks — the screen **fades to
+  white**, and a new round starts. Until L5's gate exists, a debug button
+  triggers it.
+- **Restart** is R10's: the round's state goes, settings stay.
+
 ### L2. Levels: placing resources and enemies
 Hand-placed for now; eventually procedurally generated, so both should load the
 same format.

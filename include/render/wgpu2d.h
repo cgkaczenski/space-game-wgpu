@@ -131,6 +131,7 @@ namespace wgpu2d
 	//         time: vec4f,        // x = seconds since init
 	//         a: vec4f,           // whatever this effect wants
 	//         b: vec4f,
+	//         c: vec4f,           // may be left out if unused
 	//     };
 	//     @group(2) @binding(0) var<uniform> effect: EffectUniforms;
 	//
@@ -155,10 +156,16 @@ namespace wgpu2d
 	// One set per draw, which is all a post-process needs: it is one draw by
 	// nature. Per-*quad* parameters -- an impact point that differs per shield
 	// -- are a harder problem and are roadmap F6.
+	//
+	// A shader that needs fewer may declare its struct without the later
+	// fields: the binding is at least as large as the shader asks for, which
+	// is all WebGPU requires. `c` was added when the CRT filled `a` and `b`
+	// and still needed its switch-off and fade (gameplay roadmap L1).
 	struct EffectParams
 	{
 		glm::vec4 a = {};
 		glm::vec4 b = {};
+		glm::vec4 c = {};
 	};
 
 	// F7: an effect the finished frame is composited through.

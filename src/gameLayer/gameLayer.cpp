@@ -31,6 +31,8 @@
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
+#include <gameState.h>
+#include <worldGrade.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
 #include <shipHitbox.h>
@@ -58,6 +60,10 @@ struct Session
 	std::vector<Enemy> enemies;
 
 	float health = 1.f;
+
+	// Last frame's flying: what the ship shows while it is not being flown --
+	// paused, or wreckage.
+	playerMove::Result player;
 
 	float spawnEnemyTimerSecconds = 3;
 };
@@ -105,6 +111,7 @@ const Feature features[] = {
 	{"shield",     shield::init,     shield::reset,   shield::cleanup},
 	{"bulletLook", bulletLook::init, nullptr,         bulletLook::cleanup},
 	{"cloak",      cloak::init,      nullptr,         cloak::cleanup},
+	{"worldGrade", worldGrade::init, nullptr,         worldGrade::cleanup},
 	{"crt",        crt::init,        nullptr,         crt::cleanup},
 	{"background", background::init, nullptr,         background::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
@@ -188,7 +195,14 @@ void sessionDebugUi()
 	ImGui::SameLine();
 	if (ImGui::Button("Reset game"))
 	{
+		gameState::reset(); // straight back, no transition
 		restartGame();
+	}
+	ImGui::SameLine();
+	// Until the gate exists (gameplay roadmap L5).
+	if (ImGui::Button("Extract"))
+	{
+		gameState::extract();
 	}
 
 	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
@@ -244,6 +258,21 @@ bool gameLogic(float deltaTime)
 
 	renderer.updateWindowMetrics(w, h);
 
+	// Where the round is (gameplay roadmap L1), before the clock is read and
+	// before the CRT is set, because both follow it. A restart happens here,
+	// at the top of a frame, while the transition has the screen covered.
+	{
+		const bool escape = !ImGui::GetIO().WantCaptureKeyboard
+			&& platform::isButtonPressedOn(platform::Button::Escape);
+		if (gameState::update(deltaTime, {escape, platform::isFocused()}))
+		{
+			restartGame();
+		}
+		gameClock::setPaused(gameState::paused());
+		crt::setTransition(gameState::switchOff(), gameState::whiteOut());
+	}
+	const bool controls = gameState::controlsLive();
+
 	// Before anything is drawn: setting this is what routes the frame through
 	// a target, and the target has to exist before the first quad lands.
 	crt::apply();
@@ -279,7 +308,7 @@ bool gameLogic(float deltaTime)
 	// Before movement, because a cloaked ship drifts instead of flying.
 	// Not during a ram: the ram uncloaks on start, and E would otherwise
 	// cloak again while the prow is out -- invulnerable and still striking.
-	if (platform::isButtonPressedOn(platform::Button::E) && !ram::barrierUp())
+	if (controls && platform::isButtonPressedOn(platform::Button::E) && !ram::barrierUp())
 	{
 		energy::cloak();
 	}
@@ -293,8 +322,11 @@ bool gameLogic(float deltaTime)
 	// ship is turned with A/D, when the mouse aims independently.
 	// The ram, before flying: Space starts it toward the mouse, and ramming
 	// uncloaks, as firing does (gameplay roadmap C4b).
-	ram::update(time.game, mouseDirection);
-	if (!ImGui::GetIO().WantCaptureKeyboard && platform::isButtonPressedOn(platform::Button::Space)
+	// Out of control -- paused, dying, leaving -- a wind-up keeps the heading
+	// it had rather than following the mouse.
+	ram::update(time.game, controls ? mouseDirection : ram::direction());
+	if (controls && !ImGui::GetIO().WantCaptureKeyboard
+		&& platform::isButtonPressedOn(platform::Button::Space)
 		&& ram::tryStart(mouseDirection))
 	{
 		energy::uncloak();
@@ -302,7 +334,27 @@ bool gameLogic(float deltaTime)
 	shield::setRam(ram::barrierLevel(), ram::direction());
 
 	playerMove::Result player;
-	if (ram::windingUp())
+	if (gameState::current() == gameState::State::Extracting)
+	{
+		// The warp: straight out along the heading, faster every moment, the
+		// ram's afterimages and streaks behind it. The camera holds (below),
+		// so the ship leaves the screen before it goes white.
+		session.playerVelocity = session.playerFacing * gameState::warpSpeed();
+		session.playerPos += session.playerVelocity * time.game;
+		player = session.player;
+		player.facing = session.playerFacing;
+		player.throttle = 1.f;
+
+		effects::ramTrail(session.playerPos, session.playerFacing, shipSize,
+			shipAtlas.get(3, 0), time.game);
+	}
+	else if (!controls)
+	{
+		// Paused, the hull holds still -- playerMove would snap it to the
+		// mouse even with no time passing. Dying, it is not drawn.
+		player = session.player;
+	}
+	else if (ram::windingUp())
 	{
 		// The wind-up: a moment's dip back, facing the ram, while the prow
 		// brightens. The anticipation is what makes the lunge read as heavy.
@@ -333,6 +385,7 @@ bool gameLogic(float deltaTime)
 		player = playerMove::update(session.playerPos, session.playerVelocity,
 			session.playerFacing, mouseDirection, time.game, energy::isCloaked());
 	}
+	session.player = player;
 
 	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
 	// enemy once per ram; the player takes nothing.
@@ -377,10 +430,13 @@ bool gameLogic(float deltaTime)
 #pragma region follow
 
 	// Real time: the camera is presentation, and should keep settling while
-	// the game is slowed.
-	cameraBase = camera::follow(
-		cameraBase, session.playerPos, {(float)w, (float)h},
-		{time.real * 550.f, 1.f, 150.f});
+	// the game is slowed. It holds during the warp, so the ship leaves it.
+	if (gameState::current() != gameState::State::Extracting)
+	{
+		cameraBase = camera::follow(
+			cameraBase, session.playerPos, {(float)w, (float)h},
+			{time.real * 550.f, 1.f, 150.f});
+	}
 
 	// The world shake rides on top: the whole world moves, background and all,
 	// and the HUD, drawn with its own screen camera, stays still.
@@ -401,11 +457,12 @@ bool gameLogic(float deltaTime)
 #pragma region handle bulets
 
 
-	weapons::handleInput();
+	// Only while playing: paused, the selection holds like everything else.
+	if (controls) { weapons::handleInput(); }
 
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
-	const bool trigger = platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
+	const bool trigger = controls && platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
 	// The mouse in the world, for a missile's target. The view rect is the
 	// world area on screen, so the pointer's fraction of the window is its
 	// fraction of that.
@@ -420,7 +477,10 @@ bool gameLogic(float deltaTime)
 	fire.shipSize = shipSize;
 	fire.mouseWorld = mouseWorld;
 	fire.enemies = &session.enemies;
-	const int shots = weapons::update(time.game, trigger, fire, session.bullets);
+	// Paused, not at all: a weapon that is ready fires whatever the clock
+	// says, and the beam should stay on screen as it was, not switch off.
+	const int shots = gameState::paused() ? 0
+		: weapons::update(time.game, trigger, fire, session.bullets);
 	if (shots > 0)
 	{
 		// Firing is how the player leaves the cloak, and the shot still goes out.
@@ -441,7 +501,7 @@ bool gameLogic(float deltaTime)
 	if (beam.firing)
 	{
 		energy::uncloak();
-		if (beam.started) { sfx::playerShot(); }
+		if (beam.started && !gameState::paused()) { sfx::playerShot(); }
 
 		float reach = distanceToViewEdge(beam.origin, beam.direction, view);
 		int target = -1;
@@ -522,7 +582,8 @@ bool gameLogic(float deltaTime)
 			{
 				// A cloaked ship cannot be hit: the shot passes through and
 				// carries on, rather than vanishing on something that isn't there.
-				if (!energy::isCloaked() &&
+				// Not once it is wreckage or leaving: those shots fly on.
+				if (gameState::playerPresent() && !energy::isCloaked() &&
 					collisionSystem.overlaps(session.bullets[i].getHitbox(),
 					game::shipHitbox(session.playerPos, shipSize)))
 				{
@@ -558,12 +619,20 @@ bool gameLogic(float deltaTime)
 
 	}
 
-	if (session.health <= 0)
+	if (session.health <= 0 && controls)
 	{
-		//kill player
-		restartGame();
+		// The ship goes the way enemies do, and the world runs on around the
+		// wreck until gameState switches the picture off (gameplay roadmap L1).
+		effects::shipDestroyed(session.playerPos, session.playerFacing,
+			session.playerVelocity, shipSize, shipAtlas.get(3, 0));
+		effects::shake(1.f);
+		session.playerVelocity = {};
+		energy::uncloak();
+		ram::reset();
+		weapons::reset(); // no burst's second shot from the wreck
+		gameState::playerDied();
 	}
-	else
+	else if (gameState::playerPresent())
 	{
 		// Game time. This was the frame's own delta, so at 1% speed the ship
 		// healed at full rate while everything shooting at it crawled.
@@ -595,7 +664,9 @@ bool gameLogic(float deltaTime)
 		// collisionSystem.separation(circleA, circleB) to push them apart.
 
 		// Cloaked, the player is in no enemy's sight (gameplay roadmap C5).
-		if (enemyAi::update(session.enemies[i], time.game, session.playerPos, energy::isCloaked()))
+		// Wreckage or leaving, the player is as gone as cloaked.
+		if (enemyAi::update(session.enemies[i], time.game, session.playerPos,
+			energy::isCloaked() || !gameState::playerPresent()))
 		{
 			Bullet b;
 			b.position = session.enemies[i].position;
@@ -656,19 +727,28 @@ bool gameLogic(float deltaTime)
 	// The ram's afterimages, under everything of the ship's own.
 	effects::drawAfterimages(renderer, shipSheet);
 
-	// Before the hull, so the hull covers the end of the plume inside it.
-	thruster::draw(renderer, session.playerPos, shipSize, player.facing,
-		player.throttle, time.game);
+	// Dying, the ship is its debris, drawn with the wrecks.
+	if (gameState::current() != gameState::State::Dying)
+	{
+		// Before the hull, so the hull covers the end of the plume inside it.
+		thruster::draw(renderer, session.playerPos, shipSize, player.facing,
+			player.throttle, time.game);
 
-	// Faded by the cloak. The hull going nearly transparent is half the
-	// effect; the other half is the world bending around it, which happens
-	// below when the world goes through the cloak's shader.
-	renderSpaceShip(renderer, session.playerPos, shipSize,
-		shipSheet, shipAtlas.get(3, 0), player.facing,
-		{1.f, 1.f, 1.f, cloak::shipAlpha()});
+		// Faded by the cloak. The hull going nearly transparent is half the
+		// effect; the other half is the world bending around it, which happens
+		// below when the world goes through the cloak's shader. Stretched
+		// along its heading while it warps out.
+		renderSpaceShip(renderer, session.playerPos, shipSize,
+			shipSheet, shipAtlas.get(3, 0), player.facing,
+			{1.f, 1.f, 1.f, cloak::shipAlpha()}, gameState::warpStretch());
 
-	// After the hull, so the rim reads as being in front of it.
-	shield::draw(renderer, session.playerPos, shipSize, time.game);
+		// After the hull, so the rim reads as being in front of it. Not while
+		// warping: the bubble does not stretch with the hull.
+		if (gameState::playerPresent())
+		{
+			shield::draw(renderer, session.playerPos, shipSize, time.game);
+		}
+	}
 
 #pragma endregion
 
@@ -716,6 +796,11 @@ bool gameLogic(float deltaTime)
 	// renderer.flush(); up, the world goes into a target and comes back
 	// through the shader. hud::draw flushes again straight after, which is a
 	// no-op on an empty batch.
+	//
+	// Paused, the world is graded grey and dim first. The grade is per pixel
+	// and the cloak only moves pixels, so grading before bending is the same
+	// picture as after -- see worldGrade.h.
+	worldGrade::apply(renderer, gameState::pauseLook(), w, h);
 	cloak::flushWorld(renderer, session.playerPos, shipSize, w, h, time.game);
 
 	hud::WeaponSlot slots[weapons::slotCount];
@@ -745,6 +830,8 @@ bool gameLogic(float deltaTime)
 
 	debugPanel::renderStats();
 	debugPanel::section("Session", sessionDebugUi);
+	debugPanel::section("State", gameState::debugUi);
+	debugPanel::section("Pause look", worldGrade::debugUi);
 	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);

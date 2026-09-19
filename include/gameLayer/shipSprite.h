@@ -18,12 +18,17 @@ inline void renderSpaceShip(
 	glm::vec4 uvs, glm::vec2 viewDirection,
 	// Multiplies the sprite. Alpha below 1 fades the hull, which is how the
 	// cloak makes it nearly transparent -- see gameLayer/cloak.h.
-	wgpu2d::Color4f tint = Colors_White)
+	wgpu2d::Color4f tint = Colors_White,
+	// Stretches the hull along its heading, about its centre: the warp-out
+	// (gameplay roadmap L1). The art's nose is along the sprite's height --
+	// that is what the +90 below turns to face `viewDirection`.
+	float lengthScale = 1.f)
 {
 	float spaceShipAngle = atan2(viewDirection.y, -viewDirection.x);
 
-	renderer.renderRectangle({position - glm::vec2(size / 2, size / 2),
-		size, size}, texture,
+	const float length = size * lengthScale;
+	renderer.renderRectangle({position - glm::vec2(size / 2, length / 2),
+		size, length}, texture,
 		tint, {}, glm::degrees(spaceShipAngle) + 90.f,
 		uvs);
 }

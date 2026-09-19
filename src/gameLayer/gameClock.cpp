@@ -28,10 +28,13 @@ namespace
 namespace
 {
 	float stopLeft = 0.f; // seconds of real time
+	bool paused = false;
 }
 
 FrameTime tick(float realDeltaTime)
 {
+	// Before the hit-stop, so a pause taken during one does not use it up.
+	if (paused) { return {realDeltaTime, 0.f}; }
 	if (stopLeft > 0.f)
 	{
 		stopLeft -= realDeltaTime;
@@ -44,6 +47,8 @@ void hitStop(float seconds)
 {
 	stopLeft = std::max(stopLeft, seconds);
 }
+
+void setPaused(bool p) { paused = p; }
 
 void reset()
 {

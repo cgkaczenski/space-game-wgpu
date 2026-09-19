@@ -23,6 +23,13 @@ namespace
 	bool active = false;
 	float level = 0.f; // eased `active`
 
+	// The shimmer's clock: game time, so it freezes when the game does.
+	// Wrapped well before float precision would coarsen the ripple, on a
+	// whole number of the shader's periods (it runs at 5 rad/s) so the wrap
+	// does not jump.
+	float shimmerClock = 0.f;
+	const float shimmerWrap = 1000.f * 6.2831853f / 5.f;
+
 	const float engagePerSecond = 3.5f;
 	const float disengagePerSecond = 4.5f;
 
@@ -85,6 +92,7 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	const float target = active ? 1.f : 0.f;
 	const float rate = active ? engagePerSecond : disengagePerSecond;
 	level += (target - level) * std::min(1.f, rate * std::max(0.f, dt));
+	shimmerClock = std::fmod(shimmerClock + std::max(0.f, dt), shimmerWrap);
 	if (level < 0.004f) { level = 0.f; } // settle exactly, so down is free
 
 	// Down, or nothing usable: this is an ordinary flush and costs nothing.
@@ -127,6 +135,7 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	wgpu2d::EffectParams params;
 	params.a = {screenPos.x, screenPos.y,
 		shipScreenRadius * radiusPerShipRadius, level * maxStrength};
+	params.b = {shimmerClock, 0.f, 0.f, 0.f};
 
 	renderer.drawFullscreenEffect(worldTarget.texture, effect, params);
 }

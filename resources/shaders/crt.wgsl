@@ -24,6 +24,7 @@ struct EffectUniforms {
     time: vec4f,       // x = seconds
     a: vec4f,          // x = master, y = curvature, z = scanlines, w = mask
     b: vec4f,          // x = scanline period in pixels, y = vignette, z = fringing, w = warmth
+    c: vec4f,          // x = switch-off 0..1, y = white-out 0..1 (gameplay roadmap L1)
 };
 @group(2) @binding(0) var<uniform> effect: EffectUniforms;
 
@@ -62,8 +63,35 @@ fn bend(uv: vec2f, amount: f32) -> vec2f
     return (centred * (1.0 + amount * r2)) * 0.5 + 0.5;
 }
 
+// The set switching off, as a coordinate: where on the unsquashed picture
+// this screen point comes from. First static comes up over the picture (the
+// caller does that), then the picture collapses to a horizontal line, the
+// line to a dot, and the dot goes out. Squashing is sampling from further
+// out, so it is a divide around the centre; a point that would sample past
+// the picture's edge falls outside [0, 1] and the tube test blacks it out.
+fn squashY(off: f32) -> f32 { return mix(1.0, 0.004, smoothstep(0.25, 0.65, off)); }
+fn squashX(off: f32) -> f32 { return mix(1.0, 0.003, smoothstep(0.6, 0.88, off)); }
+
+fn squash(uv: vec2f, off: f32) -> vec2f
+{
+    if (off <= 0.0) { return uv; }
+    let scale = vec2f(squashX(off), squashY(off));
+    return (uv - 0.5) / scale + 0.5;
+}
+
+fn hash(p: vec2f) -> f32
+{
+    let q = fract(p * vec2f(123.34, 456.21));
+    let r = q + dot(q, q + 45.32);
+    return fract(r.x * r.y);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    let off = clamp(effect.c.x, 0.0, 1.0);
+    let white = clamp(effect.c.y, 0.0, 1.0);
+    let screenUv = squash(in.uv, off);
+
     // One master knob scales the lot, so the slider runs from a flat screen to
     // a strong effect without the parts drifting out of proportion.
     let master = clamp(effect.a.x, 0.0, 2.0);
@@ -76,7 +104,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let fringing = effect.b.z * master;
     let warmth = clamp(effect.b.w, 0.0, 1.0);
 
-    let uv = bend(in.uv, curvature);
+    let uv = bend(screenUv, curvature);
 
     // Sampling is textureSampleLevel rather than textureSample because a
     // post-process wants level 0 always, and because textureSample picks its
@@ -100,9 +128,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     if (fringing > 0.0) {
         let scale = fringing * 0.004;
         let red = textureSampleLevel(spriteTexture, spriteSampler,
-            bend(in.uv, curvature + scale), 0.0).r;
+            bend(screenUv, curvature + scale), 0.0).r;
         let blue = textureSampleLevel(spriteTexture, spriteSampler,
-            bend(in.uv, curvature - scale), 0.0).b;
+            bend(screenUv, curvature - scale), 0.0).b;
         colour = vec3f(red, colour.g, blue);
     }
 
@@ -185,5 +213,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         colour = colour * (1.0 - vignette * dot(centred, centred) * 0.5);
     }
 
-    return vec4f(colour * inside, 1.0);
+    // The switch-off's static and glare. Static first, over the whole picture
+    // while it is still full size; then, as it squashes, what is left runs
+    // white-hot, the way the last line on a tube is the brightest thing on it.
+    // Snow is in blocks of two output pixels and changes every 1/30 s, so it
+    // reads as noise rather than as a shimmer.
+    if (off > 0.0) {
+        let cell = floor(in.uv * effect.resolution.xy * 0.5);
+        let frame = floor(effect.time.x * 30.0);
+        let snow = vec3f(hash(cell + vec2f(frame * 7.13, frame * 3.71)));
+        colour = mix(colour, snow, 0.75 * smoothstep(0.0, 0.3, off));
+        let glare = smoothstep(0.35, 0.7, off);
+        colour = mix(colour, vec3f(1.0), glare);
+        // The dot, going out.
+        colour = colour * (1.0 - smoothstep(0.88, 1.0, off));
+    }
+
+    // White-out: after everything, so it is white, not warm or scanlined white.
+    return vec4f(mix(colour * inside, vec3f(1.0), white), 1.0);
 }

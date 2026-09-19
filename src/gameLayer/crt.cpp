@@ -55,6 +55,11 @@ namespace
 	// has no free parameter left to carry a colour, only the amount.
 	const glm::vec3 warmColour = {1.0f, 0.80f, 0.58f};
 
+	// The round's transitions (gameplay roadmap L1), 0 .. 1 each. Not
+	// settings: the game sets them every frame.
+	float switchOff = 0.f;
+	float whiteOut = 0.f;
+
 	bool readFile(const char *path, std::string &out)
 	{
 		std::ifstream file(path, std::ios::binary);
@@ -88,6 +93,12 @@ bool init()
 void setEnabled(bool e) { enabled = e; }
 bool isEnabled() { return enabled; }
 
+void setTransition(float off, float white)
+{
+	switchOff = off;
+	whiteOut = white;
+}
+
 void cleanup()
 {
 	// What this feature holds is the routing, not the pipeline: wgpu2d has no
@@ -102,12 +113,28 @@ void cleanup()
 void apply()
 {
 
+	const bool transition = switchOff > 0.f || whiteOut > 0.f;
+
 	// Off costs nothing: no target, no extra pass, the frame goes straight to
 	// the surface as it always did.
-	if (!enabled || effect.id == 0 || strength <= 0.f)
+	if (effect.id == 0 || (!transition && (!enabled || strength <= 0.f)))
 	{
 		wgpu2d::clearFinalEffect();
 		wgpu2d::clearFinalGlow();
+		return;
+	}
+
+	// The filter switched off but a transition running: the shader runs for
+	// the transition alone, every part of the CRT look at zero. Warmth too --
+	// it is the one part the master does not scale.
+	if (!enabled || strength <= 0.f)
+	{
+		wgpu2d::clearFinalGlow();
+		wgpu2d::EffectParams params;
+		params.a = {0.f, 0.f, 0.f, 0.f};
+		params.b = {period, 0.f, 0.f, 0.f};
+		params.c = {switchOff, whiteOut, 0.f, 0.f};
+		wgpu2d::setFinalEffect(effect, params);
 		return;
 	}
 
@@ -127,6 +154,7 @@ void apply()
 	wgpu2d::EffectParams params;
 	params.a = {strength, curvature, scanlines, mask};
 	params.b = {period, vignette, fringing, warmth};
+	params.c = {switchOff, whiteOut, 0.f, 0.f};
 	wgpu2d::setFinalEffect(effect, params);
 }
 

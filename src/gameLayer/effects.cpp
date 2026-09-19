@@ -296,19 +296,20 @@ glm::vec2 shakeOffset(float realDeltaTime)
 		amplitude * std::sin(6.2831853f * shakeFrequencyY * shakePhase + 1.1f)};
 }
 
-void enemyKilled(const Enemy &enemy, glm::vec4 cell)
+void shipDestroyed(glm::vec2 position, glm::vec2 facing, glm::vec2 velocity, float size,
+	glm::vec4 cell)
 {
-	blasts.push_back({enemy.position, enemyShipSize, 0.f});
+	blasts.push_back({position, size, 0.f});
 
 	// The same angle renderSpaceShip draws the hull at, so the pieces start
 	// where that part of the hull was. The renderer rotates in its flipped
 	// (y-up) space: an angle t maps +x to (cos t, -sin t) on screen.
-	const float angleDegrees = glm::degrees(std::atan2(enemy.viewDirection.y, -enemy.viewDirection.x)) + 90.f;
+	const float angleDegrees = glm::degrees(std::atan2(facing.y, -facing.x)) + 90.f;
 	const float t = glm::radians(angleDegrees);
 	const float c = std::cos(t);
 	const float s = std::sin(t);
 
-	const glm::vec2 pieceSize = {enemyShipSize / piecesAcross, enemyShipSize / piecesDown};
+	const glm::vec2 pieceSize = {size / piecesAcross, size / piecesDown};
 
 	for (int j = 0; j < piecesDown; j++)
 	{
@@ -316,12 +317,12 @@ void enemyKilled(const Enemy &enemy, glm::vec4 cell)
 		{
 			// Where this piece sits in the unrotated sprite, from its centre.
 			const glm::vec2 local = {
-				((i + 0.5f) / piecesAcross - 0.5f) * enemyShipSize,
-				((j + 0.5f) / piecesDown - 0.5f) * enemyShipSize};
+				((i + 0.5f) / piecesAcross - 0.5f) * size,
+				((j + 0.5f) / piecesDown - 0.5f) * size};
 			const glm::vec2 offset = {local.x * c + local.y * s, -local.x * s + local.y * c};
 
 			Piece p;
-			p.position = enemy.position + offset;
+			p.position = position + offset;
 			p.size = pieceSize;
 
 			// Its part of the cell. The atlas gives (left, top, right, bottom)
@@ -338,7 +339,7 @@ void enemyKilled(const Enemy &enemy, glm::vec4 cell)
 			const float scatter = randomBetween(-0.6f, 0.6f);
 			out = {out.x * std::cos(scatter) - out.y * std::sin(scatter),
 				out.x * std::sin(scatter) + out.y * std::cos(scatter)};
-			p.velocity = out * randomBetween(debrisSpeedMin, debrisSpeedMax) + enemy.velocity * 0.5f;
+			p.velocity = out * randomBetween(debrisSpeedMin, debrisSpeedMax) + velocity * 0.5f;
 
 			p.angle = angleDegrees;
 			p.spin = randomBetween(-debrisSpinMax, debrisSpinMax);
@@ -347,6 +348,11 @@ void enemyKilled(const Enemy &enemy, glm::vec4 cell)
 			pieces.push_back(p);
 		}
 	}
+}
+
+void enemyKilled(const Enemy &enemy, glm::vec4 cell)
+{
+	shipDestroyed(enemy.position, enemy.viewDirection, enemy.velocity, enemyShipSize, cell);
 }
 
 void update(float gameDeltaTime)

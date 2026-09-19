@@ -32,6 +32,12 @@ namespace gameClock
 	// A second stop during one extends it to the longer of the two.
 	void hitStop(float seconds);
 
+	// Holds game time at zero until released: a hit-stop with no end
+	// (gameplay roadmap L1). Everything on game time freezes where it is;
+	// real time runs on, so the camera, zoom and panel still answer. Not
+	// touched by reset -- whether the game is paused is gameState's to say.
+	void setPaused(bool paused);
+
 	// A new round: any hit-stop in progress is something that happened, so it
 	// does not carry into the next. The speed slider is a setting and stays.
 	void reset();

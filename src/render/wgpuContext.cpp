@@ -56,8 +56,9 @@ namespace
 		float time[4] = {};       // x = seconds since init
 		float a[4] = {};          // whatever the effect wants
 		float b[4] = {};
+		float c[4] = {};
 	};
-	static_assert(sizeof(EffectUniforms) == 64, "effect uniforms must stay 4 x vec4");
+	static_assert(sizeof(EffectUniforms) == 80, "effect uniforms must stay 5 x vec4");
 
 	struct PipelineKey
 	{
@@ -392,7 +393,7 @@ namespace
 
 	bool sameEffectParams(const wgpu2d::EffectParams &a, const wgpu2d::EffectParams &b)
 	{
-		return a.a == b.a && a.b == b.b;
+		return a.a == b.a && a.b == b.b && a.c == b.c;
 	}
 	wgpu2d::Texture white1pxSquareTexture;    // gl2d's untextured path samples this
 
@@ -2202,10 +2203,11 @@ namespace
 			uniforms.resolution[3] = projectionHeight != 0.f ? 1.f / projectionHeight : 0.f;
 			uniforms.time[0] = std::chrono::duration<float>(
 				std::chrono::steady_clock::now() - startedAt).count();
-			for (int c = 0; c < 4; c++)
+			for (int k = 0; k < 4; k++)
 			{
-				uniforms.a[c] = frameEffectParams[i].a[c];
-				uniforms.b[c] = frameEffectParams[i].b[c];
+				uniforms.a[k] = frameEffectParams[i].a[k];
+				uniforms.b[k] = frameEffectParams[i].b[k];
+				uniforms.c[k] = frameEffectParams[i].c[k];
 			}
 			g.queue.writeBuffer(g.effectBuffer,
 				(uint64_t)(effectSlotBase + i) * g.effectSlotStride, &uniforms, sizeof(uniforms));

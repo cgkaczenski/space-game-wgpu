@@ -34,6 +34,13 @@ namespace crt
 	// read here, so a change shows up on the next frame.
 	void apply();
 
+	// The round's transitions (gameplay roadmap L1), each 0 .. 1: how far the
+	// picture has switched off -- static, then a collapse to a line and a dot,
+	// as a set does -- and how far it has gone to white. Set every frame
+	// before apply. They run even with the filter disabled, with the rest of
+	// the CRT look at zero, because they are the game's, not the filter's.
+	void setTransition(float switchOff, float whiteOut);
+
 	void setEnabled(bool enabled);
 	bool isEnabled();
 

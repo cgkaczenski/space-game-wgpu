@@ -25,6 +25,11 @@ namespace effects
 	// as the atlas gives them, so the debris can be cut from it.
 	void enemyKilled(const Enemy &enemy, glm::vec4 cell);
 
+	// Any ship: the same blast and the same debris, sized to it. Enemies go
+	// through enemyKilled; the player's death comes here directly (L1).
+	void shipDestroyed(glm::vec2 position, glm::vec2 facing, glm::vec2 velocity, float size,
+		glm::vec4 cell);
+
 	// Game time.
 	void update(float gameDeltaTime);
 
