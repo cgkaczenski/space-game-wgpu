@@ -32,6 +32,9 @@
 #include <effects.h>
 #include <ram.h>
 #include <gameState.h>
+#include <level.h>
+#include <arena.h>
+#include <scenery.h>
 #include <worldGrade.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
@@ -86,9 +89,38 @@ wgpu2d::TextureAtlasPadding shipAtlas;
 
 constexpr float shipSize = 250.f;
 
-// Enemies further than this from the player are removed. Named because the
-// zoom-out limit depends on it: past that zoom, the player would see it happen.
+// Enemies further than this from the player are removed -- in the endless
+// mode only, with no level loaded. Named because the zoom-out limit depends on
+// it: past that zoom, the player would see it happen.
 constexpr float enemyDespawnDistance = 4000.f;
+
+// ---- The level (gameplay roadmap L2) ----------------------------------------
+//
+// What was loaded, not what happened: restart builds the round from it, and
+// nothing in a round changes it. With no file, the game is the endless mode it
+// was before levels -- waves around the player, despawn ring and all.
+const char *levelPath = RESOURCES_PATH "levels/level1.txt";
+level::Level currentLevel;
+bool levelLoaded = false;
+
+// Enemies outside the view, grown by this fraction of its size on every side,
+// sleep: no update at all, so they stay exactly where they are. Engaged or
+// searching enemies stay awake wherever they are, so a chase does not freeze
+// just off screen.
+float wakeMargin = 0.25f;
+bool markersVisible = true;
+bool sceneryVisible = true;
+int awakeEnemies = 0; // last frame's, for the panel
+
+void loadLevel()
+{
+	levelLoaded = level::load(levelPath, currentLevel);
+	if (!levelLoaded)
+	{
+		currentLevel = {};
+		std::cerr << "level: no " << levelPath << ", playing the endless mode\n";
+	}
+}
 
 // ---- Lifecycle --------------------------------------------------------------
 //
@@ -114,6 +146,7 @@ const Feature features[] = {
 	{"worldGrade", worldGrade::init, nullptr,         worldGrade::cleanup},
 	{"crt",        crt::init,        nullptr,         crt::cleanup},
 	{"background", background::init, nullptr,         background::cleanup},
+	{"scenery",    scenery::init,    nullptr,         scenery::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
 	{"effects",    effects::init,    effects::reset,  effects::cleanup},
 	{"ram",        nullptr,          ram::reset,      nullptr},
@@ -138,6 +171,18 @@ int startedFeatures = 0;
 void restartGame()
 {
 	session = {};
+
+	arena::setRadius(levelLoaded ? currentLevel.arenaRadius : 0.f);
+	if (levelLoaded)
+	{
+		session.playerPos = currentLevel.start;
+		session.playerFacing = level::direction(currentLevel.startFacingDegrees);
+		for (const level::EnemyPlacement &p : currentLevel.enemies)
+		{
+			session.enemies.push_back(enemyAi::spawnAt(p.position,
+				level::direction(p.facingDegrees), p.behaviour));
+		}
+	}
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
 	gameClock::reset();
@@ -206,7 +251,52 @@ void sessionDebugUi()
 	}
 
 	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
+	ImGui::Text("Player at %.0f, %.0f", session.playerPos.x, session.playerPos.y);
 	ImGui::Checkbox("Health regen", &healthRegenEnabled);
+}
+
+void levelDebugUi()
+{
+	if (levelLoaded)
+	{
+		ImGui::Text("%s", levelPath);
+		ImGui::Text("%d enemies placed, %d awake", (int)currentLevel.enemies.size(), awakeEnemies);
+	}
+	else
+	{
+		ImGui::TextDisabled("No level: endless mode");
+	}
+	if (ImGui::Button("Reload level"))
+	{
+		loadLevel();
+		gameState::reset();
+		restartGame();
+	}
+	ImGui::SliderFloat("Wake margin", &wakeMargin, 0.f, 2.f, "%.2f of view");
+	ImGui::Checkbox("Level markers", &markersVisible);
+	ImGui::SameLine();
+	ImGui::Checkbox("Scenery", &sceneryVisible);
+	arena::debugUi();
+}
+
+// Resources are gold rings, the gate a larger cyan pair: debug outlines until
+// L3 and L5 give them a look. Line widths hold on screen whatever the zoom.
+void drawMarkers(float zoom)
+{
+	if (!levelLoaded || !markersVisible) { return; }
+	const float px = 1.f / std::max(zoom, 0.01f);
+	for (const level::Marker &m : currentLevel.markers)
+	{
+		if (m.kind == level::Marker::Kind::Resource)
+		{
+			renderer.renderCircleOutline(m.position, {1.f, 0.8f, 0.2f, 0.9f}, 250.f, 3.f * px, 32);
+		}
+		else
+		{
+			renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.9f}, 600.f, 3.f * px, 48);
+			renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.5f}, 450.f, 2.f * px, 48);
+		}
+	}
 }
 
 }
@@ -241,6 +331,7 @@ bool initGame()
 		startedFeatures++;
 	}
 
+	loadLevel();
 	restartGame();
 
 	return true;
@@ -387,6 +478,13 @@ bool gameLogic(float deltaTime)
 	}
 	session.player = player;
 
+	// The level's edge pushes back (gameplay roadmap L2). Not on the warp,
+	// which is leaving anyway.
+	if (gameState::playerPresent())
+	{
+		arena::pushPlayer(session.playerPos, session.playerVelocity, time.game);
+	}
+
 	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
 	// enemy once per ram; the player takes nothing.
 	if (ram::active())
@@ -448,10 +546,12 @@ bool gameLogic(float deltaTime)
 #pragma region render background
 
 	// Wall time, not game time: see zoomControl.h.
+	// With a level, nothing is removed for distance, so no ring bounds the zoom.
 	renderer.currentCamera.zoom = zoomControl::update(time.real,
-		{(float)w, (float)h}, enemyDespawnDistance);
+		{(float)w, (float)h}, levelLoaded ? 0.f : enemyDespawnDistance);
 
 	background::draw(renderer);
+	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
 #pragma endregion
 
 #pragma region handle bulets
@@ -644,20 +744,42 @@ bool gameLogic(float deltaTime)
 
 #pragma region handle enemies
 
-	enemyAi::updateSpawning(session.enemies, session.spawnEnemyTimerSecconds,
-		session.playerPos, time.game);
+	// Waves are the endless mode's; a level places its enemies.
+	if (!levelLoaded)
+	{
+		enemyAi::updateSpawning(session.enemies, session.spawnEnemyTimerSecconds,
+			session.playerPos, time.game);
+	}
 
+	// The view, grown by the wake margin: inside it, enemies are awake.
+	glm::vec4 wakeRect = renderer.getViewRect();
+	wakeRect.x -= wakeRect.z * wakeMargin;
+	wakeRect.y -= wakeRect.w * wakeMargin;
+	wakeRect.z *= 1.f + 2.f * wakeMargin;
+	wakeRect.w *= 1.f + 2.f * wakeMargin;
+	awakeEnemies = 0;
 
 	for (int i = 0; i < session.enemies.size(); i++)
 	{
 
-		if (glm::distance(session.playerPos, session.enemies[i].position) > enemyDespawnDistance)
+		if (!levelLoaded
+			&& glm::distance(session.playerPos, session.enemies[i].position) > enemyDespawnDistance)
 		{
 			//dispawn enemy
 			session.enemies.erase(session.enemies.begin() + i);
 			i--;
 			continue;
 		}
+
+		if (levelLoaded)
+		{
+			const Enemy &e = session.enemies[i];
+			const bool inView = e.position.x >= wakeRect.x && e.position.x <= wakeRect.x + wakeRect.z
+				&& e.position.y >= wakeRect.y && e.position.y <= wakeRect.y + wakeRect.w;
+			if (!inView && e.awareness == Enemy::Awareness::Unaware) { continue; } // asleep
+			arena::pushEnemy(session.enemies[i].position, time.game);
+		}
+		awakeEnemies++;
 
 		// Ship-ship (player vs enemy, enemy vs enemy) will use
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
@@ -708,6 +830,8 @@ bool gameLogic(float deltaTime)
 
 	// Wrecks sit where ships sit: after them, under everything else.
 	effects::drawDebris(renderer, shipSheet);
+
+	drawMarkers(renderer.currentCamera.zoom);
 
 	// A missile's lock on its target: a dashed red box, until impact.
 	for (const auto &b : session.bullets)
@@ -772,6 +896,7 @@ bool gameLogic(float deltaTime)
 	}
 	if (beam.firing) { bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamHit, effectClock); }
 	effects::drawGlow(renderer);
+	arena::draw(renderer, renderer.currentCamera.zoom);
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	for (auto &b : session.bullets)
@@ -831,6 +956,7 @@ bool gameLogic(float deltaTime)
 	debugPanel::renderStats();
 	debugPanel::section("Session", sessionDebugUi);
 	debugPanel::section("State", gameState::debugUi);
+	debugPanel::section("Level", levelDebugUi);
 	debugPanel::section("Pause look", worldGrade::debugUi);
 	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);

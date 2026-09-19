@@ -298,25 +298,28 @@ bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerH
 	return false;
 }
 
-Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour)
+Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour)
 {
 	static unsigned int nextId = 1; // 0 means "no enemy"
 
 	Enemy e;
 	e.id = nextId++;
 	e.behaviour = behaviour;
-	e.position = playerPos;
+	e.position = position;
+	e.viewDirection = facing;
+	rollLoadout(e);
+	return e;
+}
 
+Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour)
+{
 	glm::vec2 offset(2000, 0);
 	offset = glm::vec2(glm::vec4(offset, 0, 1) * glm::rotate(glm::mat4(1.f),
 		glm::radians((float)(rand() % 360)), glm::vec3(0, 0, 1)));
 
-	e.position += offset;
 	// Outward: a default +X facing would look at the player from the west
 	// half of the ring and engage on spawn, skipping unaware wander (C5).
-	e.viewDirection = glm::normalize(offset);
-	rollLoadout(e);
-	return e;
+	return spawnAt(playerPos + offset, glm::normalize(offset), behaviour);
 }
 
 Enemy spawnNear(glm::vec2 playerPos)

@@ -34,6 +34,9 @@ namespace
 	// just past the ring, and a corner rule would force it to zoom in.
 	float floorFor(glm::vec2 framebufferSize, float despawnDistance)
 	{
+		// No ring (a level is loaded, and nothing is removed for distance):
+		// only the fixed limit.
+		if (despawnDistance <= 0.f) { return farthestZoom; }
 		const float halfLongerSide = std::max(framebufferSize.x, framebufferSize.y) * 0.5f;
 		return std::clamp(halfLongerSide / despawnDistance, farthestZoom, closestZoom);
 	}

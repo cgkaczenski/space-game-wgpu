@@ -27,6 +27,8 @@ namespace zoomControl
 	// two clocks.
 	//
 	// `framebufferSize` and `despawnDistance` set the zoom-out floor.
+	// `despawnDistance` 0 means no ring -- a level is loaded (gameplay roadmap
+	// L2) -- and the floor is the fixed farthest zoom.
 	float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistance);
 
 	void debugUi();

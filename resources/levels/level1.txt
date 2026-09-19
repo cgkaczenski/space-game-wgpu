@@ -1,0 +1,54 @@
+# Level 1 -- a first sketch (gameplay roadmap L2), for reworking in the editor.
+#
+# The player comes in at the west edge and crosses to the gate in the east.
+# Three resources sit on the way, each with company; the centre is the
+# hardest place to be, and the gate is guarded. Angles in degrees: 0 right,
+# 90 down the screen.
+
+arena 20000
+start -17000 0 0
+
+# A loose picket just inside the edge: the first thing met.
+enemy rusher -12500 -1800 90
+enemy rusher -12000 -2600 150
+enemy rusher -11600 -1500 200
+
+# The north-west resource: snipers on it, one rusher roaming.
+enemy sniper -7600 5600 270
+enemy sniper -6300 4700 200
+enemy rusher -8200 3200 0
+
+# The centre: the middle resource, well guarded.
+enemy sniper -600 -900 0
+enemy sniper 900 1400 180
+enemy rusher 1600 -600 240
+enemy rusher -1200 1200 60
+
+# A pair of snipers between the centre and the gate.
+enemy sniper 6200 -6200 135
+enemy sniper 7000 -5200 170
+
+# The east resource: a pack of rushers.
+enemy rusher 8400 7200 300
+enemy rusher 9200 8400 250
+enemy rusher 7400 8800 330
+
+# The gate.
+enemy sniper 13600 -2600 180
+enemy sniper 14000 800 180
+enemy rusher 13000 -900 180
+enemy rusher 12600 400 200
+
+marker resource -7000 5000
+marker resource 300 300
+marker resource 8200 8000
+marker gate 15000 -1000
+
+# Backdrop: art x y size depth. Depth 0 moves with the world, as the
+# furthest star layer does; that is as far back as anything here reads.
+# Planet1-4 are background4.png's planets, natural sizes about 2700, 2000,
+# 1200 and 1000.
+scenery Planet1 -4000 -7000 2700 0
+scenery Planet2 6000 2500 2000 0
+scenery Planet3 -13000 7500 1200 0
+scenery Planet4 11000 -9000 1000 0

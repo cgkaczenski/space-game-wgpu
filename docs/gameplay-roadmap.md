@@ -224,6 +224,36 @@ same format.
 would delete a placed enemy before the player arrives. Levels have to change
 that — and doing so also lifts the zoom-out floor.
 
+**Decided (first pass)**
+- A level is a **circle** (radius set by the level, about 20000 for the
+  first). Past the edge the ship is pushed back gently, and a faint ring shows
+  where the edge is. L4's closing circle later shrinks this same radius.
+- A level places **enemies** (position, rusher or sniper, facing — they start
+  unaware), the **player start** (position and facing), **markers** for
+  resources (L3) and the gate (L5), shown only in debug until those exist, and
+  **scenery**: backdrop pieces, each with a parallax depth. Decoration, with no
+  collision. _(After the first look:)_ the planets are background4.png's four,
+  cut out and placed one at a time — that layer is gone from the starfield.
+  The black-hole and shattered-planet art is too coarse up close and is only
+  for small pieces far back. Depth 0 moves with the world, and reads as the
+  furthest thing here, since the starfield's nearer layers move faster.
+- With a level loaded, **waves are off** and nothing is deleted for distance.
+  Enemies away from the view **sleep** — no update, staying where they are —
+  and wake when they come within a margin of the view's edge, so everything on
+  screen is alive and nothing wakes in sight. The zoom-out floor goes with the
+  despawn ring. _(L2a, to confirm:)_ an enemy that is engaged or searching
+  stays awake wherever it is, so a chase does not freeze just off screen.
+- The format is a **plain text file**, one thing per line, read into a `Level`
+  struct that a procedural generator will also fill later.
+- An **in-game editor** in the debug panel: pick a type, click to place, drag
+  to move, right-click to delete, with facing, radius and depth in panel
+  fields. Editing freezes the game and frees the view to pan and zoom over the
+  whole arena. Save writes the file; reload reads it back without restarting
+  the game; "test from here" starts a round with the ship where the camera is.
+- The first level is sketched by Claude for the author to rework in the
+  editor: the player near the edge, a few groups of rushers and snipers,
+  markers for three resources and a gate, two or three planets.
+
 ### L3. Resources for extraction
 For now, points earned.
 

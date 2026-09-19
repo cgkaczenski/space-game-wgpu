@@ -44,6 +44,10 @@ namespace enemyAi
 	// A new enemy on a ring around the player. The one-argument form picks a
 	// behaviour at random and rolls that policy's loadout.
 	Enemy spawnNear(glm::vec2 playerPos);
+
+	// A new enemy exactly here, facing `facing` (unit): a level's placement.
+	// Unaware, with the behaviour's loadout rolled like any other.
+	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour);
 	Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour);
 
 	// Counts `timerSeconds` down by `gameDeltaTime` and spawns a wave when it
