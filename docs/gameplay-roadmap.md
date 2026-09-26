@@ -250,6 +250,13 @@ that — and doing so also lifts the zoom-out floor.
   fields. Editing freezes the game and frees the view to pan and zoom over the
   whole arena. Save writes the file; reload reads it back without restarting
   the game; "test from here" starts a round with the ship where the camera is.
+- _(L2b, choices made while building — to confirm:)_ a right **click**
+  deletes and a right **drag** pans, told apart by whether the mouse moves; the
+  wheel zooms about the cursor, down to 0.01. Leaving the editor restarts the
+  round from the level as edited, saved or not; the panel shows unsaved
+  changes, and Reload throws them away. The start can be moved, not deleted.
+  Scenery is picked and dragged where it is drawn, so a deep piece still moves
+  under the cursor.
 - The first level is sketched by Claude for the author to rework in the
   editor: the player near the edge, a few groups of rushers and snipers,
   markers for three resources and a gate, two or three planets.

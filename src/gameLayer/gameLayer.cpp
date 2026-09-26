@@ -35,6 +35,7 @@
 #include <level.h>
 #include <arena.h>
 #include <scenery.h>
+#include <levelEditor.h>
 #include <worldGrade.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
@@ -168,7 +169,9 @@ glm::vec2 cameraBase = {};
 // before this count moves, because it never became a success.
 int startedFeatures = 0;
 
-void restartGame()
+// `startAt`, when given, overrides the level's start: the editor's "test from
+// here".
+void restartGame(const glm::vec2 *startAt = nullptr)
 {
 	session = {};
 
@@ -183,6 +186,7 @@ void restartGame()
 				level::direction(p.facingDegrees), p.behaviour));
 		}
 	}
+	if (startAt) { session.playerPos = *startAt; }
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
 	gameClock::reset();
@@ -269,8 +273,18 @@ void levelDebugUi()
 	if (ImGui::Button("Reload level"))
 	{
 		loadLevel();
+		levelEditor::clearChanged();
 		gameState::reset();
 		restartGame();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Edit level"))
+	{
+		// No file yet: the editor starts a new level, saved on first Save.
+		levelLoaded = true;
+		const glm::vec4 view = renderer.getViewRect();
+		levelEditor::open(glm::vec2(view.x, view.y) + glm::vec2(view.z, view.w) * 0.5f,
+			renderer.currentCamera.zoom);
 	}
 	ImGui::SliderFloat("Wake margin", &wakeMargin, 0.f, 2.f, "%.2f of view");
 	ImGui::Checkbox("Level markers", &markersVisible);
@@ -279,26 +293,102 @@ void levelDebugUi()
 	arena::debugUi();
 }
 
-// Resources are gold rings, the gate a larger cyan pair: debug outlines until
-// L3 and L5 give them a look. Line widths hold on screen whatever the zoom.
 void drawMarkers(float zoom)
 {
 	if (!levelLoaded || !markersVisible) { return; }
-	const float px = 1.f / std::max(zoom, 0.01f);
-	for (const level::Marker &m : currentLevel.markers)
+	levelEditor::drawMarkers(currentLevel, renderer, zoom);
+}
+
+}
+
+// The editor's panel, and what it asks for. The game does the file and the
+// round; the editor only edits the level.
+void editorDebugUi()
+{
+	switch (levelEditor::debugUi(currentLevel, levelEditor::changed()))
 	{
-		if (m.kind == level::Marker::Kind::Resource)
-		{
-			renderer.renderCircleOutline(m.position, {1.f, 0.8f, 0.2f, 0.9f}, 250.f, 3.f * px, 32);
-		}
-		else
-		{
-			renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.9f}, 600.f, 3.f * px, 48);
-			renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.5f}, 450.f, 2.f * px, 48);
-		}
+	case levelEditor::Request::Save:
+		if (level::save(levelPath, currentLevel)) { levelEditor::clearChanged(); }
+		else { std::cerr << "level: could not write " << levelPath << "\n"; }
+		break;
+	case levelEditor::Request::Reload:
+		loadLevel();
+		levelEditor::clearChanged();
+		break;
+	case levelEditor::Request::Exit:
+		levelEditor::close();
+		gameState::reset();
+		restartGame();
+		break;
+	case levelEditor::Request::TestHere:
+	{
+		const glm::vec2 here = levelEditor::cameraCentre();
+		levelEditor::close();
+		gameState::reset();
+		restartGame(&here);
+		break;
+	}
+	default: break;
 	}
 }
 
+// The panel holds nothing (roadmap R11): each feature draws its own
+// controls, and the panel only decides the order and the headings.
+void debugPanelUi()
+{
+	ImGui::Begin("debug");
+
+	debugPanel::renderStats();
+	if (levelEditor::active()) { debugPanel::section("Editor", editorDebugUi); }
+	debugPanel::section("Session", sessionDebugUi);
+	debugPanel::section("State", gameState::debugUi);
+	debugPanel::section("Level", levelDebugUi);
+	debugPanel::section("Pause look", worldGrade::debugUi);
+	debugPanel::section("Sound", sfx::debugUi);
+	debugPanel::section("Clock", gameClock::debugUi);
+	debugPanel::section("Player", playerMove::debugUi);
+	debugPanel::section("Energy", energy::debugUi);
+	debugPanel::section("Weapons", weapons::debugUi);
+	debugPanel::section("Explosions", effects::debugUi);
+	debugPanel::section("Ram", ram::debugUi);
+	debugPanel::section("Camera", zoomControl::debugUi);
+	debugPanel::section("Enemies", enemyAi::debugUi);
+	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
+	debugPanel::section("Shield", shield::debugUi);
+	debugPanel::section("CRT", crt::debugUi);
+
+	ImGui::End();
+}
+
+// A frame of the editor instead of the game (gameplay roadmap L2b). The round
+// is not simulated at all -- no clock, no state, no enemies -- and the level is
+// drawn as data over the same backdrop the game uses.
+void editorFrame(float deltaTime, int w, int h)
+{
+	crt::setTransition(0.f, 0.f);
+	crt::apply();
+
+	arena::setRadius(currentLevel.arenaRadius);
+	levelEditor::update(currentLevel, renderer, platform::getRelMousePosition(), w, h, deltaTime);
+
+	background::draw(renderer);
+	if (sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
+
+	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+	arena::draw(renderer, renderer.currentCamera.zoom);
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+
+	levelEditor::Look look;
+	look.shipSheet = shipSheet;
+	look.playerCell = shipAtlas.get(3, 0);
+	look.rusherCell = shipAtlas.get(0, 0);
+	look.sniperCell = shipAtlas.get(2, 0);
+	look.shipSize = shipSize;
+	look.enemySize = enemyShipSize;
+	levelEditor::draw(currentLevel, renderer, look);
+
+	renderer.flush();
+	debugPanelUi();
 }
 
 bool initGame()
@@ -348,6 +438,12 @@ bool gameLogic(float deltaTime)
 	renderer.clearScreen({0, 0, 0, 1}); //clear screen (the pass's load op, applied at flush)
 
 	renderer.updateWindowMetrics(w, h);
+
+	if (levelEditor::active())
+	{
+		editorFrame(deltaTime, w, h);
+		return true;
+	}
 
 	// Where the round is (gameplay roadmap L1), before the clock is read and
 	// before the CRT is set, because both follow it. A restart happens here,
@@ -949,29 +1045,7 @@ bool gameLogic(float deltaTime)
 
 	//ImGui::ShowDemoWindow();
 
-	// The panel holds nothing (roadmap R11): each feature draws its own
-	// controls, and the panel only decides the order and the headings.
-	ImGui::Begin("debug");
-
-	debugPanel::renderStats();
-	debugPanel::section("Session", sessionDebugUi);
-	debugPanel::section("State", gameState::debugUi);
-	debugPanel::section("Level", levelDebugUi);
-	debugPanel::section("Pause look", worldGrade::debugUi);
-	debugPanel::section("Sound", sfx::debugUi);
-	debugPanel::section("Clock", gameClock::debugUi);
-	debugPanel::section("Player", playerMove::debugUi);
-	debugPanel::section("Energy", energy::debugUi);
-	debugPanel::section("Weapons", weapons::debugUi);
-	debugPanel::section("Explosions", effects::debugUi);
-	debugPanel::section("Ram", ram::debugUi);
-	debugPanel::section("Camera", zoomControl::debugUi);
-	debugPanel::section("Enemies", enemyAi::debugUi);
-	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
-	debugPanel::section("Shield", shield::debugUi);
-	debugPanel::section("CRT", crt::debugUi);
-
-	ImGui::End();
+	debugPanelUi();
 
 
 	return true;
