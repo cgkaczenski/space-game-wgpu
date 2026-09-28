@@ -9,6 +9,7 @@ Makefile
 .DS_Store
 .cache/
 imgui.ini
+lastLevel.cfg
 errorLogs.txt
 
 # F12 / WGPU_SCREENSHOT_FRAME writes these next to the binary

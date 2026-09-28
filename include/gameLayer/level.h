@@ -95,6 +95,10 @@ namespace level
 	// Writes `level` in the same format. False if the file cannot be written.
 	bool save(const char *path, const Level &level);
 
+	// The level files in `directory`: every `.txt`, by file name, sorted. Empty
+	// if the directory cannot be read.
+	std::vector<std::string> list(const std::string &directory);
+
 	// Unit vector for a facing in degrees, in the file's convention.
 	glm::vec2 direction(float degrees);
 }

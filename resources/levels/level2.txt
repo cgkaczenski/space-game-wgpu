@@ -1,0 +1,8 @@
+arena 20000
+start 0 0 0
+
+enemy sniper 1855 -1385 0
+
+
+
+

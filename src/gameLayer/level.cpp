@@ -1,7 +1,9 @@
 #include <level.h>
 
 #include <glm/glm.hpp>
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -100,6 +102,21 @@ bool load(const char *path, Level &out)
 		}
 	}
 	return true;
+}
+
+std::vector<std::string> list(const std::string &directory)
+{
+	std::vector<std::string> names;
+	std::error_code error; // a missing folder is an empty list, not an exception
+	for (const auto &entry : std::filesystem::directory_iterator(directory, error))
+	{
+		if (entry.is_regular_file(error) && entry.path().extension() == ".txt")
+		{
+			names.push_back(entry.path().filename().string());
+		}
+	}
+	std::sort(names.begin(), names.end());
+	return names;
 }
 
 bool save(const char *path, const Level &level)

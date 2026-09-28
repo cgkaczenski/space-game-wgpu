@@ -5,6 +5,10 @@
 #include "platformInput.h"
 #include "imgui.h"
 #include <iostream>
+#include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <sstream>
 #include "imfilebrowser.h"
 #include <render/wgpu2d.h>
@@ -102,7 +106,34 @@ constexpr float enemyDespawnDistance = 4000.f;
 // What was loaded, not what happened: restart builds the round from it, and
 // nothing in a round changes it. With no file, the game is the endless mode it
 // was before levels -- waves around the player, despawn ring and all.
-const char *levelPath = RESOURCES_PATH "levels/level1.txt";
+// Which file is the level. The debug panel can load another, or make a new
+// empty one, and switch back; the editor's Save writes to whichever this is.
+const std::string levelsDirectory = RESOURCES_PATH "levels/";
+std::string levelFile = "level1.txt";
+std::string levelPath = levelsDirectory + levelFile;
+
+// The last level played, so the next launch starts there instead of on
+// level1. Beside imgui.ini, in the working directory, and gitignored the same
+// way: it is this machine's, not the game's.
+const char *lastLevelRecord = "lastLevel.cfg";
+
+void rememberLevel()
+{
+	std::ofstream out(lastLevelRecord);
+	if (out) { out << levelFile << "\n"; }
+}
+
+// At launch: the recorded level, if it still exists; otherwise level1.
+void recallLevel()
+{
+	std::ifstream in(lastLevelRecord);
+	std::string file;
+	if (!(in >> file)) { return; }
+	const std::vector<std::string> files = level::list(levelsDirectory);
+	if (std::find(files.begin(), files.end(), file) == files.end()) { return; }
+	levelFile = file;
+	levelPath = levelsDirectory + file;
+}
 level::Level currentLevel;
 bool levelLoaded = false;
 
@@ -116,8 +147,12 @@ int awakeEnemies = 0; // last frame's, for the panel
 
 void loadLevel()
 {
-	levelLoaded = level::load(levelPath, currentLevel);
-	if (!levelLoaded)
+	levelLoaded = level::load(levelPath.c_str(), currentLevel);
+	if (levelLoaded)
+	{
+		std::cout << "level: " << levelFile << ", " << currentLevel.enemies.size() << " enemies\n" << std::flush;
+	}
+	else
 	{
 		currentLevel = {};
 		std::cerr << "level: no " << levelPath << ", playing the endless mode\n";
@@ -290,11 +325,119 @@ void sessionDebugUi()
 	ImGui::Checkbox("Health regen", &healthRegenEnabled);
 }
 
+// Switches to `file` in the levels folder and starts a round in it. The
+// editor's edits to the old level are gone -- the panel says so first.
+void switchLevel(const std::string &file)
+{
+	levelFile = file;
+	levelPath = levelsDirectory + file;
+	rememberLevel();
+	loadLevel();
+	levelEditor::clearChanged();
+	gameState::reset();
+	restartGame();
+}
+
+// A new level's name: letters, digits, - and _, so it is a safe file name.
+bool validLevelName(const std::string &name)
+{
+	if (name.empty()) { return false; }
+	for (char c : name)
+	{
+		if (!std::isalnum((unsigned char)c) && c != '-' && c != '_') { return false; }
+	}
+	return true;
+}
+
+// Loading another level, or making a new empty one (gameplay roadmap U3,
+// ahead of the menu): a test bench for placing enemies with the editor or
+// the spawn buttons.
+void levelFilesUi()
+{
+	static std::vector<std::string> files = level::list(levelsDirectory);
+	static int chosen = -1;
+	static std::string followed; // the level `chosen` was last set to follow
+	static char newName[64] = "";
+
+	const bool unsaved = levelEditor::changed();
+	if (unsaved) { ImGui::TextColored({1.f, 0.7f, 0.2f, 1.f}, "Unsaved edits: loading discards them"); }
+
+	if (ImGui::Button("Refresh")) { files = level::list(levelsDirectory); }
+	ImGui::SameLine();
+	// Follow the current level, so the list opens on it -- but only when the
+	// level changes. Re-syncing whenever the pick differed from the loaded
+	// level undid every pick on the next frame, before Load could see it.
+	if (followed != levelFile || chosen >= (int)files.size())
+	{
+		followed = levelFile;
+		chosen = (int)(std::find(files.begin(), files.end(), levelFile) - files.begin());
+		if (chosen >= (int)files.size()) { chosen = -1; }
+	}
+	ImGui::SetNextItemWidth(160.f);
+	if (ImGui::BeginCombo("##levelFile", chosen >= 0 ? files[chosen].c_str() : "(none)"))
+	{
+		for (int i = 0; i < (int)files.size(); i++)
+		{
+			if (ImGui::Selectable(files[i].c_str(), i == chosen)) { chosen = i; }
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button(unsaved ? "Load (discard edits)" : "Load level") && chosen >= 0)
+	{
+		switchLevel(files[chosen]);
+		return; // `files` is still good, but the level under this panel changed
+	}
+
+	// New: never over an existing file. The next free levelN is offered.
+	if (newName[0] == '\0')
+	{
+		for (int n = 2; ; n++)
+		{
+			const std::string candidate = "level" + std::to_string(n);
+			if (std::find(files.begin(), files.end(), candidate + ".txt") == files.end())
+			{
+				std::snprintf(newName, sizeof(newName), "%s", candidate.c_str());
+				break;
+			}
+		}
+	}
+	ImGui::SetNextItemWidth(160.f);
+	ImGui::InputText("##newLevel", newName, sizeof(newName));
+	const std::string name = newName;
+	const bool valid = validLevelName(name);
+	const bool taken = std::find(files.begin(), files.end(), name + ".txt") != files.end();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!valid || taken);
+	if (ImGui::Button(unsaved ? "New level (discard edits)" : "New level"))
+	{
+		// An arena and a start at its centre: nothing placed, nothing closing,
+		// and with no enemies and no gate, a quiet place to set up a fight.
+		level::Level empty;
+		empty.arenaRadius = 20000.f;
+		empty.start = {0.f, 0.f};
+		const std::string path = levelsDirectory + name + ".txt";
+		if (level::save(path.c_str(), empty))
+		{
+			files = level::list(levelsDirectory);
+			newName[0] = '\0';
+			switchLevel(name + ".txt");
+		}
+		else { std::cerr << "level: could not write " << path << "\n"; }
+	}
+	ImGui::EndDisabled();
+	if (taken) { ImGui::TextDisabled("%s.txt exists: pick another name", name.c_str()); }
+	else if (!valid) { ImGui::TextDisabled("Letters, digits, - and _ only"); }
+}
+
 void levelDebugUi()
 {
+	levelFilesUi();
+	ImGui::Separator();
+
 	if (levelLoaded)
 	{
-		ImGui::Text("%s", levelPath);
+		ImGui::Text("%s", levelFile.c_str());
 		ImGui::Text("%d enemies placed, %d awake", (int)currentLevel.enemies.size(), awakeEnemies);
 	}
 	else
@@ -332,7 +475,7 @@ void editorDebugUi()
 	switch (levelEditor::debugUi(currentLevel, levelEditor::changed()))
 	{
 	case levelEditor::Request::Save:
-		if (level::save(levelPath, currentLevel)) { levelEditor::clearChanged(); }
+		if (level::save(levelPath.c_str(), currentLevel)) { levelEditor::clearChanged(); }
 		else { std::cerr << "level: could not write " << levelPath << "\n"; }
 		break;
 	case levelEditor::Request::Reload:
@@ -448,6 +591,7 @@ bool initGame()
 		startedFeatures++;
 	}
 
+	recallLevel();
 	loadLevel();
 	restartGame();
 

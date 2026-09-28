@@ -412,11 +412,210 @@ _(Choices made while building — to confirm:)_
 
 ---
 
+## Next — a game around the level, and opponents worth fighting
+
+A playable level exists. What comes next is two threads that meet at the end:
+
+- **Menus:** text, then a menu, then a choice of levels, including empty ones
+  for testing.
+- **Opponents:** enemies that move like the player, then enemies with the
+  player's kit.
+
+The two threads meet at the empty level: it is the test bench for the physics
+and for bosses. Nothing in this section is decided yet.
+
+### U1. Text
+
+Nothing in the game can draw a word; every string on screen today is ImGui's.
+
+**Where things stand**
+- The port skipped gl2d's text milestone (outline, "Milestone 9 (text)")
+  because the game drew no text then. It needs text now.
+- `stb_truetype` is already linked. gl2d's approach was almost all CPU: pack
+  the glyphs into an atlas texture, then draw one quad per character through
+  the existing batch.
+- **Lands:** _library_ (`wgpu2d.h`) for the font and the drawing, _game_ for
+  which font and where it is used. Another game would want text as it is, which
+  is what makes it a library feature.
+
+**Open questions**
+- Which font? A pixel font suits the CRT. Whatever it is needs a licence that
+  allows shipping it. ImGui ships a few open ones, including ProggyClean,
+  Roboto and Cousine.
+- One size, or many? That decides the next question.
+- Once text exists, does it replace anything the debug panel shows today, such
+  as L3's points and hold count?
+
+**Engine ideas**
+- **Bitmap atlas** (gl2d's way): crisp at the size it was baked at, blurry
+  scaled up. **Signed distance field** (`stbtt_GetCodepointSDF`, already in the
+  header): one atlas for any size, a smoothstep in the shader, and outlines or
+  glow almost free as a per-quad effect (F6). SDF is the more interesting
+  thing to learn and suits a zoomable game.
+- Text drawn in the world, like damage numbers, gets bloomed by the CRT glow
+  for free. On the HUD it goes through the HUD's layer, so it shakes with the
+  bars.
+
+### U2. In-game menu
+
+The natural home for the control scheme and settings that live in the debug
+panel today.
+
+**Open questions**
+- Is Escape still pause, now opening the menu over the paused world? Or is the
+  menu separate from pause?
+- A title screen at launch, or straight into a level with the menu on Escape?
+- Which items? Resume, restart, level select (U3), settings, quit. Which
+  settings belong to the player (control scheme, CRT strength, volume), and
+  which stay debug-only?
+- Mouse, keyboard, or both? Is a controller ever likely?
+
+**Engine ideas**
+- The paused look (L1) is already the right background: grey, dim, frozen.
+  Menu text sits on top, crisp, in the HUD's layer.
+- glui (already linked) does the layout: frames and boxes by percentage, the
+  way the HUD bars are placed. What's missing is only the widgets: a
+  highlighted row and a slider.
+- Menu transitions can use the CRT's existing switch-on and white-out rather
+  than new effects.
+
+### U3. Level select, and empty levels
+
+A list of levels to pick from, and a way to make a new empty one, so the debug
+panel and the editor can set up a fight for testing enemy AI and combat.
+
+**Where things stand**
+- The level path is one hard-coded file, `resources/levels/level1.txt`.
+  Everything downstream (load, save, reload, "test from here") already works on
+  whatever `Level` is loaded, so choosing a file is mostly the menu's job.
+- An empty level is an arena and a start: two lines. Without rings nothing
+  closes; with no enemies the gate is ready at once. So an empty level is
+  already a calm sandbox, and "Spawn rusher" / "Spawn sniper" already exist in
+  the debug panel.
+
+**Decided (first pass):** empty levels come **first**, ahead of U1 and U2, in
+the debug panel's Level section:
+- **New level** writes a new file, never over an existing one. It offers the
+  next free `levelN`; any name made of letters, digits, `-` and `_` works, and
+  a name already taken is refused. The new file is an arena of 20000 and a
+  start at its centre, and the game switches to it at once. With nothing
+  placed, nothing closing, no enemies and no gate, it's a quiet place to set up
+  a fight with the editor or the spawn buttons.
+- **Load level** picks any `.txt` in `resources/levels/` and switches to it, so
+  `level1` is kept and you can go back and forth. The editor's Save writes to
+  whichever level is loaded.
+- _(To confirm:)_ loading or creating while the editor has unsaved edits
+  discards them, and the button says so.
+- The game **starts on the last level played**. Its file name is kept in
+  `lastLevel.cfg` beside `imgui.ini`, in the working directory and gitignored.
+  If the record is missing, or names a level that is gone, the game starts on
+  `level1`.
+
+**Open questions**
+- Are levels just the files in `resources/levels/`, listed by name? Or is there
+  an order, where finishing one unlocks the next?
+- Naming a new level needs typed input. Is that the menu's job (needs U1), or
+  the editor's in ImGui for now?
+- What does a test level need beyond placing enemies? For example: god mode,
+  frozen AI, enemies that don't fire, a "respawn everything placed" button.
+- Are banked points per level or global?
+
+### P1. One body for every ship
+
+The player and the enemies move differently, and they should not.
+
+**Where things stand**
+- The integrator is already shared (R8, `engine/movement`). What differs is
+  what each ship rolls into it:
+  - **Player:** `Momentum`, accelerating at 6000, coasting with 0.3 drag, speed
+    capped. It has inertia: it drifts, and takes time to stop and turn around.
+  - **Enemies:** `Instant`, with velocity set fresh every frame from intent ×
+    speed. No inertia: they start at full speed, stop dead, and reverse on the
+    spot.
+- Turning differs too. The player's hull snaps to the mouse. Enemies turn at a
+  capped rate, and rushers turn by a blend-and-normalize that is not quite a
+  rate.
+- Being knocked about is a separate path. A rammed enemy carries a
+  `knockback` vector outside its velocity, rather than taking an impulse on it.
+- Enemies have no thruster plume, because nothing tracks their throttle.
+
+**The shape it would take (suggestion):** a ship **body** — position, velocity,
+facing, movement options, turn rate, throttle — updated by one function for
+every ship. The player's controls and the enemy AI both only produce an
+_intent_ (where to thrust, where to face). Knockback becomes an impulse on
+velocity. The plume comes free from throttle. The body and its update are
+_engine_; each ship class's numbers are the _game_'s.
+
+**The catch:** AI written for instant motion fails with momentum. A rusher
+that thrusts straight at the player will overshoot and orbit, and a sniper
+holding a range will oscillate. The policies need steering that knows about
+inertia: arrive (brake before the target), lead a moving target, and
+orbit using thrust rather than by setting position. Those are generic steering
+behaviours, and they belong in _engine_ beside the body.
+
+**Open questions**
+- Same model with different numbers (a light, twitchy rusher; a heavy sniper),
+  or literally the player's tuning?
+- Should the player's hull turn at a limited rate too, as the enemies do, or
+  keep snapping to the mouse?
+- Do ships collide now? C4 left them passing through, and
+  `collision::separation` is written and tested but unused. With real
+  velocities, a bump can be an exchange of momentum.
+- Should the arena's leftovers (enemy sleep, flying back into the zone) also go
+  through intent?
+
+### B1. The player's kit for any ship
+
+A boss that has a shield, weapons, a cloak or a ram needs those systems to
+belong to a ship instead of to the game.
+
+**Where things stand**
+- `energy` (shield and cloak rules), `weapons` (four slots, cooldowns, ammo),
+  `ram`, and the `shield` look each hold the state of exactly one ship: the
+  player's. Enemies have a bullet cooldown parked on `Enemy` ("because there is
+  no Weapon yet").
+- C2's open question, "do enemies get the same weapons?", and the R9 sketch —
+  weapons as data, one fire function for player and enemies — are this item.
+- Some rules already wait on it. C3b: "Shield blocking waits for enemies to have
+  shields". C3a: a missile "cannot miss unless the target cloaks (enemies
+  cannot yet)".
+
+**The shape it would take (suggestion):** each system's state becomes a struct
+a ship owns (`Energy`, `Loadout`, `Ram`), with the functions taking the one
+they act on. The player is one instance. Behaviour stays the same for the
+player; this is a refactor you can check by playing. It is worth doing
+**before** any boss, and after P1, so the body and the kit land in one place.
+
+### B2. Bosses
+
+Enemies closer to the player: shield, weapons, maybe the cloak and the ram.
+Built on P1 (moves like the player) and B1 (has the player's kit).
+
+**Open questions**
+- Which abilities? Shield and weapons are the ones named. Cloak and ram?
+- Where does a boss appear? Placed by a level (`enemy boss x y facing`), one
+  per level, and is killing it tied to the gate (L5)?
+- How does it decide when to shield, cloak, ram, or switch weapons? Is it
+  scripted phases (at half health it starts cloaking) or rules from what it
+  sees?
+- How do the player's weapons meet its shield? The beam is "blocked by shields,
+  and cannot break one" (C3b), so the laser would need another weapon to break
+  the shield first.
+- What does it drop? A deposit, or a big haul of orbs?
+- Does it need a health bar, and a name (U1)?
+
+**Engine ideas**
+- The shield bubble already takes per-quad parameters. A boss's shield can be
+  the same bubble in another colour, rippling where it is hit.
+- A cloaked boss can bend the world around it as the player's cloak does, with
+  one more field in the cloak's pass, the way the gate's swirl was added.
+- A boss health bar is the HUD bar again, and the empty-energy shake exists.
+
+---
+
 ## Later
 
 - **Enemy AI:** patrols, ambushing the player at resources, team attacks. Needs
-  L2's places to exist.
-- **In-game menu.** Also the natural home for the control scheme and settings
-  that live in the debug panel today.
+  L2's places to exist, and P1's steering.
 - **Procedural levels**, on L2's format.
 - **Engine idea:** the GPU starfield (roadmap F5) as each level's backdrop.
