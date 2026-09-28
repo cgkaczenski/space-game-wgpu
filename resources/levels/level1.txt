@@ -26,6 +26,10 @@ resource -14588.5 -222.744 6
 
 marker gate 15000 -1000
 
+ring 6000 -1000 13500
+ring 10500 -1500 8000
+ring 13500 -1000 3500
+
 scenery Planet1 -4000 -7000 2700 0
 scenery Planet2 6000 2500 2000 0
 scenery Planet3 -13000 7500 1200 0

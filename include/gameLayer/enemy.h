@@ -64,6 +64,11 @@ struct Enemy
 	float sightRange = 2500.f;
 	float sightHalfAngle = 0.785f; // radians: 45 degrees either side
 
+	// Burning outside the closing circle (gameplay roadmap L4): time toward
+	// the next tick, and the red flash of the last one, 1 fading to 0.
+	float burnTimer = 0.f;
+	float burnFlash = 0.f;
+
 	collision::Circle getHitbox() const
 	{
 		return game::shipHitbox(position, enemyShipSize);

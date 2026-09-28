@@ -58,6 +58,13 @@ namespace
 			out.markers.push_back({Marker::Kind::Gate, at});
 			return true;
 		}
+		if (word == "ring")
+		{
+			Ring r;
+			if (!(in >> r.position.x >> r.position.y >> r.radius) || r.radius < 0.f) { return false; }
+			out.rings.push_back(r);
+			return true;
+		}
 		if (word == "scenery")
 		{
 			Scenery s;
@@ -118,6 +125,11 @@ bool save(const char *path, const Level &level)
 	for (const Marker &m : level.markers)
 	{
 		file << "marker gate " << m.position.x << " " << m.position.y << "\n";
+	}
+	file << "\n";
+	for (const Ring &r : level.rings)
+	{
+		file << "ring " << r.position.x << " " << r.position.y << " " << r.radius << "\n";
 	}
 	file << "\n";
 	for (const Scenery &s : level.scenery)

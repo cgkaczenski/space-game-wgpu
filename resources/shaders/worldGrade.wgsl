@@ -1,9 +1,9 @@
-// The paused world: grey and dim.
+// The world graded grey and dim: paused, and outside the closing circle.
 //
 // A fragment stage only; the vertex stage is the sprite shader's. See the
 // contract in include/render/wgpu2d.h. It runs on one quad covering the view,
 // textured with the world as it was drawn this frame, so it is the sprite
-// shader's sample with two lines after it.
+// shader's sample with a few lines after it.
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
@@ -15,22 +15,40 @@ struct VertexOutput {
 @group(0) @binding(1) var spriteSampler: sampler;
 
 struct EffectUniforms {
-    resolution: vec4f,
+    resolution: vec4f, // xy = the view in pixels
     time: vec4f,
-    a: vec4f, // x = desaturation 0..1, y = brightness multiplier
-    b: vec4f,
+    a: vec4f, // paused: x = desaturation 0..1, y = brightness multiplier
+    b: vec4f, // the safe circle: xy = centre in pixels, z = radius, w = edge fade
+    c: vec4f, // outside it: x = desaturation, y = brightness, z = 1 when on
 };
 @group(2) @binding(0) var<uniform> effect: EffectUniforms;
 
 const lumaWeights = vec3f(0.2126, 0.7152, 0.0722);
 
+// Toward its own luminance, not toward an average grey, so the bright things
+// stay bright relative to the dark ones and the scene still reads.
+fn grade(rgb: vec3f, desaturation: f32, brightness: f32) -> vec3f {
+    let grey = vec3f(dot(rgb, lumaWeights));
+    return mix(rgb, grey, clamp(desaturation, 0.0, 1.0)) * brightness;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let texel = textureSampleLevel(spriteTexture, spriteSampler, in.uv, 0.0);
-    // Toward its own luminance, not toward an average grey, so the bright
-    // things stay bright relative to the dark ones and the scene still reads.
-    let grey = vec3f(dot(texel.rgb, lumaWeights));
-    let graded = mix(texel.rgb, grey, clamp(effect.a.x, 0.0, 1.0)) * effect.a.y;
+    var rgb = texel.rgb;
+
+    // Outside first. 0 inside the circle, rising to 1 over the fade width
+    // past its edge, so the line where colour stops is soft but sits exactly
+    // on the ring, never inside the safe zone.
+    if (effect.c.z > 0.0) {
+        let pixel = in.uv * effect.resolution.xy;
+        let past = distance(pixel, effect.b.xy) - effect.b.z;
+        let outside = smoothstep(0.0, effect.b.w, past);
+        rgb = mix(rgb, grade(rgb, effect.c.x, effect.c.y), outside);
+    }
+
+    rgb = grade(rgb, effect.a.x, effect.a.y);
+
     // Premultiplied in, premultiplied out: alpha scales nothing extra here.
-    return vec4f(graded, texel.a) * in.color;
+    return vec4f(rgb, texel.a) * in.color;
 }

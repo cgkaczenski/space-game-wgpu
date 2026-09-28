@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace levelEditor
 {
@@ -25,13 +26,13 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Resource, Gate, Scenery };
+	enum class Tool { Select, Rusher, Sniper, Resource, Gate, Ring, Scenery };
 	// A deposit's ring in the editor, matching how big one is in play.
 	constexpr float depositRadius = 320.f;
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Resource, Marker, Scenery };
+	enum class Kind { None, Start, Enemy, Resource, Marker, Ring, Scenery };
 	struct Pick
 	{
 		Kind kind = Kind::None;
@@ -73,6 +74,18 @@ namespace
 
 	constexpr float gateRadius = 600.f;
 
+	// A ring is picked by a handle at its centre, a fixed size on screen: its
+	// edge can be tens of thousands of units long and would steal every click.
+	constexpr float ringHandlePixels = 14.f;
+
+	// A ring has to sit inside the one before it, largest first, starting
+	// from the arena -- or the circle would grow for part of a close. Those
+	// that do not are drawn red.
+	bool contains(glm::vec2 outerCentre, float outerRadius, glm::vec2 centre, float radius)
+	{
+		return glm::distance(outerCentre, centre) + radius <= outerRadius + 0.5f;
+	}
+
 	glm::vec2 positionOf(const level::Level &level, Pick p)
 	{
 		switch (p.kind)
@@ -81,6 +94,7 @@ namespace
 		case Kind::Enemy: return level.enemies[p.index].position;
 		case Kind::Resource: return level.resources[p.index].position;
 		case Kind::Marker: return level.markers[p.index].position;
+		case Kind::Ring: return level.rings[p.index].position;
 		case Kind::Scenery: return drawnAt(level.scenery[p.index]);
 		default: return {};
 		}
@@ -94,6 +108,7 @@ namespace
 		case Kind::Enemy: level.enemies[p.index].position = to; break;
 		case Kind::Resource: level.resources[p.index].position = to; break;
 		case Kind::Marker: level.markers[p.index].position = to; break;
+		case Kind::Ring: level.rings[p.index].position = to; break;
 		case Kind::Scenery:
 		{
 			level::Scenery &s = level.scenery[p.index];
@@ -130,6 +145,10 @@ namespace
 		{
 			consider(Kind::Marker, i, level.markers[i].position, gateRadius);
 		}
+		for (int i = 0; i < (int)level.rings.size(); i++)
+		{
+			consider(Kind::Ring, i, level.rings[i].position, ringHandlePixels / zoom);
+		}
 		if (best.kind != Kind::None) { return best; }
 
 		for (int i = 0; i < (int)level.scenery.size(); i++)
@@ -146,6 +165,7 @@ namespace
 		case Kind::Enemy: level.enemies.erase(level.enemies.begin() + p.index); break;
 		case Kind::Resource: level.resources.erase(level.resources.begin() + p.index); break;
 		case Kind::Marker: level.markers.erase(level.markers.begin() + p.index); break;
+		case Kind::Ring: level.rings.erase(level.rings.begin() + p.index); break;
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
 		default: return; // the start stays: a level needs one
 		}
@@ -184,6 +204,17 @@ namespace
 			level.markers.push_back(m);
 			return {Kind::Marker, (int)level.markers.size() - 1};
 		}
+		case Tool::Ring:
+		{
+			// Half the smallest so far, so a new one starts as the next stage.
+			float smallest = level.arenaRadius;
+			for (const level::Ring &r : level.rings) { smallest = std::min(smallest, r.radius); }
+			level::Ring r;
+			r.position = at;
+			r.radius = std::max(smallest * 0.5f, 100.f);
+			level.rings.push_back(r);
+			return {Kind::Ring, (int)level.rings.size() - 1};
+		}
 		case Tool::Scenery:
 		{
 			level::Scenery s;
@@ -204,6 +235,7 @@ namespace
 		case Kind::Enemy: return p.index >= 0 && p.index < (int)level.enemies.size();
 		case Kind::Resource: return p.index >= 0 && p.index < (int)level.resources.size();
 		case Kind::Marker: return p.index >= 0 && p.index < (int)level.markers.size();
+		case Kind::Ring: return p.index >= 0 && p.index < (int)level.rings.size();
 		case Kind::Scenery: return p.index >= 0 && p.index < (int)level.scenery.size();
 		default: return false;
 		}
@@ -344,6 +376,30 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 
 	drawMarkers(level, renderer, zoom);
 
+	// The closing circle's rings, in the order they close: largest first. Each
+	// a little whiter than the last, red if it is not inside the one before,
+	// with a handle at its centre.
+	{
+		std::vector<int> order((size_t)level.rings.size());
+		for (int i = 0; i < (int)order.size(); i++) { order[i] = i; }
+		std::sort(order.begin(), order.end(),
+			[&](int a, int b) { return level.rings[a].radius > level.rings[b].radius; });
+		glm::vec2 outerCentre = {};
+		float outerRadius = level.arenaRadius;
+		for (int n = 0; n < (int)order.size(); n++)
+		{
+			const level::Ring &r = level.rings[order[n]];
+			const bool fits = contains(outerCentre, outerRadius, r.position, r.radius);
+			const float k = (n + 1.f) / (float)order.size();
+			const glm::vec4 colour = fits ? glm::vec4(1.f, 0.55f + 0.45f * k, 0.3f + 0.7f * k, 0.9f)
+				: glm::vec4(1.f, 0.15f, 0.15f, 1.f);
+			renderer.renderCircleOutline(r.position, colour, r.radius, 3.f * px, 256);
+			renderer.renderCircleOutline(r.position, colour, ringHandlePixels * px, 2.f * px, 24);
+			outerCentre = r.position;
+			outerRadius = r.radius;
+		}
+	}
+
 	// Deposits: a gold ring, with a second one showing how much is in it.
 	for (const level::Resource &r : level.resources)
 	{
@@ -370,6 +426,7 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		if (selected.kind == Kind::Start) { radius = look.shipSize * 0.7f; }
 		if (selected.kind == Kind::Resource) { radius = depositRadius * 1.2f; }
 		if (selected.kind == Kind::Marker) { radius = gateRadius * 1.15f; }
+		if (selected.kind == Kind::Ring) { radius = ringHandlePixels * 1.5f * px; }
 		if (selected.kind == Kind::Scenery) { radius = level.scenery[selected.index].size * 0.55f; }
 		renderer.renderCircleOutline(positionOf(level, selected), {1.f, 1.f, 1.f, 1.f}, radius, 3.f * px, 48);
 	}
@@ -397,6 +454,7 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::RadioButton("Sniper", &t, (int)Tool::Sniper);
 	ImGui::RadioButton("Resource", &t, (int)Tool::Resource); ImGui::SameLine();
 	ImGui::RadioButton("Gate", &t, (int)Tool::Gate); ImGui::SameLine();
+	ImGui::RadioButton("Ring", &t, (int)Tool::Ring); ImGui::SameLine();
 	ImGui::RadioButton("Scenery", &t, (int)Tool::Scenery);
 	tool = (Tool)t;
 	if (tool == Tool::Scenery)
@@ -451,6 +509,15 @@ Request debugUi(level::Level &level, bool unsaved)
 		level::Marker &m = level.markers[selected.index];
 		ImGui::Text("Extraction gate");
 		if (ImGui::DragFloat2("Position", &m.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		break;
+	}
+	case Kind::Ring:
+	{
+		level::Ring &r = level.rings[selected.index];
+		ImGui::Text("Closing circle ring");
+		ImGui::TextDisabled("Closes largest first; red if not inside the one before");
+		if (ImGui::DragFloat2("Centre", &r.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		if (ImGui::DragFloat("Radius", &r.radius, 10.f, 100.f, 100000.f, "%.0f")) { edited = true; }
 		break;
 	}
 	case Kind::Scenery:

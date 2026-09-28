@@ -187,7 +187,9 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 {
 	session = {};
 
-	arena::setRadius(levelLoaded ? currentLevel.arenaRadius : 0.f);
+	// The edge, and the closing circle starting over (gameplay roadmap L4).
+	if (levelLoaded) { arena::start(currentLevel.arenaRadius, currentLevel.rings); }
+	else { arena::start(0.f, {}); }
 	if (levelLoaded)
 	{
 		session.playerPos = currentLevel.start;
@@ -361,7 +363,7 @@ void debugPanelUi()
 	debugPanel::section("State", gameState::debugUi);
 	debugPanel::section("Level", levelDebugUi);
 	debugPanel::section("Resources", resources::debugUi);
-	debugPanel::section("Pause look", worldGrade::debugUi);
+	debugPanel::section("World grade", worldGrade::debugUi);
 	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);
@@ -386,7 +388,8 @@ void editorFrame(float deltaTime, int w, int h)
 	crt::setTransition(0.f, 0.f);
 	crt::apply();
 
-	arena::setRadius(currentLevel.arenaRadius);
+	// Only the edge: the editor draws the rings itself, all at once.
+	arena::start(currentLevel.arenaRadius, {});
 	levelEditor::update(currentLevel, renderer, platform::getRelMousePosition(), w, h, deltaTime);
 
 	background::draw(renderer);
@@ -485,6 +488,9 @@ bool gameLogic(float deltaTime)
 	// The two clocks, named once (roadmap R8). The simulation takes
 	// `time.game`; camera, zoom and the panel take `time.real`.
 	const FrameTime time = gameClock::tick(deltaTime);
+
+	// The closing circle runs on game time, so a pause holds it too.
+	arena::update(time.game);
 #pragma endregion
 
 
@@ -591,13 +597,6 @@ bool gameLogic(float deltaTime)
 			session.playerFacing, mouseDirection, time.game, energy::isCloaked());
 	}
 	session.player = player;
-
-	// The level's edge pushes back (gameplay roadmap L2). Not on the warp,
-	// which is leaving anyway.
-	if (gameState::playerPresent())
-	{
-		arena::pushPlayer(session.playerPos, session.playerVelocity, time.game);
-	}
 
 	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
 	// enemy once per ram; the player takes nothing.
@@ -849,6 +848,21 @@ bool gameLogic(float deltaTime)
 
 	}
 
+	// Outside the closing circle the hull burns, past the shield and the cloak
+	// (gameplay roadmap L4). Not a hit: the drill keeps its hold, so mining
+	// out there is allowed and paid for in health. When the last ring has
+	// closed to nothing, whoever is still here is done.
+	if (controls)
+	{
+		const float burn = arena::burn(session.playerPos, time.game);
+		if (burn > 0.f)
+		{
+			session.health -= burn;
+			hud::onDamage(0.5f);
+		}
+		if (arena::collapsed()) { session.health = 0.f; }
+	}
+
 	if (session.health <= 0 && controls)
 	{
 		// The ship goes the way enemies do, and the world runs on around the
@@ -867,7 +881,8 @@ bool gameLogic(float deltaTime)
 	{
 		// Game time. This was the frame's own delta, so at 1% speed the ship
 		// healed at full rate while everything shooting at it crawled.
-		if (healthRegenEnabled) { session.health += time.game * 0.05; }
+		// Not while burning, or regen would cancel most of it.
+		if (healthRegenEnabled && !arena::outside(session.playerPos)) { session.health += time.game * 0.05; }
 		session.health = glm::clamp(session.health, 0.f, 1.f);
 	}
 
@@ -907,10 +922,24 @@ bool gameLogic(float deltaTime)
 			const Enemy &e = session.enemies[i];
 			const bool inView = e.position.x >= wakeRect.x && e.position.x <= wakeRect.x + wakeRect.z
 				&& e.position.y >= wakeRect.y && e.position.y <= wakeRect.y + wakeRect.w;
-			if (!inView && e.awareness == Enemy::Awareness::Unaware) { continue; } // asleep
-			arena::pushEnemy(session.enemies[i].position, time.game);
+			// Asleep -- unless the closing circle has passed it, which wakes it
+			// to fly back in (gameplay roadmap L4).
+			if (!inView && e.awareness == Enemy::Awareness::Unaware && !arena::outside(e.position))
+			{
+				continue;
+			}
 		}
 		awakeEnemies++;
+
+		// Outside the closing circle enemies burn as the player does, fighting
+		// or not, and a burn that finishes one is a kill like any other.
+		session.enemies[i].life -= arena::burnEnemy(session.enemies[i], time.game);
+		if (session.enemies[i].life <= 0.f)
+		{
+			killEnemy(i);
+			i--;
+			continue;
+		}
 
 		// Ship-ship (player vs enemy, enemy vs enemy) will use
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
@@ -918,8 +947,10 @@ bool gameLogic(float deltaTime)
 
 		// Cloaked, the player is in no enemy's sight (gameplay roadmap C5).
 		// Wreckage or leaving, the player is as gone as cloaked.
+		glm::vec2 wayIn;
+		const bool comingBack = arena::wayBackIn(session.enemies[i].position, wayIn);
 		if (enemyAi::update(session.enemies[i], time.game, session.playerPos,
-			energy::isCloaked() || !gameState::playerPresent()))
+			energy::isCloaked() || !gameState::playerPresent(), comingBack ? &wayIn : nullptr))
 		{
 			Bullet b;
 			b.position = session.enemies[i].position;
@@ -1061,7 +1092,26 @@ bool gameLogic(float deltaTime)
 	// Paused, the world is graded grey and dim first. The grade is per pixel
 	// and the cloak only moves pixels, so grading before bending is the same
 	// picture as after -- see worldGrade.h.
-	worldGrade::apply(renderer, gameState::pauseLook(), w, h);
+	// And outside the closing circle -- or the edge, if nothing closes -- the
+	// world is grey, so being out there is seen wherever the ring is.
+	const zone::Circle safe = arena::safeZone();
+	worldGrade::apply(renderer, gameState::pauseLook(), arena::radius() > 0.f ? &safe : nullptr, w, h);
+
+	// Burn ticks flash hulls red, drawn over the grade so the red survives it.
+	// Still in the world's batch, so the cloak bends them with the rest.
+	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+	for (const Enemy &e : session.enemies)
+	{
+		arena::drawBurnFlash(renderer, e.burnFlash, e.position, enemyShipSize,
+			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection);
+	}
+	if (gameState::current() != gameState::State::Dying)
+	{
+		arena::drawBurnFlash(renderer, arena::burnFlash(), session.playerPos, shipSize,
+			shipSheet, shipAtlas.get(3, 0), session.player.facing, cloak::shipAlpha(),
+			gameState::warpStretch());
+	}
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 	cloak::flushWorld(renderer, session.playerPos, shipSize, w, h, time.game);
 
 	hud::WeaponSlot slots[weapons::slotCount];

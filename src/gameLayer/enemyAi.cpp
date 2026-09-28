@@ -247,7 +247,8 @@ void alert(Enemy &enemy, glm::vec2 playerPos)
 
 bool showCones() { return conesVisible; }
 
-bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden)
+bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden,
+	const glm::vec2 *comeBackTo)
 {
 	if (enemy.stunned > 0.f)
 	{
@@ -272,6 +273,16 @@ bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerH
 		// where the player was.
 		enemy.awareness = Enemy::Awareness::Searching;
 		enemy.searchLeft = searchSeconds;
+	}
+
+	if (comeBackTo && enemy.awareness != Enemy::Awareness::Engaged)
+	{
+		enemy.awareness = Enemy::Awareness::Unaware;
+		const glm::vec2 toward = *comeBackTo - enemy.position;
+		const float distance = glm::length(toward);
+		if (distance > 0.001f) { turnToward(enemy, toward / distance, enemy.turnSpeed, gameDeltaTime); }
+		movement::integrate(enemy.position, enemy.velocity, enemy.viewDirection, enemy.move, gameDeltaTime);
+		return false;
 	}
 
 	switch (enemy.awareness)

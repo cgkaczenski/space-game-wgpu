@@ -3,6 +3,8 @@
 #include "imgui.h"
 #include <platformTools.h>
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -19,6 +21,20 @@ namespace
 
 	float desaturate = 0.85f; // 1 is fully grey
 	float brightness = 0.45f; // what is left of the light
+
+	// Outside the safe zone: greyer than paused, but lit enough to fight in.
+	bool outsideOn = true;
+	float outsideDesaturate = 0.9f;
+	float outsideBrightness = 0.6f;
+	float outsideEdgePixels = 24.f; // the fade from colour to grey, on screen
+
+	// Whether any of the view is outside `safe`: its furthest corner is.
+	bool viewReaches(glm::vec4 view, const zone::Circle &safe)
+	{
+		const float dx = std::max(std::abs(view.x - safe.centre.x), std::abs(view.x + view.z - safe.centre.x));
+		const float dy = std::max(std::abs(view.y - safe.centre.y), std::abs(view.y + view.w - safe.centre.y));
+		return dx * dx + dy * dy > safe.radius * safe.radius;
+	}
 
 	bool readFile(const char *path, std::string &out)
 	{
@@ -55,9 +71,15 @@ void cleanup()
 	worldTarget.cleanup();
 }
 
-void apply(wgpu2d::Renderer2D &renderer, float amount, int width, int height)
+void apply(wgpu2d::Renderer2D &renderer, float pauseAmount, const zone::Circle *safe,
+	int width, int height)
 {
-	if (amount <= 0.f || effect.id == 0 || width <= 0 || height <= 0) { return; }
+	if (effect.id == 0 || width <= 0 || height <= 0) { return; }
+
+	const glm::vec4 view = renderer.getViewRect();
+	const bool outside = outsideOn && safe && view.z != 0.f && view.w != 0.f
+		&& viewReaches(view, *safe);
+	if (pauseAmount <= 0.f && !outside) { return; }
 
 	if (worldTarget.fbo == 0)
 	{
@@ -72,7 +94,18 @@ void apply(wgpu2d::Renderer2D &renderer, float amount, int width, int height)
 	// Back into the batch as one quad over the whole view, in screen space.
 	// Premultiplied, because a target's contents are (outline 12).
 	wgpu2d::EffectParams params;
-	params.a = {desaturate * amount, 1.f - (1.f - brightness) * amount, 0.f, 0.f};
+	params.a = {desaturate * pauseAmount, 1.f - (1.f - brightness) * pauseAmount, 0.f, 0.f};
+	if (outside)
+	{
+		// World to screen pixels: the same mapping the projection does, for
+		// one point and one length. The quad's uv times the view's size is the
+		// pixel the shader is on, y down, like this.
+		const float screenPerWorld = (float)width / view.z;
+		params.b = {(safe->centre.x - view.x) * screenPerWorld,
+			(safe->centre.y - view.y) / view.w * (float)height,
+			safe->radius * screenPerWorld, std::max(outsideEdgePixels, 0.5f)};
+		params.c = {outsideDesaturate, outsideBrightness, 1.f, 0.f};
+	}
 
 	renderer.pushCamera();
 	renderer.setBlendMode(wgpu2d::BlendMode::Premultiplied);
@@ -85,8 +118,14 @@ void apply(wgpu2d::Renderer2D &renderer, float amount, int width, int height)
 
 void debugUi()
 {
+	ImGui::TextDisabled("Paused");
 	ImGui::SliderFloat("Desaturate", &desaturate, 0.f, 1.f);
 	ImGui::SliderFloat("Brightness", &brightness, 0.f, 1.f);
+	ImGui::TextDisabled("Outside the closing circle");
+	ImGui::Checkbox("Grey outside", &outsideOn);
+	ImGui::SliderFloat("Outside desaturate", &outsideDesaturate, 0.f, 1.f);
+	ImGui::SliderFloat("Outside brightness", &outsideBrightness, 0.f, 1.f);
+	ImGui::SliderFloat("Edge fade px", &outsideEdgePixels, 1.f, 200.f, "%.0f");
 }
 
 }

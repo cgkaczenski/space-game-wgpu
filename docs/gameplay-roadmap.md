@@ -234,6 +234,7 @@ that — and doing so also lifts the zoom-out floor.
 - A level is a **circle** (radius set by the level, about 20000 for the
   first). Past the edge the ship is pushed back gently, and a faint ring shows
   where the edge is. L4's closing circle later shrinks this same radius.
+  _(Changed in L4:)_ the push is gone; past the edge you burn instead.
 - A level places **enemies** (position, rusher or sniper, facing — they start
   unaware), the **player start** (position and facing), **markers** for
   resources (L3) and the gate (L5), shown only in debug until those exist, and
@@ -303,6 +304,51 @@ For now, points earned.
 
 ### L4. Closing circle
 Forces the player and enemies toward the centre.
+
+**Decided (first pass)**
+- A level names **several rings** — `ring x y radius` — and the safe zone
+  closes through them in turn, largest first, starting from the arena's own
+  circle, so the level decides where the fight ends up. The last ring then
+  closes to nothing.
+- **Stages with pauses:** hold, close, hold, close. Before each close the ring
+  **flashes at a rising tempo** and turns blue → amber → red; it pulses red
+  while it closes. Each close is **faster** than the one before.
+- Outside the zone the player **takes damage over time**. Deposits out there
+  can still be mined, paid for in health.
+- **Sleeping enemies wake** when the zone passes them and fly back in.
+- **Enemies burn outside too.** One that is fighting keeps fighting out there
+  and takes damage for it. A burn that finishes an enemy is a kill like any
+  other: explosion, wreck and orbs.
+- The level's **outer edge no longer pushes**. It is the safe zone's first
+  circle, so past it you burn like anywhere else outside. A level with no rings
+  keeps its circle as the zone for good.
+- If you haven't extracted when the last ring closes, you **die**.
+- Being outside is shown as the **world greyed past the ring's edge**: the
+  pause grade with a circle, so the line where colour stops marks the edge even
+  with the ring off screen.
+
+_(Choices made while building — to confirm:)_
+- Timing and damage are **debug sliders**, not level data: 60 s holds, the
+  first close's edge at 150 u/s and each later one ×1.6, a 10 s warning
+  flashing from 1 to 7 Hz, and 0.08 health/s landing in 0.5 s ticks, with the
+  same rate for enemies on its own slider. The close
+  speed is the speed of the edge's **fastest point**. When the centre moves, the
+  side it moves away from travels further than the rest, so nothing on the
+  edge outruns that number.
+- The burn goes **through the shield and the cloak**, and **stops health
+  regen** while outside. It is not a hit, so it doesn't interrupt mining. Each
+  tick shakes the HUD at half strength and flashes the hull red, enemies' hulls
+  too. The flash is drawn after the grey grade, or it would come out grey. A
+  tick needs a full half-second outside, so grazing the edge is free.
+- A **faint white ring** shows where the zone closes to next. The outer edge
+  isn't drawn once the zone has left it, since it no longer does anything.
+- Only enemies that **aren't engaged** fly in. A search is dropped, not
+  resumed, so it doesn't lead them back out.
+- In the editor, **Ring** places one at half the smallest ring's radius and
+  drags it by a handle at its centre. Order doesn't matter, because rings are
+  sorted by radius, and a ring not inside the one before it is drawn red.
+- Level 1's three rings close toward the gate, so L5's exit sits inside the
+  last one. A round runs about 6½ minutes.
 
 **Engine ideas**
 - Outside the circle, a full-screen effect over the world target (the cloak's

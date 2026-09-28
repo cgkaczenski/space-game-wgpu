@@ -13,6 +13,7 @@
 //   enemy rusher 4000 1200 180              kind x y facing: rusher | sniper
 //   resource 3000 6000 6                    x y amount (gameplay roadmap L3)
 //   marker gate 15000 -1000                 kind x y: gate
+//   ring 9000 -1500 12000                   x y radius (gameplay roadmap L4)
 //
 // `marker resource x y` from before L3 still loads, as a deposit of the
 // default amount.
@@ -24,6 +25,11 @@
 // moving slower than the world is slower than every star behind it and looks
 // towed along by the ship. Above 0 is for something that should seem to hang
 // in the sky. A piece is exactly at its x y when the camera is centred there.
+//
+// Rings are the closing circle's stages: the arena first, then each ring in
+// turn, largest to smallest, then the last one closes to nothing. Order in the
+// file does not matter -- they are sorted by radius when the round starts -- so
+// the editor can add them in any order. A level with no rings does not close.
 
 #include <enemy.h>
 #include <glm/vec2.hpp>
@@ -62,6 +68,13 @@ namespace level
 		float depth = 0.f;     // 0 .. <1; see above
 	};
 
+	// One stage of the closing circle: where it closes to.
+	struct Ring
+	{
+		glm::vec2 position = {}; // the centre
+		float radius = 5000.f;
+	};
+
 	struct Level
 	{
 		float arenaRadius = 20000.f;
@@ -70,6 +83,7 @@ namespace level
 		std::vector<EnemyPlacement> enemies;
 		std::vector<Resource> resources;
 		std::vector<Marker> markers;
+		std::vector<Ring> rings;
 		std::vector<Scenery> scenery;
 	};
 

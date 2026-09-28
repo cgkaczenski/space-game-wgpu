@@ -27,7 +27,14 @@ namespace enemyAi
 	// -- cloaked. Seeing engages it; losing sight sends it to search where it
 	// last saw the player; a search that finds nothing leaves it unaware, and
 	// an unaware enemy wanders. Only an engaged enemy fires.
-	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden);
+	//
+	// `comeBackTo`, when given, is somewhere it should be heading instead --
+	// back into the closing circle (gameplay roadmap L4). An enemy that is not
+	// fighting flies straight there at full speed, still looking; one that is
+	// engaged keeps fighting wherever the fight goes. A search is dropped, not
+	// resumed, so it does not fly back out to where the player was.
+	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden,
+		const glm::vec2 *comeBackTo = nullptr);
 
 	// Something of the player's hit it: it engages at once, turned toward
 	// where the player is, whatever it could see.
