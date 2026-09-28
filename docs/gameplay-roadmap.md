@@ -611,6 +611,121 @@ Built on P1 (moves like the player) and B1 (has the player's kit).
   one more field in the cloak's pass, the way the gate's swirl was added.
 - A boss health bar is the HUD bar again, and the empty-energy shake exists.
 
+### Asteroids (A1–A4)
+
+Rocks with a shape of their own, textured from a real rock material, that move
+when you shoot them. The questions under each item are settled **when that item
+starts**, one milestone at a time. The concepts involved are listed in the
+learning outline, under "Asteroids: the concepts".
+
+**Decided**
+- Asteroids are **resources** and **hiding places**, for the player and for
+  certain enemy types.
+- The physics is for a **realistic response to being shot or beamed**: a hit
+  off-centre pushes and spins, and a held beam pushes steadily. It is **not**
+  for collisions with the player or with enemies; ships don't bump into rocks.
+- The textures come from a 4K rock material (colour, height, normal,
+  roughness) in `resources/textures/`, which is gitignored.
+  `tools/asteroidTextures.sh` makes the 512 px copies in `resources/asteroid/`
+  that are committed:
+  - **colour** and **height**, averaged down;
+  - **normals worked out from the height**, because the material's own normal
+    map is an EXR that neither `stb_image` nor `sips` can read.
+  - Roughness is left out: it hardly matters in 2D.
+
+#### A1. A rock: generated, drawn, and hit
+
+A procedural shape from a seed, textured, placed in a level, and solid to
+shots, the beam, and sight. It doesn't move yet.
+
+**Proposed:** a **star-shaped polygon**, with vertices at jittered angles
+around a circle and radii nudged by smooth, looping noise from a seed. So each
+seed gives a different rock and the same seed always gives the same one. Every
+point of such a polygon can be seen from the centre, so a **triangle fan from
+the centre** always triangulates it, with no ear clipping. The fan's triangles
+are also the collision shape. Ear clipping waits until a shape can stop being
+star-shaped (A4, or craters).
+
+**Lands:** the shape, fan and collision tests are _engine_ (polygon geometry,
+no idea what a rock is). Drawing triangles is _library_: `wgpu2d` only draws
+rectangles today, and a `renderTriangles` is something any 2D game would want.
+The rock itself — sizes, what it blocks, how it's placed — is _game_.
+
+**Open questions**
+- Fan from a star-shaped polygon, as proposed, or general polygons with ear
+  clipping from the start?
+- What does a rock block? The player's shots, enemy shots, the beam (it
+  already stops at deposits), **enemy sight** (C5's cones — a line-of-sight
+  test against rocks, which is what makes a rock a hiding place)?
+- How are they placed: a level line (`asteroid x y radius seed`) and an editor
+  tool, or fields scattered by a rule?
+- Sizes: one range, or classes (pebble, boulder, big rock)?
+- Drawing triangles: teach the batch real triangles, or send each one as a
+  rectangle with a repeated corner through the batch as it is?
+- The texture can't repeat today (the sampler clamps at the edge), so each rock
+  takes a random window of it. Is that enough variety?
+- "Certain enemy types" hide: which ones, and is that A1, or enemy AI after P1?
+
+#### A2. Physics: shot and beamed
+
+**Proposed:** each rock is a **rigid body**: position, velocity, angle and
+spin. Its mass, centre of mass and moment of inertia come straight from the fan
+triangles, so its shape decides how it turns. A hit is an **impulse at the
+contact point**: the change in velocity is the impulse over the mass, and the
+change in spin is (contact offset × impulse) over the moment of inertia, so an
+off-centre hit spins it. The beam is a steady **force** at its contact point.
+_Engine_: the body knows nothing about rocks, and P1's ship body may end up
+using the same one.
+
+**Open questions**
+- How hard does each weapon push? Scale with damage, or a push value of its
+  own per weapon (missile hardest)? And the ram?
+- Do rocks collide with **each other**? (Not with ships — decided.) That is
+  most of the extra work: polygon contact and a bounce.
+- Space drag: do they drift forever, or slowly come to rest? Spin too?
+- Anything from the closing circle (L4): do rocks outside it burn, drift, or
+  nothing?
+- Mass from area alone, or a density per rock?
+
+#### A3. The shader: a lit rock
+
+**Proposed:** an app effect (`asteroid.wgsl`, F6's per-quad effects) that
+lights the colour map with the normal map, and uses the height map as a mask.
+
+**Open questions**
+- Where is the light? One direction per level (a sun), fixed for the game, or
+  something that moves?
+- Two maps in one texture (colour and normal side by side, sampled at two
+  places — no library change), or teach effects a **second texture binding**
+  (library change, overlapping N8's normal-mapped lighting)?
+- Heat from the beam: a glow spreading from where it hits and cooling after,
+  with the low (dark) areas of the height map glowing first, like molten
+  cracks?
+- Damage cracks: as a rock weakens, the height map reveals cracks before it
+  breaks — the shield dissolve's threshold trick?
+- A rim toward the silhouette: a value 1 at the outline and 0 at the centre,
+  blended across each fan triangle by the GPU?
+- Photographic, or coarsened in the shader to sit with the pixel-art ships?
+
+#### A4. Breaking up, and what a rock is worth
+
+**Open questions**
+- How does it break?
+  - **a.** into wedges along the fan: still star-shaped from the old centre,
+    so no new algorithm;
+  - **b.** into newly generated smaller rocks: simplest, but they don't fit
+    together;
+  - **c.** cut along the shot's line and ear-clip the pieces: the most real,
+    and the most work.
+- What breaks it: damage from any weapon, or only the beam, as with deposits?
+- How small before a piece stops being a rock, and what is left then: debris
+  like the wrecks (C4a), orbs (L3), nothing?
+- **As a resource:** does mining a rock work like a deposit (beam in, orbs
+  out)? Do rocks replace deposits, or sit beside them?
+- Do the pieces keep the parent's motion? (Each piece's velocity should be the
+  parent's velocity plus its spin at that point.)
+- A cap on pieces alive, like the wreck field's 400?
+
 ---
 
 ## Later

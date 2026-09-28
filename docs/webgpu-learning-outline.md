@@ -428,6 +428,151 @@ in [`roadmap.md`](roadmap.md).
 
 ---
 
+## Asteroids: the concepts
+
+*The one section here written ahead of the work, at the author's request. The
+rest of this file only describes things that exist. So each concept below
+says whether it is **built** or **ahead** of the work, and as each of A1–A4
+lands, its part becomes an ordinary block with a Code line. The items, and
+what is still open about them, are in
+[`gameplay-roadmap.md`](gameplay-roadmap.md) under "Asteroids (A1–A4)".*
+
+### Getting textures into the game — *built*
+
+**Concepts:** A **material** is several textures describing one surface:
+colour (what it looks like), height (how high each point is), normal (which
+way each point faces), and roughness (how shiny). The first is **colour data**
+and is stored as sRGB. The rest are **measurements** and must stay linear:
+putting a normal map through a gamma curve bends every normal. That is why the
+EXR normal map could not simply be converted by a tool that treats files as
+photos.
+
+**Shrinking with a box filter.** Going from 4096 to 512 averages each 8×8 block
+into one texel. Keeping every eighth texel instead would **alias**: detail finer
+than the new texel size comes out as noise rather than as its average. It is
+the same reason mipmaps are averages (7, and N4's compute version).
+
+**Normals from height.** A normal map is the height map's slope. With central
+differences, dh/dx is the texel to the right minus the texel to the left, over
+two. The surface tilts away from the rise, so the normal is (−dh/dx, −dh/dy, 1)
+normalized. The height's 0..1 range says nothing about how tall that is in
+texels, so a **strength** factor sets the bumpiness: the tool reports the mean
+normal z (1 is flat; about 0.9 is a bumpy rock). The material **tiles**, so
+slopes at an edge **wrap around** to the far side instead of meeting a cliff.
+
+**Conventions a normal map carries.** It is stored as n × 0.5 + 0.5, so 128 is
+zero and a flat surface is (128, 128, 255), the lilac-blue every normal map
+has. `_gl` means **OpenGL's convention**: +y points *up* the image. DirectX
+maps flip green. This game's world is y-down, so the shader has to flip y once,
+on purpose (A3).
+
+**Code:** `tools/asteroidTextures.cpp` · `tools/asteroidTextures.sh` ·
+`resources/asteroid/`
+
+### A1. Shape, triangles, and hit tests — *ahead*
+
+- **A seeded generator:** the same seed gives the same rock, so a level stores
+  four numbers, not a mesh. **Periodic noise** around the loop: a sum of sines
+  with *whole-number* frequencies returns to its start after one turn, so the
+  outline has no seam where the angle wraps.
+- **Star-shaped polygons**, and why a **triangle fan** works on them: a fan from
+  a point is a valid triangulation exactly when every edge can be seen from
+  that point. The set of such points is the polygon's **kernel**. A convex
+  polygon's kernel is the whole polygon; a star-shaped one's kernel includes
+  its centre.
+- **Ear clipping**, the general alternative. An ear is three consecutive
+  corners whose triangle is inside the polygon and holds no other corner. Cut
+  it off and repeat: O(n²), and it works on any simple polygon. It tells convex
+  corners from reflex ones by the **sign of a 2D cross product**, which is also
+  what **winding order** (clockwise or counter-clockwise) is.
+- **Texture coordinates in the body's own frame:** each corner's uv is fixed
+  where it sits on the rock, so the texture turns with the rock. Planar
+  mapping: uv = local position ÷ size + a window offset. A **clamp-to-edge
+  sampler** (4) is why each rock takes a *window* of the texture rather than
+  tiling it; a repeat sampler is the alternative.
+- **The batch taking triangles** (library): today the batch is six vertices
+  per rectangle with no index buffer (3, 6a), grouped into runs by texture,
+  camera, blend and effect (6b, 12). Triangles mean runs measured in vertices,
+  not in rectangles. The shortcut is a **degenerate triangle**: a rectangle
+  with one corner repeated, so its second triangle has no area and draws
+  nothing.
+- **Hit tests on the same triangles:**
+  - **point in triangle** by the signs of three cross products (or barycentric
+    coordinates);
+  - **circle against triangle** by the closest point on the triangle;
+  - **ray against the outline's edges** for the beam, and for **line of
+    sight**, which is what makes a rock a hiding place.
+  - A **bounding circle** first (the broad phase) rules out almost every pair
+    before any triangle is tested (the narrow phase).
+- **Local space to world space:** the rock's corners are stored around its own
+  centre and rotated and moved each frame. That is a 2D model matrix, done
+  on the CPU because the batch takes world pixels (the port's rule, above).
+
+### A2. Rigid bodies — *ahead*
+
+- **State:** position, velocity, angle, angular velocity. **Properties:** mass,
+  centre of mass, moment of inertia, all worked out once from the fan
+  triangles:
+  - each triangle's area is half a cross product;
+  - its centroid is the average of its corners;
+  - its inertia about its own centroid has a closed form;
+  - the **parallel axis theorem** moves each one to the body's centre of mass.
+- **Impulse at a point:** Δv = J / m, and Δω = (r × J) / I, where r runs from
+  the centre of mass to the hit, and the 2D cross product is a scalar. A hit
+  through the centre only pushes; a hit at the edge pushes and spins.
+- **Force against impulse:** a bullet is an instant change of momentum. The
+  beam is a force, applied as force × dt each frame, so it depends on the time
+  step and an impulse does not.
+- **Integration:** semi-implicit Euler (velocity first, then position with the
+  new velocity) for both the straight-line and the spinning halves. Damping,
+  if any, is an exponential falloff, like `movement`'s drag (R8).
+- **If rocks collide with each other:** the separating axis theorem on convex
+  pieces, a contact point and normal, and an impulse with **restitution** (how
+  bouncy) along the normal.
+
+### A3. A lit rock — *ahead*
+
+- **Normal mapping in 2D:** Lambert diffuse, brightness = max(N · L, 0), with
+  N read from the map and L the direction to the light. **Tangent space** is the
+  frame the map's normals are written in. On a flat 2D rock it is just the
+  rock's rotation, so the shader rotates each normal by the rock's angle before
+  lighting — the texture turns, the light does not — and flips y for the y-down
+  world.
+- **Mipmapped normals get shorter:** averaging unit vectors that point
+  different ways gives a shorter vector. So the shader renormalizes after
+  sampling.
+- **Two maps, one binding:** an effect sees one texture (group 0). Packing
+  colour and normal side by side and sampling both halves is a layout trick.
+  A second binding is a change to the **bind group layout** (4), which is the
+  shader's contract.
+- **The height map as a mask:** a threshold that moves with a parameter reveals
+  the map from its lowest points up. It is the shield dissolve's trick (C1),
+  used for cracks and for where the beam's heat glows first. **Emissive** light
+  is added after lighting, so it glows even on the dark side.
+- **Interpolated vertex attributes:** anything a vertex outputs is blended
+  across the triangle by the rasterizer. A value of 1 on the outline and 0 at
+  the centre arrives in the fragment shader as "how near the edge". That
+  gives a rim with no extra texture.
+- **Per-quad effect parameters** (F6) carry each rock's angle, heat and damage.
+  Rocks with different parameters split the batch into more runs (12), so the
+  parameters are the price of the look.
+
+### A4. Breaking up — *ahead*
+
+- **Splitting a fan into wedges:** a run of neighbouring fan triangles is still
+  star-shaped from the old centre, which is now one of its corners. So it can
+  still be fanned from that corner, and no new algorithm is needed.
+- **Cutting by a line:** clip each side against the line (Sutherland–Hodgman
+  for convex pieces). The pieces can be concave, which is where ear clipping
+  earns its keep.
+- **Handing on the motion:** a piece's velocity is the parent's velocity plus
+  the parent's spin at the piece's centre, v + ω × r. So the pieces fly apart
+  the way the spinning parent was already moving, and momentum is kept.
+- **Pools and caps:** a fixed budget of live pieces, oldest out first, like the
+  wreck field (C4a).
+
+---
+
 ## What comes next
 
 Planned work — refactors, guide chapters still worth doing, and features that
