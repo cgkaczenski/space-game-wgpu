@@ -16,3 +16,6 @@ errorLogs.txt
 screenshot-*.png
 *.gputrace
 slow-frames.log
+
+# The 4K rock material the asteroid textures are made from (tools/asteroidTextures.sh)
+resources/textures/
