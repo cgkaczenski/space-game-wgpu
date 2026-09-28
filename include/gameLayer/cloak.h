@@ -41,11 +41,20 @@ namespace cloak
 	// background bending around it.
 	float shipAlpha();
 
+	// A second field in the same pass: the world turning round a point, the
+	// extraction gate's swirl (gameplay roadmap L5). Set it each frame before
+	// flushWorld; it lasts one flush. The swirl rotates what is behind it
+	// rather than pushing it outward, most at the centre and nothing at
+	// `worldRadius`. It rides this pass so a gate on screen costs no second
+	// full-screen copy -- and costs nothing at all while it is off screen.
+	void setSwirl(glm::vec2 worldPos, float worldRadius, float strength);
+
 	// Flushes the world.
 	//
-	// Call this where the world's `renderer.flush()` would go. When the cloak
-	// is down it *is* that flush, and costs exactly nothing extra. When it is
-	// up, the world goes into a target and comes back through the shader.
+	// Call this where the world's `renderer.flush()` would go. With the cloak
+	// down and no swirl on screen it *is* that flush, and costs exactly nothing
+	// extra. Otherwise the world goes into a target and comes back through the
+	// shader.
 	//
 	// `shipWorldPos` is where to bend around; it is converted to screen pixels
 	// here, because the shader works in pixels and the caller thinks in world

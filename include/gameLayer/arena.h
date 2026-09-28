@@ -40,6 +40,10 @@ namespace arena
 	bool closes(); // this round has a closing circle at all
 	bool outside(glm::vec2 position);
 
+	// The zone has reached the level's last ring -- holding on it, or closing
+	// it to nothing. The gate opens here (gameplay roadmap L5).
+	bool onFinalRing();
+
 	// The last ring has closed to nothing: the round is up.
 	bool collapsed();
 

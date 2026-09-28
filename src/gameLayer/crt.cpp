@@ -59,6 +59,8 @@ namespace
 	// settings: the game sets them every frame.
 	float switchOff = 0.f;
 	float whiteOut = 0.f;
+	float warp = 0.f;
+	float warpStreak = 0.35f; // how far toward the centre the longest streak reaches
 
 	bool readFile(const char *path, std::string &out)
 	{
@@ -93,10 +95,11 @@ bool init()
 void setEnabled(bool e) { enabled = e; }
 bool isEnabled() { return enabled; }
 
-void setTransition(float off, float white)
+void setTransition(float off, float white, float w)
 {
 	switchOff = off;
 	whiteOut = white;
+	warp = w;
 }
 
 void cleanup()
@@ -113,7 +116,7 @@ void cleanup()
 void apply()
 {
 
-	const bool transition = switchOff > 0.f || whiteOut > 0.f;
+	const bool transition = switchOff > 0.f || whiteOut > 0.f || warp > 0.f;
 
 	// Off costs nothing: no target, no extra pass, the frame goes straight to
 	// the surface as it always did.
@@ -133,7 +136,7 @@ void apply()
 		wgpu2d::EffectParams params;
 		params.a = {0.f, 0.f, 0.f, 0.f};
 		params.b = {period, 0.f, 0.f, 0.f};
-		params.c = {switchOff, whiteOut, 0.f, 0.f};
+		params.c = {switchOff, whiteOut, warp * warpStreak, 0.f};
 		wgpu2d::setFinalEffect(effect, params);
 		return;
 	}
@@ -154,7 +157,7 @@ void apply()
 	wgpu2d::EffectParams params;
 	params.a = {strength, curvature, scanlines, mask};
 	params.b = {period, vignette, fringing, warmth};
-	params.c = {switchOff, whiteOut, 0.f, 0.f};
+	params.c = {switchOff, whiteOut, warp * warpStreak, 0.f};
 	wgpu2d::setFinalEffect(effect, params);
 }
 
@@ -173,6 +176,7 @@ void debugUi()
 	ImGui::SliderFloat("Scanlines", &scanlines, 0.f, 1.f);
 	ImGui::SliderFloat("Scanline period px", &period, 2.f, 32.f, "%.0f");
 	ImGui::SliderFloat("Aperture mask", &mask, 0.f, 0.5f);
+	ImGui::SliderFloat("Warp streak", &warpStreak, 0.f, 0.9f);
 	ImGui::SliderFloat("Fringing", &fringing, 0.f, 2.f);
 	ImGui::SliderFloat("Vignette", &vignette, 0.f, 1.f);
 

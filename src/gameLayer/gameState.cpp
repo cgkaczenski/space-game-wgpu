@@ -148,6 +148,13 @@ float switchOff()
 	return 0.f;
 }
 
+float warpBlur()
+{
+	if (state != State::Extracting) { return 0.f; }
+	const float t = std::clamp(inState / std::max(warpDuration, 0.001f), 0.f, 1.f);
+	return t * t; // starts gently and runs away, like the surge
+}
+
 float whiteOut()
 {
 	if (state == State::Extracting && inState > warpDuration)

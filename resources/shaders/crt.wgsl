@@ -24,7 +24,7 @@ struct EffectUniforms {
     time: vec4f,       // x = seconds
     a: vec4f,          // x = master, y = curvature, z = scanlines, w = mask
     b: vec4f,          // x = scanline period in pixels, y = vignette, z = fringing, w = warmth
-    c: vec4f,          // x = switch-off 0..1, y = white-out 0..1 (gameplay roadmap L1)
+    c: vec4f,          // x = switch-off 0..1, y = white-out 0..1 (gameplay roadmap L1), z = warp streak 0..1 (L5)
 };
 @group(2) @binding(0) var<uniform> effect: EffectUniforms;
 
@@ -132,6 +132,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let blue = textureSampleLevel(spriteTexture, spriteSampler,
             bend(screenUv, curvature - scale), 0.0).b;
         colour = vec3f(red, colour.g, blue);
+    }
+
+    // The warp-out (gameplay roadmap L5): a zoom blur. Each pixel averages
+    // samples along the line back toward the centre of the screen, so
+    // everything is smeared outward along its own ray -- the stars become
+    // streaks rushing past. This one *is* a convolution, of a sort: sixteen
+    // taps, but along a line this shader chooses per pixel rather than over a
+    // fixed neighbourhood, and only for the second or so it runs.
+    let streak = clamp(effect.c.z, 0.0, 0.95);
+    if (streak > 0.0) {
+        var sum = colour;
+        for (var i = 1; i < 16; i = i + 1) {
+            let k = 1.0 - streak * f32(i) / 15.0;
+            sum = sum + textureSampleLevel(spriteTexture, spriteSampler, 0.5 + (uv - 0.5) * k, 0.0).rgb;
+        }
+        colour = sum / 16.0;
     }
 
     // Warm highlights. Only the bright end moves -- chosen by luminance, so

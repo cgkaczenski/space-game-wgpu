@@ -24,6 +24,7 @@ struct EffectUniforms {
     time: vec4f,       // x = seconds
     a: vec4f,          // xy = ship centre in pixels, z = radius, w = strength
     b: vec4f,          // x = the shimmer's clock, in game seconds
+    c: vec4f,          // the gate's swirl: xy = centre in pixels, z = radius, w = turn in radians at the centre
 };
 @group(2) @binding(0) var<uniform> effect: EffectUniforms;
 
@@ -60,6 +61,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
         let offsetPixels = direction * falloff * strength * (10.0 + 8.0 * ripple);
         uv = uv + offsetPixels * effect.resolution.zw;
+    }
+
+    // The gate's swirl (gameplay roadmap L5). Not a push but a turn: each
+    // pixel samples from the same distance round the centre, rotated by an
+    // angle that is largest at the centre and nothing at the rim -- so the
+    // stars behind the gate wind into it and the outside is left alone. A
+    // slow wave through the angle keeps it turning even when nothing moves
+    // behind it. Added onto the cloak's offset, so the two fields compose if
+    // the cloaked ship sits over the gate.
+    let swirlTurn = effect.c.w;
+    if (swirlTurn != 0.0) {
+        let toSwirl = pixel - effect.c.xy;
+        let swirlDistance = length(toSwirl);
+        let swirlRadius = max(effect.c.z, 1.0);
+        if (swirlDistance < swirlRadius) {
+            let t = 1.0 - swirlDistance / swirlRadius;
+            let wave = 1.0 + 0.15 * sin(effect.b.x * 2.0 - swirlDistance * 0.02);
+            let angle = swirlTurn * t * t * wave;
+            let c = cos(angle);
+            let s = sin(angle);
+            let turned = vec2f(toSwirl.x * c - toSwirl.y * s, toSwirl.x * s + toSwirl.y * c);
+            uv = uv + (turned - toSwirl) * effect.resolution.zw;
+        }
     }
 
     // Clamped, because an offset near the screen edge would otherwise sample

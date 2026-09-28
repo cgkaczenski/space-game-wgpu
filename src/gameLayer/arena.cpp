@@ -141,6 +141,11 @@ bool outside(glm::vec2 position)
 	return arenaRadius > 0.f && zone::outside(safeZone(), position) > 0.f;
 }
 
+bool onFinalRing()
+{
+	return closes() && closing.stage >= (int)closing.stages.size() - 1;
+}
+
 bool collapsed()
 {
 	return closes() && closing.phase == zone::Phase::Done;

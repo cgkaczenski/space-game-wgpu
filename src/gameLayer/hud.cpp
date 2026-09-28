@@ -5,6 +5,7 @@
 #include <glui/glui.h>      // layout only (Frame, Box)
 #include <platformTools.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -47,6 +48,51 @@ namespace
 		fillCoords.z *= fraction;
 
 		renderer.renderRectangle(fillRect, fill, Colors_White, {}, {}, fillCoords);
+	}
+
+	// ---- The gate's arrow -----------------------------------------------
+
+	bool pointerShown = false;
+	glm::vec2 pointerTarget = {};
+	float pointerPulse = 0.f;
+	glm::vec3 pointerColour = {1.f, 1.f, 1.f};
+
+	const float pointerSizePerc = 0.035f;  // of the window height
+	const float pointerInsetPerc = 0.07f;  // from the edge, of the height
+
+	void drawPointer(wgpu2d::Renderer2D &renderer, int width, int height)
+	{
+		if (!pointerShown) { return; }
+		const glm::vec2 size = {(float)width, (float)height};
+		const float inset = height * pointerInsetPerc;
+
+		// On screen, the gate speaks for itself.
+		if (pointerTarget.x >= 0.f && pointerTarget.y >= 0.f
+			&& pointerTarget.x <= size.x && pointerTarget.y <= size.y) { return; }
+
+		// Along the ray from the centre, stopped at the inset rectangle: the
+		// ray's length to each pair of edges, and whichever it meets first.
+		const glm::vec2 centre = size * 0.5f;
+		const glm::vec2 toward = pointerTarget - centre;
+		const float length = glm::length(toward);
+		if (length <= 0.f) { return; }
+		const glm::vec2 dir = toward / length;
+		const glm::vec2 half = centre - glm::vec2(inset);
+		float reach = 1e9f;
+		if (dir.x != 0.f) { reach = std::min(reach, half.x / std::abs(dir.x)); }
+		if (dir.y != 0.f) { reach = std::min(reach, half.y / std::abs(dir.y)); }
+		const glm::vec2 tip = centre + dir * reach;
+
+		// A chevron: two strokes back from the tip, 40 degrees either side.
+		const float arm = height * pointerSizePerc;
+		const float c = std::cos(2.44f), s = std::sin(2.44f); // 140 degrees
+		const glm::vec2 left = {dir.x * c - dir.y * s, dir.x * s + dir.y * c};
+		const glm::vec2 right = {dir.x * c + dir.y * s, -dir.x * s + dir.y * c};
+		const float bright = 0.45f + 0.55f * pointerPulse;
+		const glm::vec4 colour = {pointerColour * bright, 1.f};
+		const float stroke = std::max(2.f, height * 0.006f);
+		renderer.renderLine(tip, tip + left * arm, colour, stroke);
+		renderer.renderLine(tip, tip + right * arm, colour, stroke);
 	}
 
 	// ---- Weapon slots ---------------------------------------------------
@@ -247,6 +293,14 @@ void onDamage(float strength)
 	phase = 0.f;
 }
 
+void pointTo(bool shown, glm::vec2 target, float pulse, glm::vec3 colour)
+{
+	pointerShown = shown;
+	pointerTarget = target;
+	pointerPulse = pulse;
+	pointerColour = colour;
+}
+
 void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 	const WeaponSlot *slots, int slotCount, float ramReady, int width, int height)
 {
@@ -271,6 +325,8 @@ void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 		drawBar(renderer, energyRect, energyBarTexture, energyTexture, energy);
 
 		drawSlots(renderer, slots, slotCount, ramReady, width, height);
+		drawPointer(renderer, width, height);
+		pointerShown = false; // for one draw; the game says so every frame
 	}
 	renderer.popCamera();
 

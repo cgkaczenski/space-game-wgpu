@@ -41,6 +41,13 @@ namespace hud
 	// can see it happen. `strength` 1 is a full hit; hits stack.
 	void onDamage(float strength = 1.f);
 
+	// The way to the extraction gate (gameplay roadmap L5), for the next draw.
+	// While `shown` and `target` (screen pixels) is off screen, a chevron sits
+	// just inside the screen's edge on the line from the centre, pointing out
+	// toward it. It brightens with `pulse` 0 .. 1 -- the gate's own -- in the
+	// gate's `colour`.
+	void pointTo(bool shown, glm::vec2 target, float pulse, glm::vec3 colour);
+
 	// Draws the HUD and puts it on screen.
 	//
 	// Flushes whatever the renderer has pending first, on purpose: the HUD is

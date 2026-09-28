@@ -39,7 +39,10 @@ namespace crt
 	// as a set does -- and how far it has gone to white. Set every frame
 	// before apply. They run even with the filter disabled, with the rest of
 	// the CRT look at zero, because they are the game's, not the filter's.
-	void setTransition(float switchOff, float whiteOut);
+	//
+	// `warp` 0 .. 1 is the warp-out (gameplay roadmap L5): the picture streaks
+	// outward from the centre of the screen, a zoom blur, as the ship leaves.
+	void setTransition(float switchOff, float whiteOut, float warp = 0.f);
 
 	void setEnabled(bool enabled);
 	bool isEnabled();

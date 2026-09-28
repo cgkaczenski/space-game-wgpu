@@ -357,6 +357,55 @@ _(Choices made while building — to confirm:)_
 
 ### L5. Extraction warp gate
 
+**Decided (first pass)**
+- **One gate** per level, from its `marker gate` line. It only **opens on the
+  final ring**, once the closing circle has landed on the level's last ring.
+- **Starting it:** hover inside it, **uncloaked**, for **3 s**. Then it
+  **charges on its own for about 30 s** (a debug slider). The tempo of its
+  pulse rises as it charges, and that tempo is the countdown. The player can
+  leave and fight meanwhile.
+- **Ready:** the player has to **fly into it** again, uncloaked, to extract.
+- **An enemy shot that hits you resets it**, and the start has to be done again.
+- A **HUD arrow** points to the gate.
+- **All enemies dead means immediate extraction:** the gate goes straight to
+  Ready, with no hover and no charge, and flying in extracts at once.
+  _(To confirm:)_ this works even before the final ring, and a level placing no
+  enemies has its gate ready from the start.
+- The gate's body is **Black Hole2.png**, a black disc in a cyan ring, sized so
+  the art's ring sits on the gate's. It is pixelated like the scenery from the
+  same set, dim while closed, and **spins** faster as the gate charges
+  (0.25 → 3 rad/s). The swirl bends the art too. The state-coloured ring and
+  the arc are drawn over it; the inner debug ring is gone.
+- The engine suggestions, taken:
+  - **The swirl** is a second field in the cloak's pass that turns the world
+    round the gate, stronger as it charges.
+  - **The charge** is shown as an arc round the gate.
+  - **The warp-out** is a zoom blur in the CRT pass, so the picture streaks
+    outward as the ship leaves.
+- _(Dropped:)_ orbs drawn into the gate.
+
+_(Choices made while building — to confirm:)_
+- **Any** enemy shot that reaches the ship resets the gate: through the hull,
+  blocked by the shield, or taken on the ram's prow. A shot also resets a
+  **Ready** gate. Burning outside the ring does not reset it.
+- The 3 s hover must be **unbroken**: leaving the gate or cloaking starts it
+  over. The arc fills during the hover, and during the charge it shows how much
+  is done.
+- Being **already inside** when the gate turns Ready is enough; you don't have
+  to leave and re-enter.
+- The look runs **grey** closed, **cyan** with a slow breath when open, cyan
+  whitening with a faster and faster pulse while charging, and **steady gold**
+  when ready. The swirl is off while closed and at full strength when ready.
+- The arrow only appears **once the gate opens** (its appearance says so),
+  only while the gate is off screen, and pulses in the gate's colour.
+- The warp still leaves **along the ship's heading**. The blur is centred on
+  the screen, where the camera holds.
+- A level with **no rings** has its gate open from the start.
+- Level 1's final ring moved onto the gate (14800, -1000), so the circle
+  collapses there.
+- In play the gate replaces the debug marker, so the "Level markers" toggle is
+  gone. The editor still draws markers. The debug **Extract** button stays.
+
 **Engine ideas**
 - The gate can be a refraction effect like the cloak, swirled. The warp-out can
   be a final effect over the whole frame, the way the CRT is.

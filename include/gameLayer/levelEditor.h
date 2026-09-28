@@ -44,9 +44,8 @@ namespace levelEditor
 	void update(level::Level &level, wgpu2d::Renderer2D &renderer,
 		glm::vec2 mouse, int width, int height, float realDeltaTime);
 
-	// The resource and gate markers: gold rings and a cyan pair, line widths
-	// held on screen at any zoom. Also drawn in play, as debug outlines, until
-	// L3 and L5 give them a look.
+	// The gate markers: a cyan pair, line widths held on screen at any zoom.
+	// The editor's only -- in play the gate draws itself (gameplay roadmap L5).
 	void drawMarkers(const level::Level &level, wgpu2d::Renderer2D &renderer, float zoom);
 
 	// The level, over whatever background the caller drew first.

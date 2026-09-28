@@ -28,6 +28,12 @@ namespace
 	// whole number of the shader's periods (it runs at 5 rad/s) so the wrap
 	// does not jump.
 	float shimmerClock = 0.f;
+
+	// The gate's swirl, for the next flush only.
+	glm::vec2 swirlAt = {};
+	float swirlRadius = 0.f;
+	float swirlStrength = 0.f;
+	const float swirlMaxRadians = 1.4f; // the turn at the centre, at full strength
 	const float shimmerWrap = 1000.f * 6.2831853f / 5.f;
 
 	const float engagePerSecond = 3.5f;
@@ -79,6 +85,13 @@ void cleanup()
 }
 
 void setActive(bool a) { active = a; }
+
+void setSwirl(glm::vec2 worldPos, float worldRadius, float strength)
+{
+	swirlAt = worldPos;
+	swirlRadius = worldRadius;
+	swirlStrength = strength;
+}
 bool isActive() { return active; }
 
 float shipAlpha()
@@ -95,11 +108,21 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	shimmerClock = std::fmod(shimmerClock + std::max(0.f, dt), shimmerWrap);
 	if (level < 0.004f) { level = 0.f; } // settle exactly, so down is free
 
+	// The swirl is taken for this flush and cleared, so a gate that stops
+	// asking stops swirling. Only if its field reaches the view: off screen it
+	// would bend nothing and still cost the copy.
+	const glm::vec4 view = renderer.getViewRect();
+	const float swirl = swirlStrength;
+	swirlStrength = 0.f;
+	const bool swirlShows = swirl > 0.f && swirlRadius > 0.f
+		&& swirlAt.x + swirlRadius > view.x && swirlAt.x - swirlRadius < view.x + view.z
+		&& swirlAt.y + swirlRadius > view.y && swirlAt.y - swirlRadius < view.y + view.w;
+
 	// Down, or nothing usable: this is an ordinary flush and costs nothing.
 	// The round trip is skipped entirely rather than run with strength 0,
 	// because a full-screen copy is not free and an idle feature should not
 	// charge for itself.
-	if (level <= 0.f || effect.id == 0 || width <= 0 || height <= 0)
+	if ((level <= 0.f && !swirlShows) || effect.id == 0 || width <= 0 || height <= 0)
 	{
 		renderer.flush();
 		return;
@@ -121,7 +144,6 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	// The shader works in screen pixels; the caller thinks in world units.
 	// getViewRect is the visible world rectangle, so this is the same mapping
 	// the projection does, done once on the CPU for one point.
-	const glm::vec4 view = renderer.getViewRect();
 	glm::vec2 screenPos = {(float)width * 0.5f, (float)height * 0.5f};
 	float screenPerWorld = 1.f;
 	if (view.z != 0.f && view.w != 0.f)
@@ -136,6 +158,12 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	params.a = {screenPos.x, screenPos.y,
 		shipScreenRadius * radiusPerShipRadius, level * maxStrength};
 	params.b = {shimmerClock, 0.f, 0.f, 0.f};
+	if (swirlShows && view.z != 0.f && view.w != 0.f)
+	{
+		params.c = {(swirlAt.x - view.x) / view.z * (float)width,
+			(swirlAt.y - view.y) / view.w * (float)height,
+			swirlRadius * screenPerWorld, swirl * swirlMaxRadians};
+	}
 
 	renderer.drawFullscreenEffect(worldTarget.texture, effect, params);
 }

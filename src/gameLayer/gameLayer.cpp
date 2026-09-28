@@ -28,6 +28,7 @@
 #include <gameClock.h>
 #include <playerMove.h>
 #include <energy.h>
+#include <gate.h>
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
@@ -110,7 +111,6 @@ bool levelLoaded = false;
 // searching enemies stay awake wherever they are, so a chase does not freeze
 // just off screen.
 float wakeMargin = 0.25f;
-bool markersVisible = true;
 bool sceneryVisible = true;
 int awakeEnemies = 0; // last frame's, for the panel
 
@@ -149,6 +149,8 @@ const Feature features[] = {
 	{"crt",        crt::init,        nullptr,         crt::cleanup},
 	{"background", background::init, nullptr,         background::cleanup},
 	{"scenery",    scenery::init,    nullptr,         scenery::cleanup},
+	// Its start needs the level, so the game does it in restartGame instead.
+	{"gate",       gate::init,       nullptr,         gate::cleanup},
 	// Its reset needs the level, so the game does it in restartGame instead.
 	{"resources",  resources::init,  nullptr,         resources::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
@@ -201,6 +203,16 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		}
 	}
 	if (startAt) { session.playerPos = *startAt; }
+
+	// The way out (gameplay roadmap L5): the level's first gate, if it has one.
+	{
+		const level::Marker *g = nullptr;
+		for (const level::Marker &m : currentLevel.markers)
+		{
+			if (m.kind == level::Marker::Kind::Gate) { g = &m; break; }
+		}
+		gate::start(levelLoaded && g, g ? g->position : glm::vec2{});
+	}
 
 	// What there is to mine this round (gameplay roadmap L3). Points banked by
 	// extracting are not a round's and survive.
@@ -306,17 +318,10 @@ void levelDebugUi()
 			renderer.currentCamera.zoom);
 	}
 	ImGui::SliderFloat("Wake margin", &wakeMargin, 0.f, 2.f, "%.2f of view");
-	ImGui::Checkbox("Level markers", &markersVisible);
-	ImGui::SameLine();
 	ImGui::Checkbox("Scenery", &sceneryVisible);
 	arena::debugUi();
 }
 
-void drawMarkers(float zoom)
-{
-	if (!levelLoaded || !markersVisible) { return; }
-	levelEditor::drawMarkers(currentLevel, renderer, zoom);
-}
 
 }
 
@@ -362,6 +367,7 @@ void debugPanelUi()
 	debugPanel::section("Session", sessionDebugUi);
 	debugPanel::section("State", gameState::debugUi);
 	debugPanel::section("Level", levelDebugUi);
+	debugPanel::section("Gate", gate::debugUi);
 	debugPanel::section("Resources", resources::debugUi);
 	debugPanel::section("World grade", worldGrade::debugUi);
 	debugPanel::section("Sound", sfx::debugUi);
@@ -477,7 +483,7 @@ bool gameLogic(float deltaTime)
 			restartGame();
 		}
 		gameClock::setPaused(gameState::paused());
-		crt::setTransition(gameState::switchOff(), gameState::whiteOut());
+		crt::setTransition(gameState::switchOff(), gameState::whiteOut(), gameState::warpBlur());
 	}
 	const bool controls = gameState::controlsLive();
 
@@ -598,6 +604,16 @@ bool gameLogic(float deltaTime)
 	}
 	session.player = player;
 
+	// The gate, once the ship has moved: it opens on the closing circle's
+	// final ring (or at once, on a level that does not close), is ready at
+	// once when every enemy is dead, and flying into it ready and uncloaked
+	// is what the debug Extract button did.
+	if (gate::update(time.game, !arena::closes() || arena::onFinalRing(), session.enemies.empty(),
+		session.playerPos, controls && !energy::isCloaked()))
+	{
+		startExtraction();
+	}
+
 	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
 	// enemy once per ram; the player takes nothing.
 	if (ram::active())
@@ -665,6 +681,7 @@ bool gameLogic(float deltaTime)
 
 	background::draw(renderer);
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
+	gate::drawBody(renderer); // in the world, under the ships
 #pragma endregion
 
 #pragma region handle bulets
@@ -815,6 +832,10 @@ bool gameLogic(float deltaTime)
 					collisionSystem.overlaps(session.bullets[i].getHitbox(),
 					game::shipHitbox(session.playerPos, shipSize)))
 				{
+					// Shot at all -- prow, shield or hull -- and the gate's
+					// start is lost (gameplay roadmap L5).
+					gate::playerShot();
+
 					// The ram's prow takes shots from the front while it is out.
 					if (ram::barrierUp() && glm::dot(session.bullets[i].position - session.playerPos,
 						ram::direction()) > 0.f)
@@ -997,7 +1018,6 @@ bool gameLogic(float deltaTime)
 	// Wrecks sit where ships sit: after them, under everything else.
 	effects::drawDebris(renderer);
 
-	drawMarkers(renderer.currentCamera.zoom);
 
 	// A missile's lock on its target: a dashed red box, until impact.
 	for (const auto &b : session.bullets)
@@ -1064,6 +1084,7 @@ bool gameLogic(float deltaTime)
 	effects::drawGlow(renderer);
 	resources::drawGlow(renderer, effectClock);
 	arena::draw(renderer, renderer.currentCamera.zoom);
+	gate::draw(renderer, renderer.currentCamera.zoom);
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	for (auto &b : session.bullets)
@@ -1112,7 +1133,22 @@ bool gameLogic(float deltaTime)
 			gameState::warpStretch());
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+	// The gate's swirl rides the cloak's pass, so it bends the same target.
+	cloak::setSwirl(gate::position(), gate::swirlRadius(), gate::swirlStrength());
 	cloak::flushWorld(renderer, session.playerPos, shipSize, w, h, time.game);
+
+	// The arrow to the gate, once it is open. Screen pixels, from the world
+	// camera the frame was drawn in -- the HUD pushes its own.
+	if (gate::exists() && gate::state() != gate::State::Closed)
+	{
+		const glm::vec4 view = renderer.getViewRect();
+		if (view.z != 0.f && view.w != 0.f)
+		{
+			const glm::vec2 onScreen = {(gate::position().x - view.x) / view.z * (float)w,
+				(gate::position().y - view.y) / view.w * (float)h};
+			hud::pointTo(true, onScreen, gate::pulse(), gate::colour());
+		}
+	}
 
 	hud::WeaponSlot slots[weapons::slotCount];
 	for (int s = 0; s < weapons::slotCount; s++)

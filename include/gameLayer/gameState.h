@@ -71,6 +71,10 @@ namespace gameState
 	float switchOff();
 	float whiteOut();
 
+	// 0 .. 1, how far into the warp-out's streaking the picture is: rising
+	// through the surge, held through the white, gone with the new round.
+	float warpBlur();
+
 	// Straight to Playing with no transition: the debug panel's reset, and
 	// the first round. Leaves a pause alone.
 	void reset();
