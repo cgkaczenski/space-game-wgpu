@@ -23,19 +23,21 @@ namespace effects
 
 	// An enemy just died. `cell` is its texture coordinates in the ship sheet,
 	// as the atlas gives them, so the debris can be cut from it.
-	void enemyKilled(const Enemy &enemy, glm::vec4 cell);
+	void enemyKilled(const Enemy &enemy, wgpu2d::Texture shipSheet, glm::vec4 cell);
 
-	// Any ship: the same blast and the same debris, sized to it. Enemies go
-	// through enemyKilled; the player's death comes here directly (L1).
-	void shipDestroyed(glm::vec2 position, glm::vec2 facing, glm::vec2 velocity, float size,
-		glm::vec4 cell);
+	// Anything that breaks up: the same blast, and the same debris cut from
+	// `cell` of `texture`. Enemies go through enemyKilled, the player's death
+	// comes here directly (L1), and a spent deposit too (L3) -- a piece
+	// carries its own texture, so a rock's debris is rock.
+	void shipDestroyed(wgpu2d::Texture texture, glm::vec4 cell, glm::vec2 position,
+		glm::vec2 facing, glm::vec2 velocity, float size);
 
 	// Game time.
 	void update(float gameDeltaTime);
 
-	// The debris, under alpha, with the ship sheet the pieces are cut from.
-	// Draw with the enemies, so a wreck sits where ships sit.
-	void drawDebris(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet);
+	// The debris, under alpha; each piece knows its own texture. Draw with
+	// the enemies, so a wreck sits where ships sit.
+	void drawDebris(wgpu2d::Renderer2D &renderer);
 
 	// The fireballs. **The caller must have set `BlendMode::Additive`**, as for
 	// bullet glows: they go in that same pass.

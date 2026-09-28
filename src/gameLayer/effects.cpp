@@ -27,6 +27,7 @@ namespace
 
 	struct Piece
 	{
+		wgpu2d::Texture texture; // what it is a piece of: a ship sheet, a rock
 		glm::vec2 position;
 		glm::vec2 velocity;
 		glm::vec2 size;
@@ -296,8 +297,8 @@ glm::vec2 shakeOffset(float realDeltaTime)
 		amplitude * std::sin(6.2831853f * shakeFrequencyY * shakePhase + 1.1f)};
 }
 
-void shipDestroyed(glm::vec2 position, glm::vec2 facing, glm::vec2 velocity, float size,
-	glm::vec4 cell)
+void shipDestroyed(wgpu2d::Texture texture, glm::vec4 cell, glm::vec2 position,
+	glm::vec2 facing, glm::vec2 velocity, float size)
 {
 	blasts.push_back({position, size, 0.f});
 
@@ -322,6 +323,7 @@ void shipDestroyed(glm::vec2 position, glm::vec2 facing, glm::vec2 velocity, flo
 			const glm::vec2 offset = {local.x * c + local.y * s, -local.x * s + local.y * c};
 
 			Piece p;
+			p.texture = texture;
 			p.position = position + offset;
 			p.size = pieceSize;
 
@@ -350,9 +352,10 @@ void shipDestroyed(glm::vec2 position, glm::vec2 facing, glm::vec2 velocity, flo
 	}
 }
 
-void enemyKilled(const Enemy &enemy, glm::vec4 cell)
+void enemyKilled(const Enemy &enemy, wgpu2d::Texture shipSheet, glm::vec4 cell)
 {
-	shipDestroyed(enemy.position, enemy.viewDirection, enemy.velocity, enemyShipSize, cell);
+	shipDestroyed(shipSheet, cell, enemy.position, enemy.viewDirection, enemy.velocity,
+		enemyShipSize);
 }
 
 void update(float gameDeltaTime)
@@ -394,7 +397,7 @@ void update(float gameDeltaTime)
 		[](const Streak &s) { return s.age >= streakLife; }), streaks.end());
 }
 
-void drawDebris(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet)
+void drawDebris(wgpu2d::Renderer2D &renderer)
 {
 	for (const Piece &p : pieces)
 	{
@@ -407,7 +410,7 @@ void drawDebris(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet)
 			: std::clamp(1.f - (p.age - p.fadeStart) / debrisFadeOut, 0.f, 1.f);
 		const glm::vec4 tint = {shade, shade * 0.9f, shade * 0.82f, alpha};
 		renderer.renderRectangle({p.position - p.size * 0.5f, p.size.x, p.size.y},
-			shipSheet, tint, {}, p.angle, p.uv);
+			p.texture, tint, {}, p.angle, p.uv);
 	}
 }
 

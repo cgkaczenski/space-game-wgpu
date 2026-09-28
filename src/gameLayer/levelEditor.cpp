@@ -1,5 +1,6 @@
 #include <levelEditor.h>
 
+#include <resources.h>
 #include <scenery.h>
 #include <shipSprite.h>
 #include "platformInput.h"
@@ -25,10 +26,12 @@ namespace
 	constexpr float maxZoom = 1.f;
 
 	enum class Tool { Select, Rusher, Sniper, Resource, Gate, Scenery };
+	// A deposit's ring in the editor, matching how big one is in play.
+	constexpr float depositRadius = 320.f;
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Marker, Scenery };
+	enum class Kind { None, Start, Enemy, Resource, Marker, Scenery };
 	struct Pick
 	{
 		Kind kind = Kind::None;
@@ -68,10 +71,7 @@ namespace
 		return (drawn - centre * depth) / keep;
 	}
 
-	float markerRadius(level::Marker::Kind k)
-	{
-		return k == level::Marker::Kind::Gate ? 600.f : 250.f;
-	}
+	constexpr float gateRadius = 600.f;
 
 	glm::vec2 positionOf(const level::Level &level, Pick p)
 	{
@@ -79,6 +79,7 @@ namespace
 		{
 		case Kind::Start: return level.start;
 		case Kind::Enemy: return level.enemies[p.index].position;
+		case Kind::Resource: return level.resources[p.index].position;
 		case Kind::Marker: return level.markers[p.index].position;
 		case Kind::Scenery: return drawnAt(level.scenery[p.index]);
 		default: return {};
@@ -91,6 +92,7 @@ namespace
 		{
 		case Kind::Start: level.start = to; break;
 		case Kind::Enemy: level.enemies[p.index].position = to; break;
+		case Kind::Resource: level.resources[p.index].position = to; break;
 		case Kind::Marker: level.markers[p.index].position = to; break;
 		case Kind::Scenery:
 		{
@@ -120,9 +122,13 @@ namespace
 		{
 			consider(Kind::Enemy, i, level.enemies[i].position, enemySize * 0.5f);
 		}
+		for (int i = 0; i < (int)level.resources.size(); i++)
+		{
+			consider(Kind::Resource, i, level.resources[i].position, depositRadius);
+		}
 		for (int i = 0; i < (int)level.markers.size(); i++)
 		{
-			consider(Kind::Marker, i, level.markers[i].position, markerRadius(level.markers[i].kind));
+			consider(Kind::Marker, i, level.markers[i].position, gateRadius);
 		}
 		if (best.kind != Kind::None) { return best; }
 
@@ -138,6 +144,7 @@ namespace
 		switch (p.kind)
 		{
 		case Kind::Enemy: level.enemies.erase(level.enemies.begin() + p.index); break;
+		case Kind::Resource: level.resources.erase(level.resources.begin() + p.index); break;
 		case Kind::Marker: level.markers.erase(level.markers.begin() + p.index); break;
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
 		default: return; // the start stays: a level needs one
@@ -162,10 +169,17 @@ namespace
 			return {Kind::Enemy, (int)level.enemies.size() - 1};
 		}
 		case Tool::Resource:
+		{
+			level::Resource r;
+			r.position = at;
+			r.amount = resources::defaultAmount();
+			level.resources.push_back(r);
+			return {Kind::Resource, (int)level.resources.size() - 1};
+		}
 		case Tool::Gate:
 		{
 			level::Marker m;
-			m.kind = tool == Tool::Gate ? level::Marker::Kind::Gate : level::Marker::Kind::Resource;
+			m.kind = level::Marker::Kind::Gate;
 			m.position = at;
 			level.markers.push_back(m);
 			return {Kind::Marker, (int)level.markers.size() - 1};
@@ -188,6 +202,7 @@ namespace
 		{
 		case Kind::Start: return true;
 		case Kind::Enemy: return p.index >= 0 && p.index < (int)level.enemies.size();
+		case Kind::Resource: return p.index >= 0 && p.index < (int)level.resources.size();
 		case Kind::Marker: return p.index >= 0 && p.index < (int)level.markers.size();
 		case Kind::Scenery: return p.index >= 0 && p.index < (int)level.scenery.size();
 		default: return false;
@@ -316,15 +331,8 @@ void drawMarkers(const level::Level &level, wgpu2d::Renderer2D &renderer, float 
 	const float px = 1.f / std::max(z, 0.001f);
 	for (const level::Marker &m : level.markers)
 	{
-		if (m.kind == level::Marker::Kind::Resource)
-		{
-			renderer.renderCircleOutline(m.position, {1.f, 0.8f, 0.2f, 0.9f}, 250.f, 3.f * px, 32);
-		}
-		else
-		{
-			renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.9f}, 600.f, 3.f * px, 48);
-			renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.5f}, 450.f, 2.f * px, 48);
-		}
+		renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.9f}, gateRadius, 3.f * px, 48);
+		renderer.renderCircleOutline(m.position, {0.3f, 0.9f, 1.f, 0.5f}, gateRadius * 0.75f, 2.f * px, 48);
 	}
 }
 
@@ -335,6 +343,15 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 	const float px = 1.f / std::max(zoom, 0.001f);
 
 	drawMarkers(level, renderer, zoom);
+
+	// Deposits: a gold ring, with a second one showing how much is in it.
+	for (const level::Resource &r : level.resources)
+	{
+		renderer.renderCircleOutline(r.position, {1.f, 0.8f, 0.2f, 0.9f}, depositRadius, 3.f * px, 32);
+		const float fill = std::clamp(r.amount / 20.f, 0.05f, 1.f);
+		renderer.renderCircleOutline(r.position, {1.f, 0.85f, 0.35f, 0.6f},
+			depositRadius * fill, 2.f * px, 24);
+	}
 
 	for (const level::EnemyPlacement &e : level.enemies)
 	{
@@ -351,7 +368,8 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 	{
 		float radius = look.enemySize * 0.6f;
 		if (selected.kind == Kind::Start) { radius = look.shipSize * 0.7f; }
-		if (selected.kind == Kind::Marker) { radius = markerRadius(level.markers[selected.index].kind) * 1.15f; }
+		if (selected.kind == Kind::Resource) { radius = depositRadius * 1.2f; }
+		if (selected.kind == Kind::Marker) { radius = gateRadius * 1.15f; }
 		if (selected.kind == Kind::Scenery) { radius = level.scenery[selected.index].size * 0.55f; }
 		renderer.renderCircleOutline(positionOf(level, selected), {1.f, 1.f, 1.f, 1.f}, radius, 3.f * px, 48);
 	}
@@ -420,15 +438,18 @@ Request debugUi(level::Level &level, bool unsaved)
 		if (ImGui::SliderFloat("Facing", &e.facingDegrees, -180.f, 180.f, "%.0f deg")) { edited = true; }
 		break;
 	}
+	case Kind::Resource:
+	{
+		level::Resource &r = level.resources[selected.index];
+		ImGui::Text("Deposit");
+		if (ImGui::DragFloat2("Position", &r.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		if (ImGui::DragFloat("Amount", &r.amount, 0.25f, 0.5f, 100.f, "%.1f")) { edited = true; }
+		break;
+	}
 	case Kind::Marker:
 	{
 		level::Marker &m = level.markers[selected.index];
-		int kind = m.kind == level::Marker::Kind::Gate ? 1 : 0;
-		if (ImGui::Combo("Kind", &kind, "Resource\0Gate\0"))
-		{
-			m.kind = kind ? level::Marker::Kind::Gate : level::Marker::Kind::Resource;
-			edited = true;
-		}
+		ImGui::Text("Extraction gate");
 		if (ImGui::DragFloat2("Position", &m.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
 		break;
 	}

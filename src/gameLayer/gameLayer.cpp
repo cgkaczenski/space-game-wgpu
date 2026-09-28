@@ -36,6 +36,7 @@
 #include <arena.h>
 #include <scenery.h>
 #include <levelEditor.h>
+#include <resources.h>
 #include <worldGrade.h>
 #include <cstdio>
 #include <engine/collisionSystem.h>
@@ -148,6 +149,8 @@ const Feature features[] = {
 	{"crt",        crt::init,        nullptr,         crt::cleanup},
 	{"background", background::init, nullptr,         background::cleanup},
 	{"scenery",    scenery::init,    nullptr,         scenery::cleanup},
+	// Its reset needs the level, so the game does it in restartGame instead.
+	{"resources",  resources::init,  nullptr,         resources::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
 	{"effects",    effects::init,    effects::reset,  effects::cleanup},
 	{"ram",        nullptr,          ram::reset,      nullptr},
@@ -171,6 +174,15 @@ int startedFeatures = 0;
 
 // `startAt`, when given, overrides the level's start: the editor's "test from
 // here".
+// Leaving with the haul: the hold becomes points, then the ship warps out.
+// One place, so L5's gate does exactly what the debug button does.
+void startExtraction()
+{
+	if (gameState::current() != gameState::State::Playing) { return; }
+	resources::extracted();
+	gameState::extract();
+}
+
 void restartGame(const glm::vec2 *startAt = nullptr)
 {
 	session = {};
@@ -187,6 +199,10 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		}
 	}
 	if (startAt) { session.playerPos = *startAt; }
+
+	// What there is to mine this round (gameplay roadmap L3). Points banked by
+	// extracting are not a round's and survive.
+	resources::reset(currentLevel.resources);
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
 	gameClock::reset();
@@ -209,7 +225,8 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 void killEnemy(int index)
 {
 	const Enemy &e = session.enemies[index];
-	effects::enemyKilled(e, shipAtlas.get(e.type.x, e.type.y));
+	effects::enemyKilled(e, shipSheet, shipAtlas.get(e.type.x, e.type.y));
+	resources::enemyDropped(e.position); // fragments among the wreckage (L3)
 	session.enemies.erase(session.enemies.begin() + index);
 }
 
@@ -251,7 +268,7 @@ void sessionDebugUi()
 	// Until the gate exists (gameplay roadmap L5).
 	if (ImGui::Button("Extract"))
 	{
-		gameState::extract();
+		startExtraction();
 	}
 
 	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
@@ -343,6 +360,7 @@ void debugPanelUi()
 	debugPanel::section("Session", sessionDebugUi);
 	debugPanel::section("State", gameState::debugUi);
 	debugPanel::section("Level", levelDebugUi);
+	debugPanel::section("Resources", resources::debugUi);
 	debugPanel::section("Pause look", worldGrade::debugUi);
 	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);
@@ -707,10 +725,25 @@ bool gameLogic(float deltaTime)
 				session.enemies[e].getHitbox());
 			if (t >= 0.f && t < reach) { reach = t; target = e; }
 		}
-		beamEnd = beam.origin + beam.direction * reach;
-		beamHit = target >= 0;
 
-		if (beamHit && !hitboxDebug::isDamageFrozen())
+		// A deposit stops the beam as an enemy does, and being burned is how
+		// it is mined (gameplay roadmap L3). Nearer than the enemy, the ore
+		// takes the beam and the enemy behind it is spared.
+		const float ore = resources::rayToDeposit(beam.origin, beam.direction, reach);
+		bool miningNow = false;
+		if (ore >= 0.f)
+		{
+			reach = ore;
+			target = -1;
+			miningNow = true;
+		}
+
+		beamEnd = beam.origin + beam.direction * reach;
+		beamHit = target >= 0 || miningNow;
+
+		if (miningNow) { resources::mine(beam.origin, beam.direction, time.game); }
+
+		if (target >= 0 && !hitboxDebug::isDamageFrozen())
 		{
 			session.enemies[target].life -= beam.damagePerSecond * time.game;
 			if (session.enemies[target].life <= 0.f)
@@ -801,6 +834,7 @@ bool gameLogic(float deltaTime)
 					{
 						session.health -= 0.1;
 						hud::onDamage();  // shake the HUD when the hull is hit
+						resources::interrupt(); // and the drill loses its hold
 					}
 
 					session.bullets.erase(session.bullets.begin() + i);
@@ -819,10 +853,11 @@ bool gameLogic(float deltaTime)
 	{
 		// The ship goes the way enemies do, and the world runs on around the
 		// wreck until gameState switches the picture off (gameplay roadmap L1).
-		effects::shipDestroyed(session.playerPos, session.playerFacing,
-			session.playerVelocity, shipSize, shipAtlas.get(3, 0));
+		effects::shipDestroyed(shipSheet, shipAtlas.get(3, 0), session.playerPos,
+			session.playerFacing, session.playerVelocity, shipSize);
 		effects::shake(1.f);
 		session.playerVelocity = {};
+		resources::playerDropped(session.playerPos); // the hold spills at the wreck
 		energy::uncloak();
 		ram::reset();
 		weapons::reset(); // no burst's second shot from the wreck
@@ -903,6 +938,7 @@ bool gameLogic(float deltaTime)
 #pragma endregion
 
 	effects::update(time.game);
+	resources::update(time.game, session.playerPos, gameState::playerPresent());
 
 #pragma region render enemies
 
@@ -924,8 +960,11 @@ bool gameLogic(float deltaTime)
 	// What each knows: red engaged, amber searching.
 	for (const auto &e : session.enemies) { effects::drawAwareness(renderer, e, effectClock); }
 
+	// Deposits sit in the world like ships do, under the wrecks.
+	resources::draw(renderer);
+
 	// Wrecks sit where ships sit: after them, under everything else.
-	effects::drawDebris(renderer, shipSheet);
+	effects::drawDebris(renderer);
 
 	drawMarkers(renderer.currentCamera.zoom);
 
@@ -992,6 +1031,7 @@ bool gameLogic(float deltaTime)
 	}
 	if (beam.firing) { bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamHit, effectClock); }
 	effects::drawGlow(renderer);
+	resources::drawGlow(renderer, effectClock);
 	arena::draw(renderer, renderer.currentCamera.zoom);
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 

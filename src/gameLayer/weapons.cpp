@@ -39,10 +39,20 @@ namespace
 	constexpr int laserSlot = 3;
 
 	// The laser's charge, in seconds of beam (gameplay roadmap C3b). It drains
-	// while the beam is on and is kept when the trigger is released; only an
-	// empty charge starts the cooldown, and the cooldown's end refills it.
+	// while the beam is on; only an empty charge starts the cooldown, and the
+	// cooldown's end refills it.
+	//
+	// It also trickles back on its own after a moment's rest (L3). Keeping
+	// what was left and never refilling it was the original rule, and it only
+	// worked while the beam was a weapon: once it also mines, a run of short
+	// burns leaves a laser that can only be restored by wasting the rest of
+	// it. The idle wait is what keeps the rule honest -- holding the trigger
+	// never regains anything, so emptying it is still the mistake.
 	float laserChargeSeconds = 5.f;
 	float laserCharge = 5.f;
+	float laserIdleBeforeRegen = 1.f;   // seconds after firing stops
+	float laserRegenSeconds = 8.f;      // to go from empty to full
+	float laserIdle = 0.f;              // seconds since the beam was last on
 	bool laserWasFiring = false;
 	Beam currentBeam;
 
@@ -167,6 +177,7 @@ void reset()
 	}
 	pendingShots = 0;
 	laserCharge = laserChargeSeconds;
+	laserIdle = 0.f;
 	laserWasFiring = false;
 	currentBeam = {};
 }
@@ -200,6 +211,18 @@ int update(float gameDeltaTime, bool triggerHeld, const FireContext &context,
 	// An emptied laser comes back full when its cooldown ends.
 	if (laserCharge <= 0.f && cooldownLeft[laserSlot] <= 0.f) { laserCharge = laserChargeSeconds; }
 
+	// Otherwise it trickles back once the beam has been off a moment. Not
+	// during the cooldown: that is the emptied laser's punishment, and the
+	// refill at its end is what ends it.
+	laserIdle += gameDeltaTime;
+	if (laserIdle >= laserIdleBeforeRegen && cooldownLeft[laserSlot] <= 0.f
+		&& laserCharge > 0.f && laserCharge < laserChargeSeconds)
+	{
+		const float perSecond = laserRegenSeconds > 0.f
+			? laserChargeSeconds / laserRegenSeconds : laserChargeSeconds;
+		laserCharge = std::min(laserChargeSeconds, laserCharge + perSecond * gameDeltaTime);
+	}
+
 	currentBeam = {};
 	int fired = 0;
 
@@ -224,6 +247,7 @@ int update(float gameDeltaTime, bool triggerHeld, const FireContext &context,
 		const bool firing = triggerHeld && cooldownLeft[laserSlot] <= 0.f && laserCharge > 0.f;
 		if (firing)
 		{
+			laserIdle = 0.f;
 			laserCharge -= gameDeltaTime;
 			currentBeam.firing = true;
 			currentBeam.started = !laserWasFiring;
@@ -358,7 +382,9 @@ void debugUi()
 			if (i == laserSlot)
 			{
 				ImGui::SliderFloat("Charge", &laserChargeSeconds, 0.5f, 15.f, "%.1f s");
-				ImGui::Text("Left %.1f s", laserCharge);
+				ImGui::SliderFloat("Regen wait", &laserIdleBeforeRegen, 0.f, 5.f, "%.1f s");
+				ImGui::SliderFloat("Regen full in", &laserRegenSeconds, 0.5f, 30.f, "%.1f s");
+				ImGui::Text("Left %.1f s (idle %.1f s)", laserCharge, laserIdle);
 			}
 			if (w.motion == BulletMotion::Missile)
 			{

@@ -11,7 +11,11 @@
 //   arena 20000                             radius; the arena is centred on 0,0
 //   start -17000 0 0                        x y facing
 //   enemy rusher 4000 1200 180              kind x y facing: rusher | sniper
-//   marker resource 3000 6000               kind x y: resource | gate
+//   resource 3000 6000 6                    x y amount (gameplay roadmap L3)
+//   marker gate 15000 -1000                 kind x y: gate
+//
+// `marker resource x y` from before L3 still loads, as a deposit of the
+// default amount.
 //   scenery Planet1 -6000 9000 2700 0                art x y size depth
 //
 // Scenery depth is parallax: 0 moves with the world, and toward 1 a piece
@@ -35,10 +39,18 @@ namespace level
 		float facingDegrees = 0.f;
 	};
 
+	struct Resource
+	{
+		glm::vec2 position = {};
+		float amount = 6.f;    // how much is in it to mine
+	};
+
 	struct Marker
 	{
-		enum class Kind { Resource, Gate };
-		Kind kind = Kind::Resource;
+		// Only the gate so far. Resources were markers before L3 gave them
+		// something to be.
+		enum class Kind { Gate };
+		Kind kind = Kind::Gate;
 		glm::vec2 position = {};
 	};
 
@@ -56,6 +68,7 @@ namespace level
 		glm::vec2 start = {};
 		float startFacingDegrees = 0.f;
 		std::vector<EnemyPlacement> enemies;
+		std::vector<Resource> resources;
 		std::vector<Marker> markers;
 		std::vector<Scenery> scenery;
 	};

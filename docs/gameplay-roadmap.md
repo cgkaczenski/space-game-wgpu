@@ -118,6 +118,12 @@ Homing, piercing, and so on — only if C2 wants them.
   Drawn as the glow capsule stretched along it plus the sheet's cyan beam
   segment tiled and scrolling, with a flickering burst where it hits. Firing
   it uncloaks. Shield blocking waits for enemies to have shields.
+- C3b, revised in L3: a part-used charge **trickles back** after a second
+  without firing, refilling over 8 s. Keeping what was left and never
+  restoring it worked while the beam was only a weapon; once it also mines,
+  short burns left a laser that could only be restored by wasting the rest of
+  it. Holding the trigger regains nothing and an empty charge still pays the
+  4 s cooldown, so running dry is still the mistake. Both times are sliders.
 - Engine ideas taken: the beam as the capsule stretched, bloomed by the CRT
   glow, with the sheet's tileable beam segment available; the missile's
   exhaust as the ship's plume scaled down; a ripple ring on the locked target.
@@ -263,6 +269,34 @@ that — and doing so also lifts the zoom-out floor.
 
 ### L3. Resources for extraction
 For now, points earned.
+
+**Decided (first pass)**
+- Levels place **deposits** — `resource x y amount` — each worth what the
+  level says. They are mined with the **laser beam and nothing else**: hold it
+  on one and it drains into the hold. The beam's 5 s charge and 4 s cooldown
+  mean a big deposit takes more than one pull, and firing uncloaks, so there is
+  no mining unseen. A deposit **stops the beam** as an enemy does; ordinary
+  shots pass through.
+- A **hit interrupts** the drain for 0.6 s; what was taken stays taken.
+- An emptied deposit is **destroyed the way a ship is** (C4a), through that
+  same function: one blast and the rock's own sprite cut into pieces that fly
+  apart, spin, slow and stay. Rubble is what marks a worked route.
+- The **hold is unlimited**. Extracting turns it into points, which survive
+  the next round. Dying **spills the hold at the wreck** as a deposit to be
+  mined again.
+- Ore does not appear in the hold. The beam knocks it off as **orbs** — one
+  per 0.5 mined — thrown back toward the ship, which **hang still** where they
+  stop. An orb within 2600 of the ship **comes for it**, chasing like a
+  missile (C3a): accelerating, and turning harder the longer it chases.
+  Further away it waits indefinitely, so ore mined from cover has to be
+  collected afterwards.
+- A killed enemy leaves the same orbs, worth very little each.
+- A deposit is a **dim rock with a gold glow** pulsing over it, brighter while
+  the beam is on it, and darkening as it empties. _(Tried and dropped:)_ the
+  rock cut into a grid of chips that eroded from the beam's side, each orb one
+  of those chips — it read worse than the plain glowing orbs, so the rock
+  stays whole and breaks up once, at the end.
+- The count is in the **debug panel** until there is a font to show it with.
 
 **Engine ideas**
 - Additive, pulsing glows read as valuable against the starfield.

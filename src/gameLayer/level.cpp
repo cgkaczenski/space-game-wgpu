@@ -39,15 +39,23 @@ namespace
 			out.enemies.push_back(e);
 			return true;
 		}
+		if (word == "resource")
+		{
+			Resource r;
+			if (!(in >> r.position.x >> r.position.y)) { return false; }
+			in >> r.amount; // optional: the default stands
+			out.resources.push_back(r);
+			return true;
+		}
 		if (word == "marker")
 		{
 			std::string kind;
-			Marker m;
-			if (!(in >> kind >> m.position.x >> m.position.y)) { return false; }
-			if (kind == "resource") { m.kind = Marker::Kind::Resource; }
-			else if (kind == "gate") { m.kind = Marker::Kind::Gate; }
-			else { return false; }
-			out.markers.push_back(m);
+			glm::vec2 at;
+			if (!(in >> kind >> at.x >> at.y)) { return false; }
+			// Before L3 a resource was a marker. Read it as a deposit.
+			if (kind == "resource") { out.resources.push_back({at, Resource().amount}); return true; }
+			if (kind != "gate") { return false; }
+			out.markers.push_back({Marker::Kind::Gate, at});
 			return true;
 		}
 		if (word == "scenery")
@@ -102,10 +110,14 @@ bool save(const char *path, const Level &level)
 			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees << "\n";
 	}
 	file << "\n";
+	for (const Resource &r : level.resources)
+	{
+		file << "resource " << r.position.x << " " << r.position.y << " " << r.amount << "\n";
+	}
+	file << "\n";
 	for (const Marker &m : level.markers)
 	{
-		file << "marker " << (m.kind == Marker::Kind::Gate ? "gate" : "resource")
-			<< " " << m.position.x << " " << m.position.y << "\n";
+		file << "marker gate " << m.position.x << " " << m.position.y << "\n";
 	}
 	file << "\n";
 	for (const Scenery &s : level.scenery)
