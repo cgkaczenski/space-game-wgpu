@@ -14,6 +14,10 @@
 //   resource 3000 6000 6                    x y amount (gameplay roadmap L3)
 //   marker gate 15000 -1000                 kind x y: gate
 //   ring 9000 -1500 12000                   x y radius (gameplay roadmap L4)
+//   asteroid 3000 -800 900 1234             x y radius seed (gameplay roadmap A1)
+//   field 77 400 300                        seed maxSize maxGap (A1b), then:
+//   paint 1200 -400 350                     x y radius: brush stamps adding
+//   erase 1300 -350 200                     ... and cutting the field's area
 //
 // `marker resource x y` from before L3 still loads, as a deposit of the
 // default amount.
@@ -33,6 +37,7 @@
 
 #include <enemy.h>
 #include <glm/vec2.hpp>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -75,6 +80,45 @@ namespace level
 		float radius = 5000.f;
 	};
 
+	// A rock: where, how big, and the seed its shape grows from. The same
+	// seed is the same rock every time, so four numbers are the whole of it.
+	struct Asteroid
+	{
+		glm::vec2 position = {};
+		float radius = 800.f;
+		uint32_t seed = 1;
+	};
+
+	// An asteroid field (A1b): an area painted with a brush, and rocks
+	// scattered through it from a seed. The area is the brush's stamps, in
+	// order -- a point is in the field if the last stamp covering it painted
+	// rather than erased, so painting over an erased patch fills it again.
+	struct FieldStamp
+	{
+		glm::vec2 position = {};
+		float radius = 400.f;
+		bool erase = false;
+	};
+
+	struct AsteroidField
+	{
+		uint32_t seed = 1;
+		float maxSize = 400.f;  // the largest rock's radius
+		float maxGap = 40.f;    // room between rocks, on top of their size
+		std::vector<FieldStamp> stamps;
+
+		bool contains(glm::vec2 point) const
+		{
+			bool inside = false;
+			for (const FieldStamp &s : stamps)
+			{
+				const glm::vec2 d = point - s.position;
+				if (d.x * d.x + d.y * d.y <= s.radius * s.radius) { inside = !s.erase; }
+			}
+			return inside;
+		}
+	};
+
 	struct Level
 	{
 		float arenaRadius = 20000.f;
@@ -84,6 +128,8 @@ namespace level
 		std::vector<Resource> resources;
 		std::vector<Marker> markers;
 		std::vector<Ring> rings;
+		std::vector<Asteroid> asteroids;
+		std::vector<AsteroidField> fields;
 		std::vector<Scenery> scenery;
 	};
 

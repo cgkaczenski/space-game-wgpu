@@ -469,7 +469,7 @@ on purpose (A3).
 **Code:** `tools/asteroidTextures.cpp` · `tools/asteroidTextures.sh` ·
 `resources/asteroid/`
 
-### A1. Shape, triangles, and hit tests — *ahead*
+### A1. Shape, triangles, and hit tests — *built*
 
 - **A seeded generator:** the same seed gives the same rock, so a level stores
   four numbers, not a mesh. **Periodic noise** around the loop: a sum of sines
@@ -507,6 +507,102 @@ on purpose (A3).
 - **Local space to world space:** the rock's corners are stored around its own
   centre and rotated and moved each frame. That is a 2D model matrix, done
   on the CPU because the batch takes world pixels (the port's rule, above).
+
+**What the build taught.**
+- **Cyclic order is the invariant.** Corner angles only have to increase
+  *around the loop*: the first corner may sit just below 0 and read as nearly
+  2π. What guarantees a valid fan is every fan triangle's cross product
+  having the same sign, which is how the generator is tested (2000 seeds).
+- **The batch needed one number per record.** Where its vertices start. Once
+  runs are measured in vertices, rectangles and triangles share one path and
+  one draw call per run.
+- **Queries move into the body's frame.** Moving one point into the rock's
+  frame (the inverse rotation) is cheaper than moving thirty corners out of
+  it.
+
+**Code:** `include/engine/polygon.h` · `src/engine/polygon.cpp` ·
+`Renderer2D::renderTriangles`, `pushTriangles`, `recordBatchEntry`,
+`batchQuadFirstVertex` and the repeating samplers in
+`src/render/wgpuContext.cpp` · `include/gameLayer/asteroids.h` ·
+`src/gameLayer/asteroids.cpp` · the `asteroid` line in
+`src/gameLayer/level.cpp` · the Asteroid tool in
+`src/gameLayer/levelEditor.cpp`
+
+### A1b. Fields: scatter, painted areas, and an outline — *built*
+
+- **Scatter by cell hash:** one item per grid cell, and everything about it
+  comes from a hash of (seed, cell x, cell y). No cell depends on another, so
+  growing the region only fills new cells. The cost is spacing that is a
+  little less even than **Poisson-disk** sampling (dart throwing with a
+  minimum distance), which is the usual choice when stability does not matter.
+- **A size that leans small:** for u uniform in 0..1, u^k with k > 1 crowds the
+  results toward 0. min + (max − min) · u^2.5 has its median near a sixth of the
+  way up.
+- **No overlap by construction:** a rock's radius plus its offset from the cell
+  centre plus half the gap never exceeds half a cell. So it cannot leave its
+  cell, or come within the gap of a neighbour's rock.
+- **One grid is not enough, so layers.** A single grid's cells must fit its
+  largest rock, so small rocks sit alone in cells built for big ones: measured,
+  about 280 of empty space to the nearest rock even at gap 0. So there are
+  several grids, coarse to fine, each with rocks half the size of the one
+  before. A fine rock is kept only if it clears every coarser rock by the gap.
+  With three layers that falls to about 70. It is the same idea as octaves of
+  noise, or a mipmap chain: each level fills in the detail the one above
+  cannot hold.
+- **A floor becomes the norm when you fill to it.** With one gap for every rock
+  and layers packing every space that clears it, nearly every spacing lands on
+  the gap itself (measured at gap 300: the closest 10% were 300 to 307), and
+  even spacing reads as a grid. Giving each rock its own clearance, 0 to the
+  gap from its cell's hash, and keeping the average of two clearances between
+  them spreads the spacings from nearly touching to the full gap. The gap stays
+  a cap on what any rock asks for, not a value every pair meets.
+- **Clumping with value noise, and why it had to be flattened.** Value noise
+  is random values on a lattice, blended smoothly across each square. It
+  drifts, with no seams and no direction. A threshold on it makes gaps
+  between clumps. But blending and averaging octaves both squeeze values
+  toward the middle: measured, 80% sat between 0.29 and 0.71, so a threshold
+  at 0.3 emptied almost nothing and one at 0.55 emptied most of the field.
+  Passing the noise through its own approximate **cumulative distribution** (a
+  logistic with the same spread) turns each value into its rank, close to even
+  over 0..1. A threshold t then empties about a fraction t: the slider means
+  what it says. *(Built and measured, then taken out of hand-painted fields:
+  a gap inside the paint still counted as cover. It waits in `engine/scatter`
+  for procedural levels, which will use it to decide where to paint.)*
+- **Thinning layers evenly does not thin the result.** Cutting every layer's
+  fill by the same fraction barely showed, because the finer layers have
+  4× and 16× the cells and packed the thin parts back in. Gaps had to be
+  empty in *every* layer at once.
+- **A spatial hash for "what is near here".** Accepted rocks are bucketed by a
+  grid as coarse as the largest cells. Anything that could touch a candidate
+  is within one bucket of it, so each check looks at 9 buckets, not every
+  rock.
+- **A painted area as an ordered list of circles:** the last stamp covering a
+  point decides whether it is in. It's cheap to test, smooth at any zoom, and
+  plain text on disk. A bitmap mask is the alternative, and makes erasing
+  exact but costs memory and resolution.
+- **Outline by neighbour sampling:** a fragment is on the sprite's edge if it
+  is solid and some texel a line-width away is clear. Nine taps with
+  `textureSampleLevel`, all inside the sprite's own rectangle.
+- **Screen-space derivatives:** `fwidth(uv)` is how much uv changes from one
+  screen pixel to the next, measured from neighbouring fragments. A
+  minification-proof line width is max(texels, fwidth · pixels). Without it the
+  outline broke into dashes wherever the ship was drawn smaller than its
+  texture. Derivatives are only defined in **uniform control flow**, so they
+  are taken before any branch.
+- **What an overlay may draw over something that covers it.** Drawn after the
+  rocks, the outline pass sits over them. Its first fill used the sprite's own
+  colours at 18%, which tinted the rock above the ship and read as the two
+  blending. An overlay meant to say "behind" should only add things that are
+  clearly not the object: a line, or a flat silhouette.
+- **Draw order as depth:** field rocks are simply drawn after the ships.
+  Hiding "behind" is the painter's algorithm, with no depth buffer; the outline
+  is drawn after the rocks for the same reason.
+
+**Code:** `include/engine/scatter.h` · `src/engine/scatter.cpp` ·
+`AsteroidField` in `include/gameLayer/level.h` · fields in
+`src/gameLayer/asteroids.cpp` · `include/gameLayer/outline.h` ·
+`src/gameLayer/outline.cpp` · `resources/shaders/outline.wgsl` · the Paint
+tool in `src/gameLayer/levelEditor.cpp`
 
 ### A2. Rigid bodies — *ahead*
 

@@ -33,6 +33,8 @@
 #include <playerMove.h>
 #include <energy.h>
 #include <gate.h>
+#include <asteroids.h>
+#include <outline.h>
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
@@ -186,6 +188,9 @@ const Feature features[] = {
 	{"scenery",    scenery::init,    nullptr,         scenery::cleanup},
 	// Its start needs the level, so the game does it in restartGame instead.
 	{"gate",       gate::init,       nullptr,         gate::cleanup},
+	// Its reset needs the level too.
+	{"asteroids",  asteroids::init,  nullptr,         asteroids::cleanup},
+	{"outline",    outline::init,    nullptr,         outline::cleanup},
 	// Its reset needs the level, so the game does it in restartGame instead.
 	{"resources",  resources::init,  nullptr,         resources::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
@@ -252,6 +257,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	// What there is to mine this round (gameplay roadmap L3). Points banked by
 	// extracting are not a round's and survive.
 	resources::reset(currentLevel.resources);
+	asteroids::reset(currentLevel.asteroids, currentLevel.fields); // gameplay roadmap A1, A1b
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
 	gameClock::reset();
@@ -511,6 +517,8 @@ void debugPanelUi()
 	debugPanel::section("State", gameState::debugUi);
 	debugPanel::section("Level", levelDebugUi);
 	debugPanel::section("Gate", gate::debugUi);
+	debugPanel::section("Asteroids", asteroids::debugUi);
+	debugPanel::section("Hidden outline", outline::debugUi);
 	debugPanel::section("Resources", resources::debugUi);
 	debugPanel::section("World grade", worldGrade::debugUi);
 	debugPanel::section("Sound", sfx::debugUi);
@@ -804,9 +812,14 @@ bool gameLogic(float deltaTime)
 	// the game is slowed. It holds during the warp, so the ship leaves it.
 	if (gameState::current() != gameState::State::Extracting)
 	{
+		// No dead zone. At 1 unit it was far below a pixel and did nothing
+		// visible, but it switched on follow's stepped easing (quarter speed
+		// within 2, half within 4), and a ship slower than the chase speed
+		// kept crossing those steps: the camera fell behind, caught up, fell
+		// behind, and the world jittered round a steadily moving ship.
 		cameraBase = camera::follow(
 			cameraBase, session.playerPos, {(float)w, (float)h},
-			{time.real * 550.f, 1.f, 150.f});
+			{time.real * 550.f, 0.f, 150.f});
 	}
 
 	// The world shake rides on top: the whole world moves, background and all,
@@ -826,6 +839,7 @@ bool gameLogic(float deltaTime)
 	background::draw(renderer);
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
 	gate::drawBody(renderer); // in the world, under the ships
+	asteroids::draw(renderer);
 #pragma endregion
 
 #pragma region handle bulets
@@ -898,8 +912,18 @@ bool gameLogic(float deltaTime)
 			miningNow = true;
 		}
 
+		// A rock stops it before either (gameplay roadmap A1): nothing behind
+		// a rock is burned or mined, and from on top of one it goes nowhere.
+		const float rock = asteroids::raycast(beam.origin, beam.direction, reach);
+		if (rock >= 0.f)
+		{
+			reach = rock;
+			target = -1;
+			miningNow = false;
+		}
+
 		beamEnd = beam.origin + beam.direction * reach;
-		beamHit = target >= 0 || miningNow;
+		beamHit = target >= 0 || miningNow || rock >= 0.f;
 
 		if (miningNow) { resources::mine(beam.origin, beam.direction, time.game); }
 
@@ -929,6 +953,17 @@ bool gameLogic(float deltaTime)
 			session.bullets.erase(session.bullets.begin() + i);
 			i--;
 			continue;
+		}
+
+		// A rock stops any shot, anyone's, missiles too (gameplay roadmap A1).
+		{
+			const collision::Circle hitbox = session.bullets[i].getHitbox();
+			if (asteroids::hitsCircle(hitbox.center, hitbox.radius))
+			{
+				session.bullets.erase(session.bullets.begin() + i);
+				i--;
+				continue;
+			}
 		}
 
 		if (!hitboxDebug::isDamageFrozen())
@@ -1070,6 +1105,9 @@ bool gameLogic(float deltaTime)
 	wakeRect.w *= 1.f + 2.f * wakeMargin;
 	awakeEnemies = 0;
 
+	// In a field's painted area, no enemy sees the player (A1b).
+	const bool playerInField = asteroids::inField(session.playerPos);
+
 	for (int i = 0; i < session.enemies.size(); i++)
 	{
 
@@ -1114,8 +1152,16 @@ bool gameLogic(float deltaTime)
 		// Wreckage or leaving, the player is as gone as cloaked.
 		glm::vec2 wayIn;
 		const bool comingBack = arena::wayBackIn(session.enemies[i].position, wayIn);
+		// A rock between them hides the player as well as the cloak does
+		// (gameplay roadmap A1): what makes a rock somewhere to hide. Inside a
+		// field's painted area the player is hidden outright, gaps and all,
+		// like tall grass (A1b). Shooting out does not end it; a hit enemy is
+		// alerted as ever, turns, finds nothing, and comes to search.
+		const bool hidden = energy::isCloaked() || !gameState::playerPresent()
+			|| playerInField
+			|| asteroids::blocksSight(session.enemies[i].position, session.playerPos);
 		if (enemyAi::update(session.enemies[i], time.game, session.playerPos,
-			energy::isCloaked() || !gameState::playerPresent(), comingBack ? &wayIn : nullptr))
+			hidden, comingBack ? &wayIn : nullptr))
 		{
 			Bullet b;
 			b.position = session.enemies[i].position;
@@ -1191,10 +1237,13 @@ bool gameLogic(float deltaTime)
 		// Faded by the cloak. The hull going nearly transparent is half the
 		// effect; the other half is the world bending around it, which happens
 		// below when the world goes through the cloak's shader. Stretched
-		// along its heading while it warps out.
+		// along its heading while it warps out. In an asteroid field, darker:
+		// in the gaps between rocks it is in their shadow (A1b).
+		const float shade = gameState::playerPresent() && asteroids::inField(session.playerPos)
+			? asteroids::hiddenShade() : 1.f;
 		renderSpaceShip(renderer, session.playerPos, shipSize,
 			shipSheet, shipAtlas.get(3, 0), player.facing,
-			{1.f, 1.f, 1.f, cloak::shipAlpha()}, gameState::warpStretch());
+			{shade, shade, shade, cloak::shipAlpha()}, gameState::warpStretch());
 
 		// After the hull, so the rim reads as being in front of it. Not while
 		// warping: the bubble does not stretch with the hull.
@@ -1202,6 +1251,21 @@ bool gameLogic(float deltaTime)
 		{
 			shield::draw(renderer, session.playerPos, shipSize, time.game);
 		}
+	}
+
+	// Asteroid fields over every ship (A1b): a ship in one is behind its
+	// rocks. And the player, hidden there, drawn once more over them as an
+	// outline -- you still see where you are, and seeing it is how you know
+	// no enemy can.
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+	asteroids::drawFields(renderer);
+	if (gameState::playerPresent() && asteroids::inField(session.playerPos))
+	{
+		outline::begin(renderer, 0.5f + 0.5f * std::sin(effectClock * 3.f));
+		renderSpaceShip(renderer, session.playerPos, shipSize,
+			shipSheet, shipAtlas.get(3, 0), player.facing,
+			{1.f, 1.f, 1.f, cloak::shipAlpha()}, gameState::warpStretch());
+		outline::end(renderer);
 	}
 
 #pragma endregion

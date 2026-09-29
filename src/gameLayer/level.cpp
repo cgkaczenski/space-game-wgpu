@@ -67,6 +67,32 @@ namespace
 			out.rings.push_back(r);
 			return true;
 		}
+		if (word == "asteroid")
+		{
+			Asteroid a;
+			if (!(in >> a.position.x >> a.position.y >> a.radius >> a.seed) || a.radius <= 0.f) { return false; }
+			out.asteroids.push_back(a);
+			return true;
+		}
+		if (word == "field")
+		{
+			AsteroidField f;
+			if (!(in >> f.seed >> f.maxSize >> f.maxGap) || f.maxSize <= 0.f || f.maxGap < 0.f) { return false; }
+			out.fields.push_back(f);
+			return true;
+		}
+		if (word == "paint" || word == "erase")
+		{
+			// A stamp belongs to the field above it.
+			FieldStamp s;
+			s.erase = word == "erase";
+			if (out.fields.empty() || !(in >> s.position.x >> s.position.y >> s.radius) || s.radius <= 0.f)
+			{
+				return false;
+			}
+			out.fields.back().stamps.push_back(s);
+			return true;
+		}
 		if (word == "scenery")
 		{
 			Scenery s;
@@ -149,6 +175,20 @@ bool save(const char *path, const Level &level)
 		file << "ring " << r.position.x << " " << r.position.y << " " << r.radius << "\n";
 	}
 	file << "\n";
+	for (const Asteroid &a : level.asteroids)
+	{
+		file << "asteroid " << a.position.x << " " << a.position.y << " " << a.radius << " " << a.seed << "\n";
+	}
+	file << "\n";
+	for (const AsteroidField &f : level.fields)
+	{
+		file << "field " << f.seed << " " << f.maxSize << " " << f.maxGap << "\n";
+		for (const FieldStamp &s : f.stamps)
+		{
+			file << (s.erase ? "erase " : "paint ") << s.position.x << " " << s.position.y << " " << s.radius << "\n";
+		}
+		file << "\n";
+	}
 	for (const Scenery &s : level.scenery)
 	{
 		file << "scenery " << s.art << " " << s.position.x << " " << s.position.y << " "

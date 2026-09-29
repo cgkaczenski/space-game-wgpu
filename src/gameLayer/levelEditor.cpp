@@ -1,6 +1,7 @@
 #include <levelEditor.h>
 
 #include <resources.h>
+#include <asteroids.h>
 #include <scenery.h>
 #include <shipSprite.h>
 #include "platformInput.h"
@@ -9,6 +10,7 @@
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 namespace levelEditor
@@ -26,19 +28,30 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Resource, Gate, Ring, Scenery };
+	enum class Tool { Select, Rusher, Sniper, Resource, Gate, Ring, Asteroid, Paint, Scenery };
 	// A deposit's ring in the editor, matching how big one is in play.
 	constexpr float depositRadius = 320.f;
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Resource, Marker, Ring, Scenery };
+	enum class Kind { None, Start, Enemy, Resource, Marker, Ring, Asteroid, Field, Scenery };
 	struct Pick
 	{
 		Kind kind = Kind::None;
 		int index = -1;
 	};
 	Pick selected;
+
+	// The Paint tool (asteroid fields, A1b). A stroke lays stamps -- circles of
+	// the brush's size -- whenever the cursor has moved a third of the brush
+	// since the last one, so a stroke is a chain of overlapping circles. With
+	// Shift held when it starts, it lays erasers instead.
+	float brushRadius = 600.f;
+	bool painting = false;
+	bool paintErasing = false;
+	int paintField = -1;
+	glm::vec2 lastStamp = {};
+	glm::vec2 cursorWorld = {}; // for drawing the brush
 
 	bool dragging = false;
 	glm::vec2 dragOffset = {}; // item position minus the cursor, in the world
@@ -95,6 +108,14 @@ namespace
 		case Kind::Resource: return level.resources[p.index].position;
 		case Kind::Marker: return level.markers[p.index].position;
 		case Kind::Ring: return level.rings[p.index].position;
+		case Kind::Asteroid: return level.asteroids[p.index].position;
+		case Kind::Field:
+		{
+			// A field has no one position; its first stamp stands in, and
+			// moving that moves every stamp with it.
+			const auto &stamps = level.fields[p.index].stamps;
+			return stamps.empty() ? glm::vec2{} : stamps.front().position;
+		}
 		case Kind::Scenery: return drawnAt(level.scenery[p.index]);
 		default: return {};
 		}
@@ -109,6 +130,15 @@ namespace
 		case Kind::Resource: level.resources[p.index].position = to; break;
 		case Kind::Marker: level.markers[p.index].position = to; break;
 		case Kind::Ring: level.rings[p.index].position = to; break;
+		case Kind::Asteroid: level.asteroids[p.index].position = to; break;
+		case Kind::Field:
+		{
+			auto &stamps = level.fields[p.index].stamps;
+			if (stamps.empty()) { break; }
+			const glm::vec2 by = to - stamps.front().position;
+			for (level::FieldStamp &s : stamps) { s.position += by; }
+			break;
+		}
 		case Kind::Scenery:
 		{
 			level::Scenery &s = level.scenery[p.index];
@@ -122,7 +152,11 @@ namespace
 	// The nearest thing whose shape contains `at`. Ships and markers before
 	// scenery: a planet is big and behind everything, and should not steal a
 	// click aimed at a ship in front of it.
-	Pick pickAt(const level::Level &level, glm::vec2 at, float shipSize, float enemySize)
+	// Fields are picked last among the placements, by being inside the painted
+	// area, and only when asked: a right click deletes what it picks, and one
+	// stray click should not wipe a whole painted field.
+	Pick pickAt(const level::Level &level, glm::vec2 at, float shipSize, float enemySize,
+		bool includeFields = true)
 	{
 		Pick best;
 		float bestDistance = 1e30f;
@@ -149,7 +183,20 @@ namespace
 		{
 			consider(Kind::Ring, i, level.rings[i].position, ringHandlePixels / zoom);
 		}
+		for (int i = 0; i < (int)level.asteroids.size(); i++)
+		{
+			consider(Kind::Asteroid, i, level.asteroids[i].position, level.asteroids[i].radius);
+		}
 		if (best.kind != Kind::None) { return best; }
+
+		if (includeFields)
+		{
+			// The most recently made on top.
+			for (int i = (int)level.fields.size() - 1; i >= 0; i--)
+			{
+				if (level.fields[i].contains(at)) { return {Kind::Field, i}; }
+			}
+		}
 
 		for (int i = 0; i < (int)level.scenery.size(); i++)
 		{
@@ -166,6 +213,8 @@ namespace
 		case Kind::Resource: level.resources.erase(level.resources.begin() + p.index); break;
 		case Kind::Marker: level.markers.erase(level.markers.begin() + p.index); break;
 		case Kind::Ring: level.rings.erase(level.rings.begin() + p.index); break;
+		case Kind::Asteroid: level.asteroids.erase(level.asteroids.begin() + p.index); break;
+		case Kind::Field: level.fields.erase(level.fields.begin() + p.index); break;
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
 		default: return; // the start stays: a level needs one
 		}
@@ -215,6 +264,14 @@ namespace
 			level.rings.push_back(r);
 			return {Kind::Ring, (int)level.rings.size() - 1};
 		}
+		case Tool::Asteroid:
+		{
+			level::Asteroid a;
+			a.position = at;
+			a.seed = (uint32_t)std::rand(); // a new shape; reroll in the panel
+			level.asteroids.push_back(a);
+			return {Kind::Asteroid, (int)level.asteroids.size() - 1};
+		}
 		case Tool::Scenery:
 		{
 			level::Scenery s;
@@ -236,6 +293,8 @@ namespace
 		case Kind::Resource: return p.index >= 0 && p.index < (int)level.resources.size();
 		case Kind::Marker: return p.index >= 0 && p.index < (int)level.markers.size();
 		case Kind::Ring: return p.index >= 0 && p.index < (int)level.rings.size();
+		case Kind::Asteroid: return p.index >= 0 && p.index < (int)level.asteroids.size();
+		case Kind::Field: return p.index >= 0 && p.index < (int)level.fields.size();
 		case Kind::Scenery: return p.index >= 0 && p.index < (int)level.scenery.size();
 		default: return false;
 		}
@@ -319,11 +378,69 @@ void update(level::Level &level, wgpu2d::Renderer2D &renderer, glm::vec2 mouse,
 			if (!rightPanning)
 			{
 				remove(level, pickAt(level, screenToWorld(rightStart, width, height),
-					pickShipSize, pickEnemySize));
+					pickShipSize, pickEnemySize, false));
 			}
 			rightDown = false;
 		}
 	}
+
+	cursorWorld = world;
+
+	// The Paint tool has the left button to itself.
+	if (tool == Tool::Paint)
+	{
+		if (!io.WantCaptureKeyboard)
+		{
+			if (platform::isButtonPressedOn(platform::Button::Minus)) { brushRadius = std::max(brushRadius / 1.25f, 50.f); }
+			if (platform::isButtonPressedOn(platform::Button::Equal)) { brushRadius = std::min(brushRadius * 1.25f, 20000.f); }
+		}
+
+		auto stamp = [&](glm::vec2 at)
+		{
+			level.fields[paintField].stamps.push_back({at, brushRadius, paintErasing});
+			lastStamp = at;
+			edited = true;
+		};
+
+		if (mouseFree && platform::isLMousePressed())
+		{
+			paintErasing = platform::isButtonHeld(platform::Button::Shift);
+			// Into the selected field; else the one under the brush; else,
+			// painting, a new one. Erasing needs a field to erase from.
+			paintField = selected.kind == Kind::Field ? selected.index : -1;
+			if (paintField < 0)
+			{
+				for (int i = (int)level.fields.size() - 1; i >= 0; i--)
+				{
+					if (level.fields[i].contains(world)) { paintField = i; break; }
+				}
+			}
+			if (paintField < 0 && !paintErasing)
+			{
+				level::AsteroidField f;
+				f.seed = (uint32_t)std::rand();
+				level.fields.push_back(f);
+				paintField = (int)level.fields.size() - 1;
+			}
+			if (paintField >= 0)
+			{
+				selected = {Kind::Field, paintField};
+				painting = true;
+				stamp(world);
+			}
+		}
+		if (painting)
+		{
+			if (!platform::isLMouseHeld() || paintField >= (int)level.fields.size()) { painting = false; }
+			else if (glm::distance(world, lastStamp) > brushRadius * 0.35f) { stamp(world); }
+		}
+
+		lastMouse = mouse;
+		renderer.currentCamera.zoom = zoom;
+		renderer.currentCamera.position = centre - glm::vec2(width, height) * 0.5f;
+		return;
+	}
+	painting = false;
 
 	// Left button: pick and drag, or place.
 	if (mouseFree && platform::isLMousePressed())
@@ -376,6 +493,19 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 
 	drawMarkers(level, renderer, zoom);
 
+	// Rocks as they will be in play, textured, with their outline: the shape
+	// is what a shot hits, so it is shown. Fields show their painted area as
+	// dots under their scattered rocks.
+	asteroids::drawPlacements(renderer, level.asteroids, level.fields);
+
+	// The brush, where it would stamp: green painting, red with Shift.
+	if (tool == Tool::Paint)
+	{
+		const bool erasing = painting ? paintErasing : platform::isButtonHeld(platform::Button::Shift);
+		renderer.renderCircleOutline(cursorWorld, erasing ? glm::vec4(1.f, 0.35f, 0.3f, 0.9f)
+			: glm::vec4(0.4f, 1.f, 0.6f, 0.9f), brushRadius, 2.f * px, 64);
+	}
+
 	// The closing circle's rings, in the order they close: largest first. Each
 	// a little whiter than the last, red if it is not inside the one before,
 	// with a handle at its centre.
@@ -420,13 +550,14 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		level::direction(level.startFacingDegrees));
 	renderer.renderCircleOutline(level.start, {0.3f, 1.f, 0.4f, 0.8f}, look.shipSize * 0.6f, 2.f * px, 32);
 
-	if (selected.kind != Kind::None && validPick(level, selected))
+	if (selected.kind != Kind::None && selected.kind != Kind::Field && validPick(level, selected))
 	{
 		float radius = look.enemySize * 0.6f;
 		if (selected.kind == Kind::Start) { radius = look.shipSize * 0.7f; }
 		if (selected.kind == Kind::Resource) { radius = depositRadius * 1.2f; }
 		if (selected.kind == Kind::Marker) { radius = gateRadius * 1.15f; }
 		if (selected.kind == Kind::Ring) { radius = ringHandlePixels * 1.5f * px; }
+		if (selected.kind == Kind::Asteroid) { radius = level.asteroids[selected.index].radius * 1.4f; }
 		if (selected.kind == Kind::Scenery) { radius = level.scenery[selected.index].size * 0.55f; }
 		renderer.renderCircleOutline(positionOf(level, selected), {1.f, 1.f, 1.f, 1.f}, radius, 3.f * px, 48);
 	}
@@ -455,8 +586,17 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::RadioButton("Resource", &t, (int)Tool::Resource); ImGui::SameLine();
 	ImGui::RadioButton("Gate", &t, (int)Tool::Gate); ImGui::SameLine();
 	ImGui::RadioButton("Ring", &t, (int)Tool::Ring); ImGui::SameLine();
+	ImGui::RadioButton("Asteroid", &t, (int)Tool::Asteroid); ImGui::SameLine();
+	ImGui::RadioButton("Paint field", &t, (int)Tool::Paint); ImGui::SameLine();
 	ImGui::RadioButton("Scenery", &t, (int)Tool::Scenery);
 	tool = (Tool)t;
+	if (tool == Tool::Paint)
+	{
+		ImGui::TextDisabled("L-drag: paint  Shift+L-drag: erase  -/=: brush size");
+		ImGui::TextDisabled("Paints the selected field, the one under the brush, or a new one");
+		ImGui::SliderFloat("Brush", &brushRadius, 50.f, 20000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+		if (selected.kind == Kind::Field && ImGui::Button("Start a new field")) { selected = {}; }
+	}
 	if (tool == Tool::Scenery)
 	{
 		if (ImGui::BeginCombo("Art", scenery::artName(sceneryArt)))
@@ -518,6 +658,31 @@ Request debugUi(level::Level &level, bool unsaved)
 		ImGui::TextDisabled("Closes largest first; red if not inside the one before");
 		if (ImGui::DragFloat2("Centre", &r.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
 		if (ImGui::DragFloat("Radius", &r.radius, 10.f, 100.f, 100000.f, "%.0f")) { edited = true; }
+		break;
+	}
+	case Kind::Asteroid:
+	{
+		level::Asteroid &a = level.asteroids[selected.index];
+		ImGui::Text("Asteroid");
+		if (ImGui::DragFloat2("Position", &a.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		if (ImGui::DragFloat("Radius", &a.radius, 10.f, 100.f, 20000.f, "%.0f")) { edited = true; }
+		if (ImGui::InputScalar("Seed", ImGuiDataType_U32, &a.seed)) { edited = true; }
+		ImGui::SameLine();
+		if (ImGui::Button("Reroll")) { a.seed = (uint32_t)std::rand(); edited = true; }
+		break;
+	}
+	case Kind::Field:
+	{
+		level::AsteroidField &f = level.fields[selected.index];
+		ImGui::Text("Asteroid field %d: %d brush stamps", selected.index, (int)f.stamps.size());
+		if (ImGui::InputScalar("Seed", ImGuiDataType_U32, &f.seed)) { edited = true; }
+		ImGui::SameLine();
+		if (ImGui::Button("Reroll")) { f.seed = (uint32_t)std::rand(); edited = true; }
+		if (ImGui::SliderFloat("Max size", &f.maxSize, 40.f, 3000.f, "%.0f", ImGuiSliderFlags_Logarithmic)) { edited = true; }
+		// Logarithmic, so the small end -- where the look changes most -- gets
+		// most of the slider's travel.
+		if (ImGui::SliderFloat("Max gap", &f.maxGap, 0.f, 1500.f, "%.0f", ImGuiSliderFlags_Logarithmic)) { edited = true; }
+		ImGui::TextDisabled("Select tool: drag inside it to move the whole field");
 		break;
 	}
 	case Kind::Scenery:

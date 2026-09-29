@@ -1,6 +1,7 @@
 #include <engine/cameraFollow.h>
 
 #include <glm/geometric.hpp>
+#include <algorithm>
 
 namespace camera
 {
@@ -50,7 +51,12 @@ glm::vec2 follow(glm::vec2 current, glm::vec2 target, glm::vec2 viewSize,
 		// Past the leash: placed, not eased, so the target can never outrun it.
 		return target - (params.leash * direction);
 	}
-	return current + direction * speed;
+	// Never further than the target: a step longer than the distance carried
+	// the camera past a slow target, and it stepped back the next frame -- so
+	// below the chase speed the camera, and the whole world with it, moved in
+	// uneven lurches round a ship moving steadily. (Measured: at 300 u/s the
+	// ship's screen position wobbled up to 2 units a frame; with this, 0.)
+	return current + direction * std::min(speed, distance);
 }
 
 }

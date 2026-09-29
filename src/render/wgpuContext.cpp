@@ -142,6 +142,11 @@ namespace
 		// gl2d's "pixelated" (nearest) and its default (linear) filtering.
 		Sampler samplerPixelated = nullptr;
 		Sampler samplerLinear = nullptr;
+		// The same two filters, repeating past the edge instead of clamping:
+		// for textures laid over a mesh at a fixed scale (asteroids, A1), where
+		// a big shape runs off the image and has to wrap onto it again.
+		Sampler samplerPixelatedRepeat = nullptr;
+		Sampler samplerLinearRepeat = nullptr;
 		BindGroupLayout textureBindGroupLayout = nullptr; // group 0: texture + sampler
 		PipelineLayout pipelineLayout = nullptr;
 
@@ -363,6 +368,12 @@ namespace
 	// a different dynamic offset, and neither can change inside a draw.
 	std::vector<uint32_t> batchQuadShaders;
 	std::vector<uint32_t> batchQuadEffectSlots; // index into frameEffectParams
+
+	// Where each record's vertices start in batchVertices. A "quad" record is
+	// six vertices; a renderTriangles record is however many it was given
+	// (asteroids, A1). The flush draws a run from its first record's start to
+	// the next run's start, so it never needs to know which kind it holds.
+	std::vector<uint32_t> batchQuadFirstVertex;
 
 	// N2a: what the frame cost. Accumulated as it is recorded, snapshotted at
 	// the end so a reader mid-frame sees a whole frame rather than a partial.
@@ -687,16 +698,21 @@ namespace
 	}
 
 	// Samplers: how a shader reads a texture. Separate from the texture
-	// (unlike OpenGL), so two serve every sprite. Both clamp to edge like
+	// (unlike OpenGL), so a few serve every sprite. Sprites clamp to edge like
 	// gl2d. Pixelated = gl2d's GL_NEAREST / GL_NEAREST_MIPMAP_NEAREST;
 	// linear = GL_LINEAR / GL_LINEAR_MIPMAP_LINEAR.
-	Sampler createSampler(const char *label, FilterMode filter, MipmapFilterMode mipFilter)
+	//
+	// The address mode is what happens to a coordinate outside 0..1. Clamp
+	// reads the edge texel forever; repeat keeps only the fractional part, so
+	// 1.25 reads what 0.25 does and a tileable image covers any area.
+	Sampler createSampler(const char *label, FilterMode filter, MipmapFilterMode mipFilter,
+		AddressMode address = AddressMode::ClampToEdge)
 	{
 		SamplerDescriptor desc = Default;
 		desc.label = StringView(label);
-		desc.addressModeU = AddressMode::ClampToEdge;
-		desc.addressModeV = AddressMode::ClampToEdge;
-		desc.addressModeW = AddressMode::ClampToEdge;
+		desc.addressModeU = address;
+		desc.addressModeV = address;
+		desc.addressModeW = address;
 		desc.magFilter = filter;
 		desc.minFilter = filter;
 		desc.mipmapFilter = mipFilter;
@@ -713,7 +729,11 @@ namespace
 	{
 		g.samplerPixelated = createSampler("sampler pixelated", FilterMode::Nearest, MipmapFilterMode::Nearest);
 		g.samplerLinear = createSampler("sampler linear", FilterMode::Linear, MipmapFilterMode::Linear);
-		if (!g.samplerPixelated || !g.samplerLinear)
+		g.samplerPixelatedRepeat = createSampler("sampler pixelated repeat", FilterMode::Nearest,
+			MipmapFilterMode::Nearest, AddressMode::Repeat);
+		g.samplerLinearRepeat = createSampler("sampler linear repeat", FilterMode::Linear,
+			MipmapFilterMode::Linear, AddressMode::Repeat);
+		if (!g.samplerPixelated || !g.samplerLinear || !g.samplerPixelatedRepeat || !g.samplerLinearRepeat)
 		{
 			std::cerr << "WebGPU: createSampler returned null\n";
 			return false;
@@ -1420,7 +1440,7 @@ namespace
 	// and builds the bind group that hands the view plus the right sampler to
 	// the shader. Returns a handle (id 0 on failure) into the registry.
 	wgpu2d::Texture createTextureFromPixels(const unsigned char *pixels, int width, int height,
-		const char *label, bool pixelated, bool useMipMaps)
+		const char *label, bool pixelated, bool useMipMaps, bool repeat = false)
 	{
 		if (!g.device || width <= 0 || height <= 0 || !pixels)
 		{
@@ -1526,7 +1546,9 @@ namespace
 		bindEntries[0].sampler = nullptr;
 		bindEntries[1] = Default;
 		bindEntries[1].binding = 1;
-		bindEntries[1].sampler = pixelated ? g.samplerPixelated : g.samplerLinear;
+		bindEntries[1].sampler = repeat
+			? (pixelated ? g.samplerPixelatedRepeat : g.samplerLinearRepeat)
+			: (pixelated ? g.samplerPixelated : g.samplerLinear);
 		bindEntries[1].buffer = nullptr;
 		bindEntries[1].textureView = nullptr;
 
@@ -2102,6 +2124,7 @@ namespace
 		std::vector<wgpu2d::BlendMode> blends;
 		std::vector<uint32_t> shaders;
 		std::vector<uint32_t> effectSlots;
+		std::vector<uint32_t> firstVertices;
 		std::vector<wgpu2d::EffectParams> effectParams;
 		std::vector<wgpu2d::Camera> frameCams;
 
@@ -2119,6 +2142,7 @@ namespace
 			blends.swap(batchQuadBlends);
 			shaders.swap(batchQuadShaders);
 			effectSlots.swap(batchQuadEffectSlots);
+			firstVertices.swap(batchQuadFirstVertex);
 			effectParams.swap(frameEffectParams);
 			frameCams.swap(frameCameras);
 		}
@@ -2132,6 +2156,7 @@ namespace
 		batchQuadBlends.clear();
 		batchQuadShaders.clear();
 		batchQuadEffectSlots.clear();
+		batchQuadFirstVertex.clear();
 		frameEffectParams.clear();
 		frameCameras.clear();
 	}
@@ -2290,7 +2315,11 @@ namespace
 			const uint32_t effectOffset =
 				(effectSlotBase + batchQuadEffectSlots[runStart]) * g.effectSlotStride;
 			pass.setBindGroup(2, g.effectBindGroup, 1, &effectOffset);
-			pass.draw((uint32_t)((i - runStart) * 6), 1, (uint32_t)(runStart * 6), 0);
+			// A run's vertices are contiguous: from its first record's start
+			// to the next record's (or the end of the batch).
+			const uint32_t first = batchQuadFirstVertex[runStart];
+			const uint32_t end = i == quadCount ? (uint32_t)batchVertices.size() : batchQuadFirstVertex[i];
+			pass.draw(end - first, 1, first, 0);
 			runs++;
 			runStart = i;
 		}
@@ -2315,18 +2344,75 @@ namespace
 	// vertex buffer. Texture coordinates arrive in gl2d's convention
 	// ({u0, v0, u1, v1} with v measured from the bottom, default {0,1,1,0})
 	// and are converted to WebGPU's top-left origin here: v = 1 - v.
+	// A texture a record can draw with: the one asked for, or the white pixel
+	// with a warning if that one is not usable. 0 if not even that exists.
+	uint32_t usableTexture(const wgpu2d::Texture texture)
+	{
+		if (texture.id == 0 || texture.id > textures.size() || !textures[texture.id - 1].bindGroup)
+		{
+			std::cerr << "wgpu2d: Invalid texture (id " << texture.id << ")\n";
+			return white1pxSquareTexture.id;
+		}
+		return texture.id;
+	}
+
+	// One batch record: which texture, camera, blend, shader and parameter
+	// slot its vertices draw with, and where they start. Called before the
+	// vertices are pushed, so `batchVertices.size()` is the start.
+	void recordBatchEntry(const wgpu2d::Camera &camera, wgpu2d::BlendMode blend,
+		uint32_t shader, const wgpu2d::EffectParams &effectParams, uint32_t textureId)
+	{
+		batchQuadFirstVertex.push_back((uint32_t)batchVertices.size());
+		batchQuadTextures.push_back(textureId);
+
+		// Record which camera this quad was drawn under. A new slot only when
+		// the camera changed since the last recorded one.
+		if (frameCameras.empty() || !sameCamera(frameCameras.back(), camera))
+		{
+			frameCameras.push_back(camera);
+		}
+		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
+		batchQuadBlends.push_back(blend);
+
+		// Same dedupe as the camera above. Quads without an effect still take
+		// a slot index, because every draw binds group 2 whether it reads it
+		// or not -- they just all land on the same slot.
+		if (frameEffectParams.empty() || !sameEffectParams(frameEffectParams.back(), effectParams))
+		{
+			frameEffectParams.push_back(effectParams);
+		}
+		batchQuadShaders.push_back(shader);
+		batchQuadEffectSlots.push_back((uint32_t)frameEffectParams.size() - 1);
+	}
+
+	// Asteroids, A1: triangles straight into the batch. Positions are world
+	// pixels already, y down -- none of pushQuad's gl2d flips -- and uvs are
+	// WebGPU's, top-left origin with v down, the same way up as the world.
+	void pushTriangles(const wgpu2d::Camera &camera, wgpu2d::BlendMode blend,
+		uint32_t shader, const wgpu2d::EffectParams &effectParams, const wgpu2d::Texture texture,
+		const glm::vec2 *positions, const glm::vec2 *uvs, const glm::vec4 *colors, size_t vertexCount)
+	{
+		vertexCount -= vertexCount % 3; // whole triangles only
+		if (vertexCount == 0 || !positions || !uvs || !colors) { return; }
+		const uint32_t textureId = usableTexture(texture);
+		if (textureId == 0) { return; }
+
+		recordBatchEntry(camera, blend, shader, effectParams, textureId);
+		for (size_t i = 0; i < vertexCount; i++)
+		{
+			const glm::vec4 &c = colors[i];
+			batchVertices.push_back(Vertex{ positions[i].x, positions[i].y,
+				c.r, c.g, c.b, c.a, uvs[i].x, uvs[i].y });
+		}
+	}
+
 	void pushQuad(const wgpu2d::Camera &camera, wgpu2d::BlendMode blend,
 		uint32_t shader, const wgpu2d::EffectParams &effectParams,
 		const glm::vec4 transforms, const wgpu2d::Texture texture,
 		const glm::vec4 colors[4], const glm::vec2 origin, const float rotation, const glm::vec4 textureCoords)
 	{
-		wgpu2d::Texture textureCopy = texture;
-		if (textureCopy.id == 0 || textureCopy.id > textures.size() || !textures[textureCopy.id - 1].bindGroup)
-		{
-			std::cerr << "wgpu2d: Invalid texture (id " << textureCopy.id << ")\n";
-			textureCopy = white1pxSquareTexture;
-			if (textureCopy.id == 0) { return; }
-		}
+		const uint32_t textureId = usableTexture(texture);
+		if (textureId == 0) { return; }
 
 		//We need to flip texture_transforms.y
 		const float transformsY = transforms.y * -1;
@@ -2352,6 +2438,8 @@ namespace
 		const float u0 = textureCoords.x, v0 = 1.0f - textureCoords.y;
 		const float u1 = textureCoords.z, v1t = 1.0f - textureCoords.w;
 
+		recordBatchEntry(camera, blend, shader, effectParams, textureId);
+
 		auto push = [&](glm::vec2 p, const glm::vec4 &c, float u, float v)
 		{
 			batchVertices.push_back(Vertex{ p.x, p.y, c.r, c.g, c.b, c.a, u, v });
@@ -2364,27 +2452,6 @@ namespace
 		push(v2, colors[1], u0, v1t);
 		push(v3, colors[2], u1, v1t);
 		push(v4, colors[3], u1, v0);
-
-		batchQuadTextures.push_back(textureCopy.id);
-
-		// Record which camera this quad was drawn under. A new slot only when
-		// the camera changed since the last recorded one.
-		if (frameCameras.empty() || !sameCamera(frameCameras.back(), camera))
-		{
-			frameCameras.push_back(camera);
-		}
-		batchQuadCameras.push_back((uint32_t)frameCameras.size() - 1);
-		batchQuadBlends.push_back(blend);
-
-		// Same dedupe as the camera above. Quads without an effect still take
-		// a slot index, because every draw binds group 2 whether it reads it
-		// or not -- they just all land on the same slot.
-		if (frameEffectParams.empty() || !sameEffectParams(frameEffectParams.back(), effectParams))
-		{
-			frameEffectParams.push_back(effectParams);
-		}
-		batchQuadShaders.push_back(shader);
-		batchQuadEffectSlots.push_back((uint32_t)frameEffectParams.size() - 1);
 	}
 
 	// 10: the upscale. One quad covering the surface, sampling the low-res
@@ -3417,6 +3484,8 @@ void wgpuShutdown()
 	if (g.textureBindGroupLayout) { g.textureBindGroupLayout.release(); g.textureBindGroupLayout = nullptr; }
 	if (g.samplerPixelated) { g.samplerPixelated.release(); g.samplerPixelated = nullptr; }
 	if (g.samplerLinear) { g.samplerLinear.release(); g.samplerLinear = nullptr; }
+	if (g.samplerPixelatedRepeat) { g.samplerPixelatedRepeat.release(); g.samplerPixelatedRepeat = nullptr; }
+	if (g.samplerLinearRepeat) { g.samplerLinearRepeat.release(); g.samplerLinearRepeat = nullptr; }
 	if (capture.buffer) { capture.buffer.release(); capture.buffer = nullptr; capture.bufferBytes = 0; }
 	forgetSurface();
 	if (g.queue) { g.queue.release(); g.queue = nullptr; }
@@ -3627,7 +3696,7 @@ namespace wgpu2d
 
 	// Rows come back from stb_image top-first and are uploaded as-is: no
 	// flip (see the milestone 4 orientation decision).
-	void Texture::loadFromFile(const char *fileName, bool pixelated, bool useMipMaps)
+	void Texture::loadFromFile(const char *fileName, bool pixelated, bool useMipMaps, bool repeat)
 	{
 		int width = 0, height = 0, channels = 0;
 		stbi_set_flip_vertically_on_load(0);
@@ -3637,7 +3706,7 @@ namespace wgpu2d
 			std::cerr << "wgpu2d: error openning: " << fileName << " (" << stbi_failure_reason() << ")\n";
 			return;
 		}
-		*this = createTextureFromPixels(pixels, width, height, fileName, pixelated, useMipMaps);
+		*this = createTextureFromPixels(pixels, width, height, fileName, pixelated, useMipMaps, repeat);
 		stbi_image_free(pixels);
 	}
 
@@ -3824,6 +3893,13 @@ namespace wgpu2d
 		newOrigin.x = origin.x + transforms.x + (transforms.z / 2);
 		newOrigin.y = origin.y + transforms.y + (transforms.w / 2);
 		renderRectangleAbsRotation(transforms, texture, colors, newOrigin, rotationDegrees, textureCoords);
+	}
+
+	void Renderer2D::renderTriangles(const glm::vec2 *positions, const glm::vec2 *uvs,
+		const Color4f *colors, size_t vertexCount, const Texture texture)
+	{
+		pushTriangles(currentCamera, currentBlendMode, currentEffect.id, currentEffectParams,
+			texture, positions, uvs, colors, vertexCount);
 	}
 
 	void Renderer2D::renderRectangleAbsRotation(const Rect transforms, const Texture texture, const Color4f colors[4],

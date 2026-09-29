@@ -6,3 +6,18 @@ enemy sniper 1855 -1385 0
 
 
 
+
+asteroid 950 -700 380 7
+asteroid -2600 1500 900 21
+asteroid 3600 2100 1400 314
+asteroid -1300 -2900 600 1234
+asteroid 600 1500 220 99
+asteroid 7000 -4500 2500 4242
+
+field 77 350 40
+paint -6000 -1500 1100
+paint -5000 -1800 1200
+paint -4000 -1200 1000
+paint -4800 -500 900
+paint -5600 -2600 800
+erase -4900 -1400 350

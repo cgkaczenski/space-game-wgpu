@@ -241,7 +241,10 @@ namespace wgpu2d
 
 		void create1PxSquare(const char *b = 0);
 
-		void loadFromFile(const char *fileName, bool pixelated = false, bool useMipMaps = true);
+		// `repeat`: coordinates outside 0..1 wrap instead of clamping to the
+		// edge, for a tileable image laid over a mesh (renderTriangles).
+		void loadFromFile(const char *fileName, bool pixelated = false, bool useMipMaps = true,
+			bool repeat = false);
 
 		// Like gl2d: re-lays the image out with a 2-pixel gutter around every
 		// blockSize x blockSize cell (edge pixels duplicated) so filtering
@@ -485,6 +488,21 @@ namespace wgpu2d
 		void renderLine(const glm::vec2 position, const float angleDegrees, const float length, const Color4f color, const float width = 2.f);
 		void renderLine(const glm::vec2 start, const glm::vec2 end, const Color4f color, const float width = 2.f);
 		void renderCircleOutline(const glm::vec2 position, const Color4f color, const float size, const float width = 2.f, const unsigned int segments = 16);
+
+		// Triangles rather than rectangles: any flat mesh, such as a polygon
+		// fanned from its centre (asteroids, A1). `vertexCount` vertices make
+		// vertexCount / 3 triangles; a remainder is ignored. Winding does not
+		// matter -- nothing is culled.
+		//
+		// Positions are in the current camera's world, y down. **Texture
+		// coordinates here are WebGPU's, not gl2d's:** (0, 0) is the image's
+		// top-left and v runs down, the same way up as the world, so a planar
+		// mapping is one division. Outside 0..1 they clamp, or wrap for a
+		// texture loaded with `repeat`. Colours multiply the texture per
+		// vertex and are blended across each triangle, like the corners of a
+		// rectangle. The current blend mode and effect apply.
+		void renderTriangles(const glm::vec2 *positions, const glm::vec2 *uvs, const Color4f *colors,
+			size_t vertexCount, const Texture texture);
 
 		// Records the color the frame's render pass clears to. The clear
 		// itself happens when the pass begins (first flush, or end of frame).

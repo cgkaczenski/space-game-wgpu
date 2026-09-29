@@ -1,5 +1,5 @@
 arena 20000
-start -17000 0 0
+start -15275 -975 0
 
 enemy sniper -7600 5600 270
 enemy sniper -6300 4700 200
@@ -17,18 +17,46 @@ enemy sniper 13600 -2600 180
 enemy sniper 14000 800 180
 enemy rusher 13000 -900 180
 enemy rusher 12600 400 200
+enemy rusher -16965 -2000 0
+enemy rusher -16755 -1070 0
+enemy sniper -16845 -1470 0
+enemy sniper -16980 -780 0
 
 resource -7000 5000 8
 resource 300 300 16
 resource 8200 8000 10
-resource -15067.4 -584.361 6
-resource -14588.5 -222.744 6
 
 marker gate 15000 -1000
 
 ring 6000 -1000 13500
 ring 10500 -1500 8000
 ring 14800 -1000 3500
+
+
+field 945720812 400 40
+paint -15950 -2450 239
+paint -15920 -2315 239
+paint -15900 -2160 239
+paint -15885 -2050 239
+paint -15870 -1955 239
+paint -15855 -1840 239
+paint -15835 -1750 239
+paint -15820 -1655 239
+paint -15820 -1530 239
+paint -15820 -1385 239
+paint -15835 -1285 239
+paint -15855 -1200 239
+paint -15885 -1115 239
+paint -15925 -995 239
+paint -15965 -890 239
+paint -16035 -685 239
+paint -16080 -550 239
+paint -16095 -450 239
+paint -16110 -365 239
+paint -16125 -270 239
+paint -16145 -150 239
+paint -16160 -20 239
+paint -16190 140 239
 
 scenery Planet1 -4000 -7000 2700 0
 scenery Planet2 6000 2500 2000 0

@@ -651,20 +651,123 @@ no idea what a rock is). Drawing triangles is _library_: `wgpu2d` only draws
 rectangles today, and a `renderTriangles` is something any 2D game would want.
 The rock itself — sizes, what it blocks, how it's placed — is _game_.
 
-**Open questions**
-- Fan from a star-shaped polygon, as proposed, or general polygons with ear
-  clipping from the start?
-- What does a rock block? The player's shots, enemy shots, the beam (it
-  already stops at deposits), **enemy sight** (C5's cones — a line-of-sight
-  test against rocks, which is what makes a rock a hiding place)?
-- How are they placed: a level line (`asteroid x y radius seed`) and an editor
-  tool, or fields scattered by a rule?
-- Sizes: one range, or classes (pebble, boulder, big rock)?
-- Drawing triangles: teach the batch real triangles, or send each one as a
-  rectangle with a repeated corner through the batch as it is?
-- The texture can't repeat today (the sampler clamps at the edge), so each rock
-  takes a random window of it. Is that enough variety?
-- "Certain enemy types" hide: which ones, and is that A1, or enemy AI after P1?
+**Decided (first pass)**
+- **The shape** is a star-shaped polygon from a seed, drawn and hit-tested as a
+  triangle fan from its centre. Corners are spaced by distance round the
+  outline (160 units each), so big rocks are as craggy as small ones. Ear
+  clipping waits for A4.
+- **A rock blocks** the player's shots and missiles, enemy shots, the beam
+  (before an enemy or a deposit behind it), and **enemy sight**. A rock on the
+  line between an enemy and the player hides the player as the cloak does, and
+  a watching enemy goes to search where it lost you (C5).
+- **Which enemies use cover** is left to enemy AI after P1.
+- **Placement:** a level line `asteroid x y radius seed` and an editor
+  **Asteroid** tool — click to place, drag, radius field, a seed field and a
+  **Reroll** button. The first rocks are in `level2` only.
+- **Drawing:** real triangles. `wgpu2d` gains `renderTriangles`, and the batch
+  now keeps where each record's vertices start, so a run draws however many
+  vertices its records hold.
+- **The texture** sits at a fixed scale, one repeat per 1800 world units, so
+  every rock is the same stone. `Texture::loadFromFile` takes `repeat`, which
+  picks a repeating sampler; big rocks wrap onto the texture. Each seed also
+  picks where on the texture a rock starts.
+- **The look until A3:** the colour map, smoothly filtered and mipmapped, with
+  the fan's outer corners shaded so the rock darkens toward its edge.
+
+_(Choices made while building — to confirm:)_
+- **One rule for every shot:** anything touching a rock stops, including a shot
+  or beam fired from on top of one. Ships fly over rocks (drawn under the
+  ships), and a ship on top of a rock is hidden. So a rock is cover to hide in,
+  not a bunker to fight from: to shoot, you have to leave it.
+- A new rock gets a random seed; its default radius is 800.
+- Sliders under **Asteroids**: corner spacing, roughness, angle jitter,
+  texture scale, rim, brightness, and outlines.
+
+#### A1b. Asteroid fields
+
+An area painted with a brush and filled with many rocks from a seed: somewhere
+to hide, like tall grass. Single rocks (A1) stay alongside.
+
+**Decided (first pass)**
+- **Painting:** an editor **Paint field** tool.
+  - Left drag lays brush stamps (circles); **Shift** + left drag lays erasers;
+    **−** / **=** shrink and grow the brush.
+  - It paints the selected field, else the field under the brush, else a new
+    one.
+  - With Select, clicking inside a field picks it, and dragging moves the
+    whole field.
+  - A field is deleted only with the panel's Delete, not by right-click, so a
+    stray click can't wipe it.
+- **In the file:** `field seed maxSize maxGap`, followed by its `paint x y r` /
+  `erase x y r` stamps. A point is in the field if the last stamp covering it
+  painted rather than erased.
+- **Rocks:** each field has its own seed (**Reroll**), **max size** and **max
+  gap** (default 40, on a logarithmic slider up to 1500). They're scattered in
+  **layers** (`engine/scatter`):
+  - Big rocks go on a coarse grid. Each layer after it has rocks half the size
+    in cells half the size, filling the spaces and skipping any spot that would
+    come closer than the gap to a rock already placed.
+  - Each cell's rock comes from a hash of the field's seed and that cell.
+    Painting more area adds rocks without moving the ones already there, except
+    that a few small rocks near a newly painted edge can give way to a big one
+    arriving there.
+  - **Each rock keeps its own clearance**, drawn with its cell from 0 up to
+    the max gap. Two rocks keep the average of theirs apart. One gap for every
+    rock made all the spacings the same once the layers packed in, which read
+    as a grid. **Gap variation** (under Asteroids, default 1) runs from uniform
+    at 0 to anywhere-up-to-the-max at 1.
+  - **Clumping was built, then taken out of fields.** A smooth density drifts
+    across a region from the seed (value noise). Below a threshold that rises
+    with clumping, cells are empty in every layer; roughly, clumping × 70% of
+    the region is gap. It looked right. But "hidden" means *inside the painted
+    area*, so the empty patches still hid the player with nothing overhead. A
+    painted area is the designer saying "cover here", so fields don't clump.
+    The mechanism stays in `engine/scatter` (`clumping`, `density`), off by
+    default, for procedural levels (see **Later**).
+
+_(Along the way:)_ the player's **jitter at slow speeds** was the camera.
+- **What it was:** it chases at a fixed 550 u/s, and `camera::follow` never
+  limited a step to the distance left. So below 550 it overshot the ship and
+  stepped back.
+- **The second half:** the game's 1-unit dead zone switched on follow's stepped
+  easing (quarter speed within 2, half within 4). A slow ship kept crossing
+  those steps, so the camera fell behind and caught up every few frames.
+- **Measured** in a simulation of the real `follow`: the ship's screen position
+  wobbled up to 2 units a frame at 100–500 u/s.
+- **Fixed:** steps are clamped to the distance (engine), and the dead zone is 0
+  (game). The wobble is now 0 at every speed, at 60 and 120 fps.
+  - The first version used one grid only. Its cells had to fit the largest rock,
+    so even at gap 0 rocks sat about 280 apart. Three layers at gap 40 bring
+    that to about 70.
+- **The hidden look:** a ship in a field is **darkened** (45% of its light), so
+  in the gaps it looks in shadow. The outline pass over the rocks draws only
+  the line. Its old fill was the ship's own colours at 18%, which tinted any
+  rock covering the ship and made the ship look blended into it rather than
+  behind it. The fill is now an optional flat dark silhouette, off by default.
+- **Layering:** field rocks draw **over** the ships, so a ship in a field is
+  behind its rocks. Single rocks stay under the ships.
+- **Hidden:** anywhere **inside a field's painted area**, gaps included, the
+  player is hidden from every enemy. The ship is drawn once more over the rocks
+  as an **outline** with a faint fill, so you can see where you are and know
+  no enemy can.
+- **Shooting:** field rocks block shots, the beam and sight like single rocks,
+  so you can shoot out through the gaps. An enemy you hit is alerted as always:
+  it turns, can't see you, and comes to search where you are.
+- **Parallax:** none yet; it comes back with A3's look.
+
+_(Choices made while building — to confirm:)_
+- The outline's colour is pale mint, pulsing gently, and at least 1.5 screen
+  pixels wide at any zoom. Its sliders are under **Hidden outline**, the shade
+  under **Asteroids**.
+- Shared field sliders under **Asteroids**:
+  - layers: 3;
+  - smallest rock: 0.12 of the max;
+  - lean small within a layer: 1.5;
+  - fill: 90% of cells try for a rock;
+  - the editor's area-dot spacing.
+- A cloaked ship in a field is outlined at the cloak's faintness.
+- The painted area shows in the editor as a grid of dots, so overlapping
+  stamps read as one flat region.
 
 #### A2. Physics: shot and beamed
 
@@ -733,4 +836,13 @@ lights the colour map with the normal map, and uses the height map as a mask.
 - **Enemy AI:** patrols, ambushing the player at resources, team attacks. Needs
   L2's places to exist, and P1's steering.
 - **Procedural levels**, on L2's format.
+  - **Asteroid fields in clumps.** The generator decides *where to paint* from
+    `engine/scatter`'s `density` (built and measured in A1b): several fields
+    with open space between them, rather than one field with gaps inside it.
+    The painted area then always matches where the rocks are, so "hidden in a
+    field" stays honest.
+  - _(An alternative, if large max gaps ever feel like hiding in the open:)_
+    hidden could mean "a field rock within a couple of ship lengths" rather than
+    "inside the paint". It's a proximity query each frame, so it needs a
+    spatial lookup.
 - **Engine idea:** the GPU starfield (roadmap F5) as each level's backdrop.

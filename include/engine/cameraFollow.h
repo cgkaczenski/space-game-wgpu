@@ -28,6 +28,11 @@ namespace camera
 		// Slack: the camera does not move at all while it is within this of
 		// the target, and eases as it approaches (quarter speed inside 2x,
 		// half inside 4x). Zero means chase always.
+		//
+		// Beware the easing's steps with a moving target: one slower than
+		// `speed` but faster than a quarter of it keeps crossing them -- the
+		// camera falls behind at the slow step and catches up at the fast one,
+		// every few frames, and the view jitters. Zero turns the steps off.
 		float deadZone = 0.f;
 
 		// Leash: the camera is never allowed to fall further behind than
