@@ -175,6 +175,12 @@ std::vector<Item> scatter(glm::vec2 boundsMin, glm::vec2 boundsMax,
 				const float slack = std::max(cell * 0.5f - radius - clearance * 0.5f, 0.f);
 				const glm::vec2 at = cellCentre +glm::vec2(random.next() * 2.f - 1.f, random.next() * 2.f - 1.f) * slack;
 				if (!inside(at)) { continue; }
+				bool blocked = false;
+				for (const Params::KeepOut &k : params.keepOut)
+				{
+					if (glm::distance(at, k.centre) < k.radius + radius + clearance) { blocked = true; break; }
+				}
+				if (blocked) { continue; }
 				// Coarser layers only: this layer's own cells keep their
 				// distance by construction, and checking them would make a
 				// cell depend on its neighbours.

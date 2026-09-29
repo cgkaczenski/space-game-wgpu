@@ -780,15 +780,108 @@ off-centre hit spins it. The beam is a steady **force** at its contact point.
 _Engine_: the body knows nothing about rocks, and P1's ship body may end up
 using the same one.
 
-**Open questions**
-- How hard does each weapon push? Scale with damage, or a push value of its
-  own per weapon (missile hardest)? And the ram?
-- Do rocks collide with **each other**? (Not with ships — decided.) That is
-  most of the extra work: polygon contact and a bounce.
-- Space drag: do they drift forever, or slowly come to rest? Spin too?
-- Anything from the closing circle (L4): do rocks outside it burn, drift, or
-  nothing?
-- Mass from area alone, or a density per rock?
+**Decided (first pass)**
+- **Every rock is a rigid body** (`engine/rigidBody`). Its mass, centre of
+  mass and moment of inertia come from its fan at one density for all rocks,
+  so mass grows with area: a rock of radius 350 is about sixty times heavier
+  than a pebble of 40.
+- **Pushes:**
+  - **Shots** (anyone's) push by damage × a push value, at the point they
+    land, so an off-centre hit spins the rock too. **Missiles** push 4×.
+  - **The beam** is a steady force where it burns.
+  - **Explosions** (every kill, and the player's death) shove nearby rocks
+    outward, less the further off.
+  - **The ram** strikes each rock its prow touches, once per ram. The ship
+    goes on through.
+- **Single rocks** drift freely and slowly come to rest; drift and spin are
+  damped. **Field rocks** spring gently back to where they grew, so a field's
+  painted area stays the truth about its cover.
+- **Rocks bump each other** as circles of their own area. They pass through
+  ships.
+- **Edges:** nothing special. A rock can drift out of the arena or the closing
+  circle.
+
+_(After the first playtest: "the rocks don't even bounce, they just get pushed
+in one direction".)_ Measured with a scripted ram through `level2`'s field: the
+moving rocks' directions spread 0.01 (0 is all one way), there were 10
+rock-on-rock contacts in the whole event, and speed was gone in half a second.
+Three causes, all fixed:
+- **The ram pushed every rock straight along itself.** Now it throws each rock
+  **outward from the prow** (along the line to its centre) plus some of its own
+  direction, applied on the rock's near side, so rocks either side scatter
+  and glancing strikes spin.
+- **The spring held field rocks from the first moment.** Its damping alone
+  (2ζω) halved their speed in a third of a second. Now a struck rock is
+  **loose for 3 s**, then the spring eases in over 1 s.
+  - Looseness spreads *with the original clock*: a rock knocked by a loose one
+    is loose until that one's spring returns, so a ram's whole chain comes
+    home together.
+  - Home is a drift, not a slingshot: critically damped, and capped at 500 u/s.
+- **Bounces were dead (0.3) and never spun.** Now 0.85, with **friction** at
+  the contact, so glancing bumps hand over spin. Touches slower than 120 u/s
+  don't bounce, so rocks resting against each other don't buzz.
+- **A field rock on its way home only meets rocks that are still loose.** Its
+  home lies through a crowd, and colliding there turned the return into a jam.
+  Settled rocks let it drift back into place.
+
+After: directions spread up to 0.88, about 500 contacts in the wild phase,
+rocks thrown up to 2900, and the field home and asleep within 12 s.
+
+_(Choices made while building — to confirm:)_ all on sliders under
+**Asteroids → Physics**:
+- **pushes:**
+  - shots: 12000 per unit of damage (missiles 4×);
+  - beam: 6000;
+  - blast: 3000, reaching 1800;
+  - ram: 30000, with 0.7 of its own direction added to the outward push;
+- **damping:** drift 0.5/s, spin 0.3/s. A pebble at the speed cap glides about
+  3600 units; at 0.25 and a 2500 cap it glided 10000, clean out of its field;
+- **caps:** speed 1800, spin 10 rad/s;
+- **bounce:** 0.85, friction 0.4, resting speed 120;
+- **field spring:** loose 3 s, easing in over 1 s, a 5 s period, critically
+  damped, returning at no more than 500 u/s.
+
+Only moving rocks are stepped and collided; they sleep once still, and, for
+field rocks, home.
+
+**Cores** _(after the second playtest: "strange how they return with nothing
+seemingly pulling them back")_
+- **Every field has a core:** a rock bigger than any of its own (2 × the
+  field's max size), grown from the field's seed. It sits at the painted area's
+  middle (the average of the painted points, moved to the nearest painted
+  point if the field's shape puts that outside it). In the editor it can be
+  dragged, and is then saved as `core x y` under its field. "Back to the
+  middle" (or a right-click) undoes that.
+- **The field's rocks are scattered clear of it:** `engine/scatter` gained
+  keep-out circles.
+- **It is what the rocks are seen to fall back toward.** Its presence is the
+  explanation; nothing extra is drawn. The spring itself still pulls each rock
+  to its own home, so the painted cover stays true.
+  - _(Tried and dropped:)_ a faint gravity well, with space bending toward the
+    core while rocks drifted home. It was a third field in the cloak's pass,
+    which needed a fourth vec4 of effect parameters. Both came out again.
+- **It never moves:** it's an immovable body (zero inverse mass), so shots,
+  missiles, the beam, blasts and the ram don't move it and it can't be broken.
+  It still stops shots, the beam and sight like any rock, and rocks bounce off
+  it.
+- **Ships can't pass through it.**
+  - **The player** is put back on its surface and thrown back out (60% of the
+    speed in comes back, at least 700 u/s). Once per touch (0.5 s grace), it's
+    a hit: the shield blocks it and breaks, or with the shield down the hull
+    takes 0.15. The ram's prow takes it instead when the core is ahead.
+    Cloaked, nothing hits.
+  - **Enemies** are thrown back out tumbling (a short stun) and lose 0.15.
+    It's not an alert.
+- Enemies don't steer round cores until **P1**; a rusher chasing you through a
+  field will hit it.
+- Sliders under **Asteroids → Cores**: core size, hit damage, ship bounce,
+  minimum bounce speed, grace, enemy knock and stun.
+- Measured: `level2`'s core is radius about 700, and none of the field's 84
+  rocks overlap it. Flying in at 2000 u/s, the player comes back out at about
+  1100 with the shield broken and health untouched; a second touch with the
+  shield down takes 0.15. An enemy thrown in comes back out at 0.85 life.
+- _(Known:)_ rocks bounce off the core as a circle of its area, so a rock can
+  graze one of its outer bumps.
 
 #### A3. The shader: a lit rock
 

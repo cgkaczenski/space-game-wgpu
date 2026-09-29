@@ -71,6 +71,12 @@ namespace scatter
 		// to paint in the first place.
 		float clumping = 0.f;
 		float clumpSize = 3000.f;
+
+		// Circles nothing may be placed in: an item keeps its radius plus its
+		// clearance from each. For something already standing in the region
+		// -- an asteroid field's core.
+		struct KeepOut { glm::vec2 centre; float radius; };
+		std::vector<KeepOut> keepOut;
 	};
 
 	// The clump density at a point, 0 .. 1. Exposed so a caller can show it.

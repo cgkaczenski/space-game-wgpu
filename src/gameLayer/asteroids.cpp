@@ -1,6 +1,7 @@
 #include <asteroids.h>
 
 #include <engine/polygon.h>
+#include <engine/rigidBody.h>
 #include <engine/scatter.h>
 #include "imgui.h"
 #include <platformTools.h>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <unordered_map>
 
 namespace asteroids
 {
@@ -18,11 +20,26 @@ namespace
 
 	struct Rock
 	{
-		polygon::Placement placement;
+		polygon::Placement placement;   // where the outline's frame is: from the body
 		std::vector<glm::vec2> outline; // around the origin, in the rock's frame
 		float bound = 0.f;              // bounding radius: the broad phase
 		glm::vec2 uvOffset = {};        // which part of the texture it wears
 		bool inField = false;           // drawn over the ships, not under
+
+		// A2. The body turns about the centre of mass, which is not quite the
+		// point the outline was grown round. That point must stay the fan's
+		// apex -- it is the one every edge can be seen from -- so the outline
+		// keeps its frame, and the frame is placed from the body each step.
+		rigid::Body body;
+		glm::vec2 centroid = {};        // the centre of mass, in the outline's frame
+		float collideRadius = 0.f;      // a circle of the same area: rock against rock
+		glm::vec2 home = {};            // where a field rock springs back to
+		bool awake = false;             // moving, so stepped and collided
+		int ramHitOn = -1;              // the ram that last struck it: once per ram
+		float sinceStruck = 0.f;        // seconds since last pushed or bumped: the spring waits
+
+		int field = -1;                 // which field it belongs to; -1 a single rock
+		bool core = false;              // its field's core: immovable, never struck, solid to ships
 	};
 
 	std::vector<Rock> rocks;
@@ -64,6 +81,88 @@ namespace
 
 	bool showOutlines = false;
 
+	// ---- Physics (A2) ----
+	// Mass per unit area. Small, so masses are handy numbers: a rock of radius
+	// 350 weighs about 38, a pebble of 40 about 0.5 -- sixty times lighter,
+	// because mass grows with area.
+	float density = 1e-4f;
+	float shotPush = 12000.f;      // impulse per unit of a shot's damage
+	float missilePush = 4.f;       // a missile pushes this many times harder
+	float beamPush = 6000.f;       // steady force while the beam touches
+	float blastPush = 3000.f;      // at a blast's centre, falling to 0 at its reach
+	float blastReach = 1800.f;
+	// The ram throws rocks outward from the prow, along the line to each
+	// rock's centre, with this much of the ram's own direction added -- so
+	// rocks either side of it scatter sideways and a glancing strike spins
+	// them. All along the ram, they moved as one, like snow before a plough.
+	float ramPush = 30000.f;
+	float ramForward = 0.7f;
+	// Drift halves in about 1.4 s. A body at speed v with damping d glides
+	// v / d before it stops: at 0.25 and a 2500 cap, a rammed pebble glided
+	// 10000 units, clean out of its field.
+	float linearDamping = 0.5f;
+	float angularDamping = 0.3f;
+	float maxSpeed = 1800.f;       // pebbles are light: without a cap a shot fires them off
+	float maxSpin = 10.f;
+	// Rock on rock: lively, and with friction at the contact, so a glancing
+	// bump hands over spin and rocks tumble off each other.
+	float restitution = 0.85f;
+	float friction = 0.4f;
+	// Slower than this, a touch is only a touch. Rocks drifting home together
+	// bounced off each other at 0.85 on every gentle touch, and buzzed: 4000
+	// bounces in the eight seconds it took a field to settle.
+	float restingSpeed = 120.f;
+	// Field rocks spring back home, all in about the same time whatever their
+	// size -- the spring is an acceleration, not a force, so mass cancels. But
+	// not at once: a struck rock is loose for `springDelay`, then the spring
+	// eases in. With the spring on from the first moment, its damping alone
+	// (2ζω, about 2.5 per second at 4 s and 0.8) halved a rock's speed in a
+	// third of a second, and nothing had time to bounce.
+	// And home is a drift, not a slingshot: critically damped, and no faster
+	// than `returnSpeed`. A rock sent thousands out, pulled by an underdamped
+	// spring, came back at the speed cap and overshot through the field.
+	float springPeriod = 5.f;
+	float springDamping = 1.f;     // 1 settles without overshoot; below, a little sway
+	float springDelay = 3.f;
+	float springEase = 1.f;
+	float returnSpeed = 500.f;
+	int currentRam = 0;            // counts rams, so each strikes a rock once
+
+	// ---- Cores ----
+	// Each field has one: bigger than any of its rocks, at the painted area's
+	// middle unless dragged. It is what the field's rocks are seen to fall
+	// back toward. It never moves -- an immovable body, zero inverse mass --
+	// so rocks bounce off it, and it is solid to ships.
+	float coreScale = 3.f;         // its radius, in the field's max rock sizes
+	CoreRules rules;
+	int awakeCount = 0;            // last step's, for the panel
+
+	void place(Rock &r)
+	{
+		const float c = std::cos(r.body.angle), s = std::sin(r.body.angle);
+		const glm::vec2 back = {-r.centroid.x * c + r.centroid.y * s, -r.centroid.x * s - r.centroid.y * c};
+		r.placement = {r.body.position + back, r.body.angle};
+	}
+
+	// Loose: struck recently, free of the spring. Returning: a field rock whose
+	// loose time is over, drifting home.
+	bool loose(const Rock &r) { return r.sinceStruck < springDelay; }
+	bool returning(const Rock &r) { return r.inField && !loose(r); }
+
+	// Pushed or bumped: moving, and loose of the spring for a while.
+	void wake(Rock &r)
+	{
+		r.awake = true;
+		r.sinceStruck = 0.f;
+	}
+
+	void clampMotion(Rock &r)
+	{
+		const float speed = glm::length(r.body.velocity);
+		if (speed > maxSpeed) { r.body.velocity *= maxSpeed / speed; }
+		r.body.spin = std::clamp(r.body.spin, -maxSpin, maxSpin);
+	}
+
 	// A little hash so a seed also picks the texture window.
 	uint32_t mix(uint32_t x)
 	{
@@ -84,6 +183,14 @@ namespace
 		r.bound = polygon::boundingRadius(r.outline);
 		const uint32_t h = mix(a.seed ^ 0x9e3779b9U);
 		r.uvOffset = {(h & 0xffff) / 65535.f, (h >> 16) / 65535.f};
+
+		// Mass and turning from the same fan that is drawn and hit.
+		const rigid::MassProperties mass = rigid::fromFan(r.outline, {0.f, 0.f}, density);
+		r.centroid = mass.centroid;
+		r.body = rigid::makeBody(mass, a.position + mass.centroid);
+		r.home = r.body.position;
+		r.collideRadius = std::sqrt(mass.area / 3.1415927f);
+		place(r);
 		return r;
 	}
 
@@ -156,16 +263,65 @@ namespace
 		return any;
 	}
 
-	// A field's rocks: layers of grids, one rock per cell, the big rocks first
-	// and smaller ones filling between them, never closer than the field's gap
-	// (engine/scatter). Each cell's rock is decided by the field's seed and
-	// that cell, so painting more area adds rocks and leaves the old ones
-	// where they were.
-	void growField(const level::AsteroidField &f, std::vector<Rock> &out)
+	// Where a field's core goes when nobody has dragged it: the middle of the
+	// painted area, found by sampling it on a grid and averaging the points
+	// inside. A C-shaped field's middle can land in the empty part, so then
+	// it is moved to the painted sample nearest to it.
+	glm::vec2 autoCore(const level::AsteroidField &f)
+	{
+		glm::vec2 lo, hi;
+		if (!fieldBounds(f, lo, hi)) { return {}; }
+		constexpr int samples = 48;
+		glm::vec2 sum = {};
+		int count = 0;
+		std::vector<glm::vec2> inside;
+		for (int y = 0; y < samples; y++)
+		{
+			for (int x = 0; x < samples; x++)
+			{
+				const glm::vec2 p = lo + (hi - lo) * glm::vec2((x + 0.5f) / samples, (y + 0.5f) / samples);
+				if (!f.contains(p)) { continue; }
+				sum += p;
+				count++;
+				inside.push_back(p);
+			}
+		}
+		if (count == 0) { return (lo + hi) * 0.5f; }
+		const glm::vec2 middle = sum / (float)count;
+		if (f.contains(middle)) { return middle; }
+		glm::vec2 nearest = inside.front();
+		for (const glm::vec2 &p : inside)
+		{
+			if (glm::distance(p, middle) < glm::distance(nearest, middle)) { nearest = p; }
+		}
+		return nearest;
+	}
+
+	uint32_t coreSeed(const level::AsteroidField &f) { return mix(f.seed ^ 0xc0e0c0e0U); }
+
+	// A field: its core first, then its rocks -- layers of grids, one rock per
+	// cell, the big rocks first and smaller ones filling between them, never
+	// closer than the field's gap, and clear of the core (engine/scatter).
+	// Each cell's rock is decided by the field's seed and that cell, so
+	// painting more area adds rocks and leaves the old ones where they were.
+	void growField(const level::AsteroidField &f, int index, std::vector<Rock> &out)
 	{
 		glm::vec2 lo, hi;
 		if (!fieldBounds(f, lo, hi)) { return; }
+
+		const glm::vec2 corePos = f.coreMoved ? f.core : autoCore(f);
+		Rock core = grow({corePos, f.maxSize * coreScale, coreSeed(f)});
+		core.inField = true;
+		core.core = true;
+		core.field = index;
+		core.body.inverseMass = 0.f;     // immovable: nothing can push it
+		core.body.inverseInertia = 0.f;
+		const float coreBound = core.bound;
+		const glm::vec2 coreCentre = core.placement.position;
+		out.push_back(std::move(core));
+
 		scatter::Params params;
+		params.keepOut.push_back({coreCentre, coreBound});
 		params.seed = f.seed;
 		params.maxRadius = f.maxSize;
 		params.minRadius = f.maxSize * fieldMinFraction;
@@ -179,6 +335,7 @@ namespace
 		{
 			Rock r = grow({item.position, item.radius, item.seed});
 			r.inField = true;
+			r.field = index;
 			out.push_back(std::move(r));
 		}
 	}
@@ -230,7 +387,7 @@ void reset(const std::vector<level::Asteroid> &placed, const std::vector<level::
 	fieldsCopy = fields;
 	rocks.clear();
 	for (const level::Asteroid &a : placed) { rocks.push_back(grow(a)); }
-	for (const level::AsteroidField &f : fields) { growField(f, rocks); }
+	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, rocks); }
 }
 
 float hiddenShade() { return shadeInField; }
@@ -244,22 +401,25 @@ bool inField(glm::vec2 point)
 	return false;
 }
 
-bool hitsCircle(glm::vec2 centre, float radius)
+int hitCircle(glm::vec2 centre, float radius)
 {
-	for (const Rock &r : rocks)
+	for (int i = 0; i < (int)rocks.size(); i++)
 	{
+		const Rock &r = rocks[i];
 		// Broad phase: two circles that do not touch rule out the triangles.
 		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
-		if (polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { return true; }
+		if (polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { return i; }
 	}
-	return false;
+	return -1;
 }
 
-float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance)
+float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock)
 {
 	float nearest = -1.f;
-	for (const Rock &r : rocks)
+	if (rock) { *rock = -1; }
+	for (int i = 0; i < (int)rocks.size(); i++)
 	{
+		const Rock &r = rocks[i];
 		// Broad phase: how close the ray's line passes the rock's centre.
 		const glm::vec2 toCentre = r.placement.position - origin;
 		const float along = glm::dot(toCentre, direction);
@@ -269,7 +429,11 @@ float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance)
 		const float reach = nearest >= 0.f ? nearest : maxDistance;
 		const float t = polygon::raycast(r.outline, polygon::toLocal(r.placement, origin),
 			polygon::directionToLocal(r.placement, direction), reach);
-		if (t >= 0.f) { nearest = t; }
+		if (t >= 0.f)
+		{
+			nearest = t;
+			if (rock) { *rock = i; }
+		}
 	}
 	return nearest;
 }
@@ -278,8 +442,200 @@ bool blocksSight(glm::vec2 from, glm::vec2 to)
 {
 	const glm::vec2 line = to - from;
 	const float length = glm::length(line);
-	if (length <= 0.f) { return hitsCircle(from, 0.f); }
+	if (length <= 0.f) { return hitCircle(from, 0.f) >= 0; }
 	return raycast(from, line / length, length) >= 0.f;
+}
+
+void shot(int rock, glm::vec2 point, glm::vec2 direction, float damage, bool missile)
+{
+	if (rock < 0 || rock >= (int)rocks.size() || rocks[rock].core) { return; }
+	Rock &r = rocks[rock];
+	const float push = damage * shotPush * (missile ? missilePush : 1.f);
+	rigid::applyImpulse(r.body, point, direction * push);
+	clampMotion(r);
+	wake(r);
+}
+
+void beam(int rock, glm::vec2 point, glm::vec2 direction, float dt)
+{
+	if (rock < 0 || rock >= (int)rocks.size() || dt <= 0.f || rocks[rock].core) { return; }
+	Rock &r = rocks[rock];
+	rigid::applyForce(r.body, point, direction * beamPush, dt);
+	clampMotion(r);
+	wake(r);
+}
+
+void blast(glm::vec2 at, float strength)
+{
+	for (Rock &r : rocks)
+	{
+		if (r.core) { continue; }
+		const glm::vec2 away = r.body.position - at;
+		const float distance = glm::length(away);
+		// Measured to the rock's near side, so a big rock beside a blast is
+		// not spared because its centre is far off.
+		const float edge = std::max(distance - r.collideRadius, 0.f);
+		if (edge >= blastReach || distance < 1e-3f) { continue; }
+		// Through the centre: a blast shoves, it does not spin.
+		rigid::applyImpulse(r.body, r.body.position,
+			away / distance * (blastPush * strength * (1.f - edge / blastReach)));
+		clampMotion(r);
+		wake(r);
+	}
+}
+
+void ram(glm::vec2 centre, float radius, glm::vec2 direction, bool newRam)
+{
+	if (newRam) { currentRam++; }
+	for (Rock &r : rocks)
+	{
+		if (r.core || r.ramHitOn == currentRam) { continue; } // a core is the ship's problem, not the core's
+		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
+		const glm::vec2 local = polygon::toLocal(r.placement, centre);
+		if (!polygon::overlapsCircle(r.outline, local, radius)) { continue; }
+		// Outward from the prow, plus some of the ram's own way, applied on the
+		// rock's near side: the part along the ram, off the line through the
+		// rock's centre, is what spins it.
+		const glm::vec2 toRock = r.body.position - centre;
+		const float d = glm::length(toRock);
+		const glm::vec2 outward = d > 1e-3f ? toRock / d : direction;
+		const glm::vec2 push = glm::normalize(outward + direction * ramForward);
+		const glm::vec2 point = r.body.position - outward * std::min(r.collideRadius, d);
+		rigid::applyImpulse(r.body, point, push * ramPush);
+		clampMotion(r);
+		wake(r);
+		r.ramHitOn = currentRam;
+	}
+}
+
+void update(float dt)
+{
+	if (dt <= 0.f) { return; }
+
+	// Motion: the awake ones only. A field rock also springs toward home --
+	// an acceleration, so big and small settle in the same time.
+	const float omega = 6.2831853f / std::max(springPeriod, 0.1f);
+	awakeCount = 0;
+	bool anyAwake = false;
+	for (Rock &r : rocks)
+	{
+		if (!r.awake || r.core) { continue; }
+		r.sinceStruck += dt;
+		if (r.inField)
+		{
+			// Loose for a while after a hit, then the spring eases in.
+			const float hold = std::clamp((r.sinceStruck - springDelay) / std::max(springEase, 0.01f), 0.f, 1.f);
+			const glm::vec2 offset = r.body.position - r.home;
+			r.body.velocity += hold * (-omega * omega * offset - 2.f * springDamping * omega * r.body.velocity) * dt;
+			// On the way home, no faster than a drift.
+			const float speed = glm::length(r.body.velocity);
+			const float cap = glm::mix(maxSpeed, returnSpeed, hold);
+			if (hold > 0.f && speed > cap) { r.body.velocity *= cap / speed; }
+		}
+		rigid::integrate(r.body, dt, linearDamping, angularDamping);
+		clampMotion(r);
+		anyAwake = true;
+	}
+	if (!anyAwake) { return; }
+
+	// Rock against rock, as circles of the same area: only pairs where one
+	// is moving. Every rock goes in a spatial hash -- a big one in every cell
+	// its circle covers -- and each moving rock checks the cells round it.
+	const float cell = 600.f;
+	auto key = [](int x, int y) { return ((uint64_t)(uint32_t)x << 32) | (uint32_t)y; };
+	static std::unordered_map<uint64_t, std::vector<int>> grid;
+	grid.clear();
+	for (int i = 0; i < (int)rocks.size(); i++)
+	{
+		const Rock &r = rocks[i];
+		const int x0 = (int)std::floor((r.body.position.x - r.collideRadius) / cell);
+		const int x1 = (int)std::floor((r.body.position.x + r.collideRadius) / cell);
+		const int y0 = (int)std::floor((r.body.position.y - r.collideRadius) / cell);
+		const int y1 = (int)std::floor((r.body.position.y + r.collideRadius) / cell);
+		for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) { grid[key(x, y)].push_back(i); }
+	}
+	for (int i = 0; i < (int)rocks.size(); i++)
+	{
+		Rock &a = rocks[i];
+		if (!a.awake) { continue; }
+		const int x0 = (int)std::floor((a.body.position.x - a.collideRadius) / cell);
+		const int x1 = (int)std::floor((a.body.position.x + a.collideRadius) / cell);
+		const int y0 = (int)std::floor((a.body.position.y - a.collideRadius) / cell);
+		const int y1 = (int)std::floor((a.body.position.y + a.collideRadius) / cell);
+		for (int y = y0; y <= y1; y++)
+		{
+			for (int x = x0; x <= x1; x++)
+			{
+				const auto found = grid.find(key(x, y));
+				if (found == grid.end()) { continue; }
+				for (int j : found->second)
+				{
+					// Each pair once: two awake rocks by the lower index only.
+					if (j == i || (rocks[j].awake && j < i)) { continue; }
+					Rock &b = rocks[j];
+					// A field rock on its way home only meets rocks still loose.
+					// Its home lies through a crowd; colliding there, the return
+					// became a jam -- rocks pushed by their springs into the
+					// settled ones in their way, still 500 out after 14 s.
+					// A core, though, is always solid.
+					if (!a.core && !b.core
+						&& ((returning(a) && !loose(b)) || (returning(b) && !loose(a)))) { continue; }
+					if (rigid::collideCircles(a.body, a.collideRadius, b.body, b.collideRadius,
+						restitution, friction, restingSpeed))
+					{
+						if (a.core || b.core) { continue; } // a core neither wakes nor loosens
+						// Looseness spreads with the original clock: a rock knocked
+						// by a loose one is loose until that one's spring returns,
+						// so a whole ram's chain comes home together. A rock
+						// already on its way home loosens nothing it passes --
+						// when every bump restarted the clock, returning rocks
+						// knocked the settled ones loose and the field churned on.
+						const float clock = std::min(a.sinceStruck, b.sinceStruck);
+						a.awake = b.awake = true;
+						if (clock < springDelay) { a.sinceStruck = b.sinceStruck = clock; }
+					}
+				}
+			}
+		}
+	}
+
+	// Place the frames the draw and the hit tests use, and let the settled
+	// ones sleep: still, and a field rock home again.
+	for (Rock &r : rocks)
+	{
+		if (!r.awake) { continue; }
+		place(r);
+		awakeCount++;
+		const bool still = glm::length(r.body.velocity) < 2.f && std::abs(r.body.spin) < 0.02f;
+		const bool home = !r.inField || glm::distance(r.body.position, r.home) < 2.f;
+		if (still && home) { r.awake = false; }
+	}
+}
+
+const CoreRules &coreRules() { return rules; }
+
+glm::vec2 fieldCore(const level::AsteroidField &f) { return f.coreMoved ? f.core : autoCore(f); }
+
+bool coreContact(glm::vec2 centre, float radius, CoreContact &out)
+{
+	for (const Rock &r : rocks)
+	{
+		if (!r.core) { continue; }
+		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
+		if (!polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { continue; }
+
+		const glm::vec2 fromCore = centre - r.body.position;
+		const float d = glm::length(fromCore);
+		out.outward = d > 1e-3f ? fromCore / d : glm::vec2(1.f, 0.f);
+		// The core's surface along that line: a ray from outside, back in.
+		const glm::vec2 start = r.body.position + out.outward * (r.bound + radius + 10.f);
+		const float t = polygon::raycast(r.outline, polygon::toLocal(r.placement, start),
+			polygon::directionToLocal(r.placement, -out.outward), 2.f * (r.bound + radius + 10.f));
+		const glm::vec2 surface = t >= 0.f ? start - out.outward * t : r.body.position + out.outward * r.bound;
+		out.pushTo = surface + out.outward * radius;
+		return true;
+	}
+	return false;
 }
 
 void draw(wgpu2d::Renderer2D &renderer)
@@ -312,7 +668,7 @@ void drawPlacements(wgpu2d::Renderer2D &renderer, const std::vector<level::Aster
 
 	std::vector<Rock> grown;
 	for (const level::Asteroid &a : placed) { grown.push_back(grow(a)); }
-	for (const level::AsteroidField &f : fields) { growField(f, grown); }
+	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, grown); }
 	const glm::vec4 view = renderer.getViewRect();
 	for (const Rock &r : grown)
 	{
@@ -324,7 +680,43 @@ void drawPlacements(wgpu2d::Renderer2D &renderer, const std::vector<level::Aster
 
 void debugUi()
 {
-	ImGui::Text("%d rocks", (int)rocks.size());
+	ImGui::Text("%d rocks, %d moving", (int)rocks.size(), awakeCount);
+	if (ImGui::TreeNode("Physics"))
+	{
+		ImGui::SliderFloat("Shot push", &shotPush, 0.f, 60000.f, "%.0f per damage");
+		ImGui::SliderFloat("Missile push", &missilePush, 0.f, 20.f, "x%.1f");
+		ImGui::SliderFloat("Beam push", &beamPush, 0.f, 40000.f, "%.0f");
+		ImGui::SliderFloat("Blast push", &blastPush, 0.f, 20000.f, "%.0f");
+		ImGui::SliderFloat("Blast reach", &blastReach, 0.f, 6000.f, "%.0f");
+		ImGui::SliderFloat("Ram push", &ramPush, 0.f, 100000.f, "%.0f");
+		ImGui::SliderFloat("Ram forward", &ramForward, 0.f, 3.f, "%.2f (0: straight out from the prow)");
+		ImGui::SliderFloat("Friction", &friction, 0.f, 1.f, "%.2f (rock on rock)");
+		ImGui::SliderFloat("Resting speed", &restingSpeed, 0.f, 600.f, "%.0f u/s: slower touches don't bounce");
+		ImGui::SliderFloat("Spring delay", &springDelay, 0.f, 10.f, "%.1f s loose after a hit");
+		ImGui::SliderFloat("Spring ease", &springEase, 0.01f, 5.f, "%.1f s");
+		ImGui::SliderFloat("Return speed", &returnSpeed, 50.f, 3000.f, "%.0f u/s home");
+		ImGui::SliderFloat("Drift damping", &linearDamping, 0.f, 3.f, "%.2f /s");
+		ImGui::SliderFloat("Spin damping", &angularDamping, 0.f, 3.f, "%.2f /s");
+		ImGui::SliderFloat("Max speed", &maxSpeed, 50.f, 6000.f, "%.0f");
+		ImGui::SliderFloat("Max spin", &maxSpin, 0.1f, 20.f, "%.1f rad/s");
+		ImGui::SliderFloat("Bounce", &restitution, 0.f, 1.f, "%.2f");
+		ImGui::SliderFloat("Field spring", &springPeriod, 0.5f, 20.f, "%.1f s");
+		ImGui::SliderFloat("Spring damping", &springDamping, 0.1f, 2.f, "%.2f");
+		ImGui::TextDisabled("Density applies when rocks are grown (next round)");
+		ImGui::SliderFloat("Density", &density, 1e-5f, 1e-3f, "%.5f", ImGuiSliderFlags_Logarithmic);
+		ImGui::TreePop();
+	}
+	if (ImGui::TreeNode("Cores"))
+	{
+		if (ImGui::SliderFloat("Core size", &coreScale, 1.f, 5.f, "%.1f x max size")) { reset(placedCopy, fieldsCopy); }
+		ImGui::SliderFloat("Hit damage", &rules.damage, 0.f, 1.f, "%.2f");
+		ImGui::SliderFloat("Ship bounce", &rules.bounce, 0.f, 1.5f, "%.2f");
+		ImGui::SliderFloat("Min bounce speed", &rules.minOutSpeed, 0.f, 3000.f, "%.0f");
+		ImGui::SliderFloat("Hit grace", &rules.grace, 0.f, 3.f, "%.2f s");
+		ImGui::SliderFloat("Enemy knock", &rules.enemyKnock, 0.f, 4000.f, "%.0f");
+		ImGui::SliderFloat("Enemy stun", &rules.enemyStun, 0.f, 2.f, "%.2f s");
+		ImGui::TreePop();
+	}
 	bool regrow = false;
 	regrow |= ImGui::SliderFloat("Corner spacing", &cornerSpacing, 40.f, 600.f, "%.0f");
 	regrow |= ImGui::SliderFloat("Roughness", &roughness, 0.f, 0.6f, "%.2f");

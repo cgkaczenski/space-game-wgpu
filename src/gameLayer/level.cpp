@@ -93,6 +93,15 @@ namespace
 			out.fields.back().stamps.push_back(s);
 			return true;
 		}
+		if (word == "core")
+		{
+			// The field above it, its core dragged away from the middle.
+			glm::vec2 at;
+			if (out.fields.empty() || !(in >> at.x >> at.y)) { return false; }
+			out.fields.back().coreMoved = true;
+			out.fields.back().core = at;
+			return true;
+		}
 		if (word == "scenery")
 		{
 			Scenery s;
@@ -183,6 +192,7 @@ bool save(const char *path, const Level &level)
 	for (const AsteroidField &f : level.fields)
 	{
 		file << "field " << f.seed << " " << f.maxSize << " " << f.maxGap << "\n";
+		if (f.coreMoved) { file << "core " << f.core.x << " " << f.core.y << "\n"; }
 		for (const FieldStamp &s : f.stamps)
 		{
 			file << (s.erase ? "erase " : "paint ") << s.position.x << " " << s.position.y << " " << s.radius << "\n";

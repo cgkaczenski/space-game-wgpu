@@ -604,7 +604,7 @@ on purpose (A3).
 `src/gameLayer/outline.cpp` · `resources/shaders/outline.wgsl` · the Paint
 tool in `src/gameLayer/levelEditor.cpp`
 
-### A2. Rigid bodies — *ahead*
+### A2. Rigid bodies — *built*
 
 - **State:** position, velocity, angle, angular velocity. **Properties:** mass,
   centre of mass, moment of inertia, all worked out once from the fan
@@ -625,6 +625,70 @@ tool in `src/gameLayer/levelEditor.cpp`
 - **If rocks collide with each other:** the separating axis theorem on convex
   pieces, a contact point and normal, and an impulse with **restitution** (how
   bouncy) along the normal.
+
+**What the build taught.**
+- **The second moment in one formula.** A triangle's polar second moment about
+  the origin is area/6 · (a·a + b·b + c·c + a·b + b·c + c·a). Summed over the
+  fan, then moved to the centroid by the parallel axis theorem *backwards*
+  (I_centroid = I_origin − m·d²). Checked against a disc (m r²/2) and a square
+  (m (w² + h²)/12).
+- **The centre of mass is not the fan's apex.** A rock turns about its centre
+  of mass, but the fan must stay rooted at the point every edge can be seen
+  from. So the outline keeps its own frame, and each step the body places that
+  frame: its origin sits at the body's position plus the rotated offset back
+  to the apex. Two points, two jobs: one to turn about, one to draw from.
+- **Inverse mass.** Bodies store 1/m and 1/I, because every formula divides by
+  them, and something immovable is then a clean 0 rather than an infinity.
+- **Collision in two steps:** first push the overlapping pair apart, the
+  lighter one further; then, only if they are still closing, apply the impulse
+  that turns the closing speed into −e times itself. Without the first step,
+  two overlapping rocks with no closing speed stay stuck together.
+- **Circles stand in for polygons** between rocks: a circle of the same area.
+  It is cheap, and wrong only at the corners of long rocks.
+- **Friction is what makes collisions tumble.** A bounce along the line
+  through two centres cannot spin either body. The surfaces' sliding at the
+  contact point (velocity + ω × r for each) is resisted by a tangential
+  impulse. It is sized to stop the sliding, where turning resists too (the
+  r²/I terms), and capped at μ × the bounce's impulse (Coulomb's law). Applied
+  at the contact point, it hands spin across.
+- **Resting contact.** Bodies pressed gently together should touch, not bounce;
+  bouncing on every tiny overlap makes them buzz. The standard fix is no
+  restitution below a small closing speed.
+- **The direction of an impact is the contact normal.** Pushing everything
+  along the attacker's motion moves a crowd as one block. Pushing along the
+  line from the contact to each body's centre scatters it, like a break shot
+  in billiards.
+- **Immovable is zero inverse mass.** A field's core is the same rigid body
+  as any rock, with 1/m and 1/I set to 0. Every push multiplies by them and
+  does nothing, and a collision's split of the overlap by lightness gives the
+  core none of it. No special case in the physics, only in the policy (a core
+  is never woken, loosened or struck).
+- *(Tried and taken out: a gravity well, space bending toward a core while
+  its rocks drifted home. It sampled each pixel from a little further out
+  than itself, with a ripple travelling inward, and needed a fourth vec4 of
+  effect parameters. WebGPU allows that without touching other shaders,
+  because a binding need only be at least as large as the shader's struct.
+  The look was not wanted, so both came out.)*
+- **Damping hides in springs.** A damped spring's velocity term (2ζω·v) is a
+  drag, and at a stiff setting it swallowed every impulse before the rock
+  could move. Holding the spring off for a while after each hit, and passing
+  that clock along a chain of bumps so the chain returns together, is what let
+  the field go wild and still settle.
+- **Springs as accelerations.** A field rock's pull home is
+  a = −ω²·offset − 2ζω·v: a damped oscillator whose period (2π/ω) and settling
+  (ζ) are the same for every rock, because mass never enters. ζ = 1 settles
+  without overshoot; below 1 it sways a little.
+- **Sleep.** Most rocks are still most of the time. Only awake ones are stepped
+  and collided, so a thousand rocks cost what the few moving ones do; a push
+  wakes one, and so does being bumped.
+- **Rebuild the spatial hash each frame.** Moving things change buckets, and
+  rebuilding a grid of a thousand is cheaper than tracking moves. A big rock
+  goes in every bucket its circle covers, so bucket size need not fit the
+  largest rock.
+
+**Code:** `include/engine/rigidBody.h` · `src/engine/rigidBody.cpp` ·
+`asteroids::update`, `shot`, `beam`, `blast`, `ram` in
+`src/gameLayer/asteroids.cpp`
 
 ### A3. A lit rock — *ahead*
 

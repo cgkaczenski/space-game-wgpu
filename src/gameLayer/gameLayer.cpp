@@ -281,6 +281,7 @@ void killEnemy(int index)
 {
 	const Enemy &e = session.enemies[index];
 	effects::enemyKilled(e, shipSheet, shipAtlas.get(e.type.x, e.type.y));
+	asteroids::blast(e.position); // the blast shoves rocks near it (A2)
 	resources::enemyDropped(e.position); // fragments among the wreckage (L3)
 	session.enemies.erase(session.enemies.begin() + index);
 }
@@ -756,6 +757,44 @@ bool gameLogic(float deltaTime)
 	}
 	session.player = player;
 
+	// An asteroid field's core is solid (gameplay roadmap A2): the ship is put
+	// back on its surface, thrown back out, and -- once per touch -- hit.
+	// The shield blocks it and breaks, as a shot would; with it down, the
+	// hull takes the damage. The ram's prow takes it instead when the core is
+	// ahead of it, as it takes shots from the front. Cloaked, nothing hits.
+	{
+		static float coreGrace = 0.f;
+		coreGrace = std::max(0.f, coreGrace - time.game);
+		const collision::Circle hull = game::shipHitbox(session.playerPos, shipSize);
+		asteroids::CoreContact contact;
+		if (gameState::playerPresent() && asteroids::coreContact(hull.center, hull.radius, contact))
+		{
+			const asteroids::CoreRules &rules = asteroids::coreRules();
+			session.playerPos = contact.pushTo;
+			const float inward = glm::dot(session.playerVelocity, contact.outward);
+			if (inward < 0.f) { session.playerVelocity -= (1.f + rules.bounce) * inward * contact.outward; }
+			const float out = glm::dot(session.playerVelocity, contact.outward);
+			if (out < rules.minOutSpeed) { session.playerVelocity += (rules.minOutSpeed - out) * contact.outward; }
+
+			if (coreGrace <= 0.f)
+			{
+				coreGrace = rules.grace;
+				const bool prowTakesIt = ram::barrierUp() && glm::dot(-contact.outward, ram::direction()) > 0.f;
+				if (prowTakesIt)
+				{
+					shield::ramImpact();
+					effects::shake(0.6f);
+				}
+				else if (energy::onHit(-contact.outward * hull.radius) == energy::HitResult::Damaged)
+				{
+					if (!hitboxDebug::isDamageFrozen()) { session.health -= rules.damage; }
+					hud::onDamage();
+					resources::interrupt();
+				}
+			}
+		}
+	}
+
 	// The gate, once the ship has moved: it opens on the closing circle's
 	// final ring (or at once, on a level that does not close), is ready at
 	// once when every enemy is dead, and flying into it ready and uncloaked
@@ -768,10 +807,18 @@ bool gameLogic(float deltaTime)
 
 	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
 	// enemy once per ram; the player takes nothing.
+	static bool rammingLastFrame = false;
+	const bool newRam = ram::active() && !rammingLastFrame;
+	rammingLastFrame = ram::active();
 	if (ram::active())
 	{
 		const collision::Circle front = {session.playerPos + ram::direction() * (shipSize * 0.3f),
 			shipSize * 0.65f};
+
+		// Rocks too (gameplay roadmap A2): each struck once per ram, shoved
+		// along it and spun if struck off-centre. The ship goes on through.
+		asteroids::ram(front.center, front.radius, ram::direction(), newRam);
+
 		for (int e = 0; e < (int)session.enemies.size(); e++)
 		{
 			Enemy &enemy = session.enemies[e];
@@ -914,7 +961,8 @@ bool gameLogic(float deltaTime)
 
 		// A rock stops it before either (gameplay roadmap A1): nothing behind
 		// a rock is burned or mined, and from on top of one it goes nowhere.
-		const float rock = asteroids::raycast(beam.origin, beam.direction, reach);
+		int rockHit = -1;
+		const float rock = asteroids::raycast(beam.origin, beam.direction, reach, &rockHit);
 		if (rock >= 0.f)
 		{
 			reach = rock;
@@ -924,6 +972,9 @@ bool gameLogic(float deltaTime)
 
 		beamEnd = beam.origin + beam.direction * reach;
 		beamHit = target >= 0 || miningNow || rock >= 0.f;
+
+		// And a steady push where it burns (A2).
+		if (rockHit >= 0) { asteroids::beam(rockHit, beamEnd, beam.direction, time.game); }
 
 		if (miningNow) { resources::mine(beam.origin, beam.direction, time.game); }
 
@@ -955,11 +1006,16 @@ bool gameLogic(float deltaTime)
 			continue;
 		}
 
-		// A rock stops any shot, anyone's, missiles too (gameplay roadmap A1).
+		// A rock stops any shot, anyone's, missiles too (gameplay roadmap A1),
+		// and is pushed by it where it landed (A2).
 		{
 			const collision::Circle hitbox = session.bullets[i].getHitbox();
-			if (asteroids::hitsCircle(hitbox.center, hitbox.radius))
+			const int rock = asteroids::hitCircle(hitbox.center, hitbox.radius);
+			if (rock >= 0)
 			{
+				const Bullet &b = session.bullets[i];
+				asteroids::shot(rock, hitbox.center, b.fireDirection, b.damage,
+					b.motion == BulletMotion::Missile);
 				session.bullets.erase(session.bullets.begin() + i);
 				i--;
 				continue;
@@ -1069,6 +1125,7 @@ bool gameLogic(float deltaTime)
 		// wreck until gameState switches the picture off (gameplay roadmap L1).
 		effects::shipDestroyed(shipSheet, shipAtlas.get(3, 0), session.playerPos,
 			session.playerFacing, session.playerVelocity, shipSize);
+		asteroids::blast(session.playerPos);
 		effects::shake(1.f);
 		session.playerVelocity = {};
 		resources::playerDropped(session.playerPos); // the hold spills at the wreck
@@ -1144,6 +1201,33 @@ bool gameLogic(float deltaTime)
 			continue;
 		}
 
+		// A core is solid to enemies too (A2): put back on its surface, thrown
+		// back out tumbling, and hurt once per touch. Not an alert -- it only
+		// bumped a rock. They do not steer round cores until P1.
+		{
+			Enemy &e = session.enemies[i];
+			e.coreGrace = std::max(0.f, e.coreGrace - time.game);
+			const collision::Circle hull = e.getHitbox();
+			asteroids::CoreContact contact;
+			if (asteroids::coreContact(hull.center, hull.radius, contact))
+			{
+				const asteroids::CoreRules &rules = asteroids::coreRules();
+				e.position = contact.pushTo;
+				if (e.coreGrace <= 0.f)
+				{
+					e.coreGrace = rules.grace;
+					enemyAi::stun(e, contact.outward * rules.enemyKnock, rules.enemyStun);
+					if (!hitboxDebug::isDamageFrozen()) { e.life -= rules.damage; }
+					if (e.life <= 0.f)
+					{
+						killEnemy(i);
+						i--;
+						continue;
+					}
+				}
+			}
+		}
+
 		// Ship-ship (player vs enemy, enemy vs enemy) will use
 		// collisionSystem.overlaps(hitboxA, hitboxB) and
 		// collisionSystem.separation(circleA, circleB) to push them apart.
@@ -1181,6 +1265,7 @@ bool gameLogic(float deltaTime)
 
 	effects::update(time.game);
 	resources::update(time.game, session.playerPos, gameState::playerPresent());
+	asteroids::update(time.game); // rocks drift, spin, spring home and bump (A2)
 
 #pragma region render enemies
 

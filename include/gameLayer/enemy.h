@@ -69,6 +69,9 @@ struct Enemy
 	float burnTimer = 0.f;
 	float burnFlash = 0.f;
 
+	// Seconds before touching an asteroid field's core hurts it again (A2).
+	float coreGrace = 0.f;
+
 	collision::Circle getHitbox() const
 	{
 		return game::shipHitbox(position, enemyShipSize);

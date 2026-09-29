@@ -34,7 +34,7 @@ namespace
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Resource, Marker, Ring, Asteroid, Field, Scenery };
+	enum class Kind { None, Start, Enemy, Resource, Marker, Ring, Asteroid, Field, Core, Scenery };
 	struct Pick
 	{
 		Kind kind = Kind::None;
@@ -116,6 +116,7 @@ namespace
 			const auto &stamps = level.fields[p.index].stamps;
 			return stamps.empty() ? glm::vec2{} : stamps.front().position;
 		}
+		case Kind::Core: return asteroids::fieldCore(level.fields[p.index]);
 		case Kind::Scenery: return drawnAt(level.scenery[p.index]);
 		default: return {};
 		}
@@ -133,10 +134,18 @@ namespace
 		case Kind::Asteroid: level.asteroids[p.index].position = to; break;
 		case Kind::Field:
 		{
-			auto &stamps = level.fields[p.index].stamps;
-			if (stamps.empty()) { break; }
-			const glm::vec2 by = to - stamps.front().position;
-			for (level::FieldStamp &s : stamps) { s.position += by; }
+			level::AsteroidField &f = level.fields[p.index];
+			if (f.stamps.empty()) { break; }
+			const glm::vec2 by = to - f.stamps.front().position;
+			for (level::FieldStamp &s : f.stamps) { s.position += by; }
+			if (f.coreMoved) { f.core += by; } // a dragged core comes along
+			break;
+		}
+		case Kind::Core:
+		{
+			level::AsteroidField &f = level.fields[p.index];
+			f.core = to;
+			f.coreMoved = true;
 			break;
 		}
 		case Kind::Scenery:
@@ -191,6 +200,12 @@ namespace
 
 		if (includeFields)
 		{
+			// A field's core, before the field it sits in.
+			for (int i = (int)level.fields.size() - 1; i >= 0; i--)
+			{
+				const level::AsteroidField &f = level.fields[i];
+				if (glm::distance(at, asteroids::fieldCore(f)) <= f.maxSize * 1.5f) { return {Kind::Core, i}; }
+			}
 			// The most recently made on top.
 			for (int i = (int)level.fields.size() - 1; i >= 0; i--)
 			{
@@ -215,6 +230,11 @@ namespace
 		case Kind::Ring: level.rings.erase(level.rings.begin() + p.index); break;
 		case Kind::Asteroid: level.asteroids.erase(level.asteroids.begin() + p.index); break;
 		case Kind::Field: level.fields.erase(level.fields.begin() + p.index); break;
+		case Kind::Core:
+			// A core is not removed, only sent back to the middle.
+			level.fields[p.index].coreMoved = false;
+			edited = true;
+			return;
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
 		default: return; // the start stays: a level needs one
 		}
@@ -294,7 +314,8 @@ namespace
 		case Kind::Marker: return p.index >= 0 && p.index < (int)level.markers.size();
 		case Kind::Ring: return p.index >= 0 && p.index < (int)level.rings.size();
 		case Kind::Asteroid: return p.index >= 0 && p.index < (int)level.asteroids.size();
-		case Kind::Field: return p.index >= 0 && p.index < (int)level.fields.size();
+		case Kind::Field:
+		case Kind::Core: return p.index >= 0 && p.index < (int)level.fields.size();
 		case Kind::Scenery: return p.index >= 0 && p.index < (int)level.scenery.size();
 		default: return false;
 		}
@@ -550,7 +571,17 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		level::direction(level.startFacingDegrees));
 	renderer.renderCircleOutline(level.start, {0.3f, 1.f, 0.4f, 0.8f}, look.shipSize * 0.6f, 2.f * px, 32);
 
-	if (selected.kind != Kind::None && selected.kind != Kind::Field && validPick(level, selected))
+	// A selected field's core: a handle, so it can be seen to be draggable.
+	if ((selected.kind == Kind::Field || selected.kind == Kind::Core) && validPick(level, selected))
+	{
+		const level::AsteroidField &f = level.fields[selected.index];
+		renderer.renderCircleOutline(asteroids::fieldCore(f),
+			selected.kind == Kind::Core ? glm::vec4(1.f) : glm::vec4(1.f, 0.8f, 0.3f, 0.9f),
+			f.maxSize * 1.5f, 3.f * px, 48);
+	}
+
+	if (selected.kind != Kind::None && selected.kind != Kind::Field && selected.kind != Kind::Core
+		&& validPick(level, selected))
 	{
 		float radius = look.enemySize * 0.6f;
 		if (selected.kind == Kind::Start) { radius = look.shipSize * 0.7f; }
@@ -683,6 +714,15 @@ Request debugUi(level::Level &level, bool unsaved)
 		// most of the slider's travel.
 		if (ImGui::SliderFloat("Max gap", &f.maxGap, 0.f, 1500.f, "%.0f", ImGuiSliderFlags_Logarithmic)) { edited = true; }
 		ImGui::TextDisabled("Select tool: drag inside it to move the whole field");
+		ImGui::TextDisabled("Its core (the ring) drags on its own");
+		break;
+	}
+	case Kind::Core:
+	{
+		level::AsteroidField &f = level.fields[selected.index];
+		ImGui::Text("Core of field %d", selected.index);
+		ImGui::TextDisabled(f.coreMoved ? "Placed by hand" : "At the painted area's middle");
+		if (f.coreMoved && ImGui::Button("Back to the middle")) { f.coreMoved = false; edited = true; }
 		break;
 	}
 	case Kind::Scenery:

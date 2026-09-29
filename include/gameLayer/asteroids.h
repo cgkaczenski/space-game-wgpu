@@ -50,15 +50,73 @@ namespace asteroids
 
 	// Hit tests against this round's rocks, in world units.
 
-	// A circle touches any rock.
-	bool hitsCircle(glm::vec2 centre, float radius);
+	// Which rock a circle touches, or -1 if none.
+	int hitCircle(glm::vec2 centre, float radius);
 
 	// How far along a ray (unit `direction`) the first rock is, or -1 if none
-	// within `maxDistance`.
-	float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance);
+	// within `maxDistance`. `rock`, when given, is set to which one, or -1.
+	float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock = nullptr);
 
 	// A rock lies anywhere on the line from `from` to `to`, ends included.
 	bool blocksSight(glm::vec2 from, glm::vec2 to);
+
+	// ---- Physics (gameplay roadmap A2) ----
+	//
+	// Every rock is a rigid body: pushed where it is hit, so an off-centre hit
+	// spins it as well as shoving it. Single rocks drift freely and slowly come
+	// to rest. Field rocks spring gently back to where they grew, so a field's
+	// painted area stays the truth about where its cover is. Rocks bump each
+	// other as circles of their own area; they pass through ships.
+
+	// Game time: moving rocks drift, turn, spring home and bump.
+	void update(float gameDeltaTime);
+
+	// A shot of `damage` hit `rock` at `point`, flying along `direction`
+	// (unit). Missiles push harder.
+	void shot(int rock, glm::vec2 point, glm::vec2 direction, float damage, bool missile);
+
+	// The beam on `rock` at `point` for `gameDeltaTime`: a steady push.
+	void beam(int rock, glm::vec2 point, glm::vec2 direction, float gameDeltaTime);
+
+	// An explosion at `at`: rocks near it are shoved outward, less further off.
+	void blast(glm::vec2 at, float strength = 1.f);
+
+	// The ram's prow, a circle, moving along `direction`: each rock it
+	// touches is struck once per ram. `newRam` on its first frame.
+	void ram(glm::vec2 centre, float radius, glm::vec2 direction, bool newRam);
+
+	// ---- Cores ----
+	//
+	// Each field has a core: a rock bigger than any of the field's own, at the
+	// painted area's middle unless dragged in the editor. It is what the
+	// field's rocks are seen to fall back toward. It never moves, is never
+	// pushed, beamed or broken, and rocks bounce off it. Ships do not pass through it: a ship
+	// that touches one is thrown back out and hit, the player's shield
+	// blocking it (and breaking) or the hull taking damage.
+
+	struct CoreRules
+	{
+		float damage = 0.15f;        // to the player's hull, or an enemy's life
+		float bounce = 0.6f;         // of the speed into the core that comes back out
+		float minOutSpeed = 700.f;   // however gently it was touched
+		float grace = 0.5f;          // seconds before touching it hurts again
+		float enemyKnock = 900.f;    // how hard an enemy is thrown back out
+		float enemyStun = 0.35f;     // and for how long it tumbles
+	};
+	const CoreRules &coreRules();
+
+	struct CoreContact
+	{
+		glm::vec2 outward;  // unit, from the core's centre toward the ship
+		glm::vec2 pushTo;   // where the ship's centre goes so it just touches
+	};
+
+	// Whether a circle -- a ship's hitbox -- touches any core; if so, which
+	// way is out, and where to put it.
+	bool coreContact(glm::vec2 centre, float radius, CoreContact &out);
+
+	// Where a field's core is: dragged there, or the painted area's middle.
+	glm::vec2 fieldCore(const level::AsteroidField &field);
 
 	// This round's single rocks, in the world, under the ships.
 	void draw(wgpu2d::Renderer2D &renderer);

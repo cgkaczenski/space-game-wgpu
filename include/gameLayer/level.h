@@ -18,6 +18,7 @@
 //   field 77 400 300                        seed maxSize maxGap (A1b), then:
 //   paint 1200 -400 350                     x y radius: brush stamps adding
 //   erase 1300 -350 200                     ... and cutting the field's area
+//   core -5000 -1600                        x y: the field's core, if moved (A2)
 //
 // `marker resource x y` from before L3 still loads, as a deposit of the
 // default amount.
@@ -106,6 +107,12 @@ namespace level
 		float maxSize = 400.f;  // the largest rock's radius
 		float maxGap = 40.f;    // room between rocks, on top of their size
 		std::vector<FieldStamp> stamps;
+
+		// The core (A2): a big rock that holds the field together. It sits at
+		// the painted area's middle unless the designer has dragged it, in
+		// which case this is where they put it.
+		bool coreMoved = false;
+		glm::vec2 core = {};
 
 		bool contains(glm::vec2 point) const
 		{
