@@ -6,11 +6,16 @@ void TiledRenderer::render(wgpu2d::Renderer2D &renderer)
 {
 	auto viewRect = renderer.getViewRect();
 
-	// A layer with parallax is drawn shifted by -view * strength, so it
-	// appears to move slower than the world. In the layer's own unshifted
-	// space, the view therefore spans `view * (1 + strength)` onward.
+	// A layer with parallax is drawn shifted *with* the view, by
+	// view * strength, so on screen it moves at (1 - strength) times the
+	// world's speed: 0 moves with the world, toward 1 it hangs still. It was
+	// shifted the other way -- by -view * strength -- which made every layer
+	// move *faster* than the world, and read as nearer than the play, while
+	// the comment here said slower. Nobody minded until asteroids put solid
+	// things in the world plane, and stars sliding past faster than the rocks
+	// looked to be in front of them (gameplay roadmap A3).
 	glm::vec2 paralaxDistance = {viewRect.x, viewRect.y};
-	paralaxDistance *= -paralaxStrength;
+	paralaxDistance *= paralaxStrength;
 
 	const glm::vec2 layerMin = glm::vec2(viewRect.x, viewRect.y) - paralaxDistance;
 	const glm::vec2 layerMax = layerMin + glm::vec2(viewRect.z, viewRect.w);

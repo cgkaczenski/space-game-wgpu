@@ -124,6 +124,18 @@ namespace asteroids
 	// This round's field rocks, over the ships.
 	void drawFields(wgpu2d::Renderer2D &renderer);
 
+	// How dark a ship at `centre`, of hull `radius`, is in the field rocks'
+	// shadows: 0 in the light, up to the shadow's darkness when fully covered
+	// (A3). Shadows fall only on ships -- never on the starfield, which is far
+	// behind everything -- so the game tints its ships by this instead of any
+	// shadow being drawn.
+	float shadowOn(glm::vec2 centre, float radius);
+
+	// Small dark debris round each field, in front of everything in the
+	// world, moving faster than the world as the camera moves (A3). Never
+	// solid: decoration nearer the eye than the play. Call last in the world.
+	void drawForeground(wgpu2d::Renderer2D &renderer);
+
 	// The level's placements as they would be drawn, grown each call: the
 	// editor's view, where radius, seed and the painted area change under the
 	// mouse. Fields show their painted area as a tint of dots.

@@ -1,7 +1,9 @@
 #!/bin/sh
 # Builds tools/asteroidTextures.cpp and runs it: the 4K rock material in
 # resources/textures/ (gitignored -- too big to commit) becomes the small
-# textures in resources/asteroid/ that the game loads and git keeps.
+# textures in resources/asteroid/ that the game loads and git keeps -- among
+# them rock_packed.png, brightness, normal x, normal y and height in one
+# texture for the asteroid shader (A3).
 #
 #   tools/asteroidTextures.sh [size] [normalStrength]
 #

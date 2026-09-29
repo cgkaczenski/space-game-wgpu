@@ -1280,8 +1280,10 @@ bool gameLogic(float deltaTime)
 
 	for (auto &e : session.enemies)
 	{
+		// Darkened where a field rock's shadow falls on it (A3).
+		const float lit = 1.f - asteroids::shadowOn(e.position, e.getHitbox().radius);
 		renderSpaceShip(renderer, e.position, enemyShipSize,
-			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection);
+			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection, {lit, lit, lit, 1.f});
 	}
 
 	// What each knows: red engaged, amber searching.
@@ -1324,8 +1326,10 @@ bool gameLogic(float deltaTime)
 		// below when the world goes through the cloak's shader. Stretched
 		// along its heading while it warps out. In an asteroid field, darker:
 		// in the gaps between rocks it is in their shadow (A1b).
-		const float shade = gameState::playerPresent() && asteroids::inField(session.playerPos)
-			? asteroids::hiddenShade() : 1.f;
+		// And in a field rock's shadow, darker still (A3).
+		const float shade = (gameState::playerPresent() && asteroids::inField(session.playerPos)
+			? asteroids::hiddenShade() : 1.f)
+			* (1.f - asteroids::shadowOn(session.playerPos, game::shipHitbox(session.playerPos, shipSize).radius));
 		renderSpaceShip(renderer, session.playerPos, shipSize,
 			shipSheet, shipAtlas.get(3, 0), player.facing,
 			{shade, shade, shade, cloak::shipAlpha()}, gameState::warpStretch());
@@ -1403,6 +1407,10 @@ bool gameLogic(float deltaTime)
 	// through the shader. hud::draw flushes again straight after, which is a
 	// no-op on an empty batch.
 	//
+	// The last of the world: asteroid debris in front of it all, nearer the
+	// eye than the play (A3).
+	asteroids::drawForeground(renderer);
+
 	// Paused, the world is graded grey and dim first. The grade is per pixel
 	// and the cloak only moves pixels, so grading before bending is the same
 	// picture as after -- see worldGrade.h.

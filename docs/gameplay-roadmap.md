@@ -244,6 +244,8 @@ that — and doing so also lifts the zoom-out floor.
   The black-hole and shattered-planet art is too coarse up close and is only
   for small pieces far back. Depth 0 moves with the world, and reads as the
   furthest thing here, since the starfield's nearer layers move faster.
+  _(Changed in A3:)_ the starfield now moves slower than the world, as a
+  background should. Planets sit at depth 0.25, between it and the play.
 - With a level loaded, **waves are off** and nothing is deleted for distance.
   Enemies away from the view **sleep** — no update, staying where they are —
   and wake when they come within a margin of the view's edge, so everything on
@@ -888,24 +890,76 @@ seemingly pulling them back")_
 **Proposed:** an app effect (`asteroid.wgsl`, F6's per-quad effects) that
 lights the colour map with the normal map, and uses the height map as a mask.
 
-**Open questions**
-- Where is the light? One direction per level (a sun), fixed for the game, or
-  something that moves?
-- Two maps in one texture (colour and normal side by side, sampled at two
-  places — no library change), or teach effects a **second texture binding**
-  (library change, overlapping N8's normal-mapped lighting)?
-- Heat from the beam: a glow spreading from where it hits and cooling after,
-  with the low (dark) areas of the height map glowing first, like molten
-  cracks?
-- Damage cracks: as a rock weakens, the height map reveals cracks before it
-  breaks — the shield dissolve's threshold trick?
-- A rim toward the silhouette: a value 1 at the outline and 0 at the centre,
-  blended across each fan triangle by the GPU?
-- Photographic, or coarsened in the shader to sit with the pixel-art ships?
+**Decided (first pass)**
+- **One packed texture**, `rock_packed.png` (made by `tools/asteroidTextures.sh`):
+  - R: brightness; G, B: the normal's x and y; A: height.
+  - The normal's z is worked out in the shader (it's a unit vector).
+  - The rock's hue comes back as one **tint**, its average colour over its
+    average brightness (1.154, 0.976, 0.783, as the tool prints it).
+  - No library change: an effect still reads one texture.
+- **Per-rock data rides on the vertex colour**, so every rock in a layer is
+  still one draw:
+  - red and green: the light's direction turned into *that rock's* frame;
+  - blue: the rim;
+  - alpha: heat. Rocks are opaque, so alpha was free.
+- **The light:** one direction for now, a slider. From the upper left
+  (azimuth 225°), 40° above the plane, with ambient 0.35. Per level later.
+- **Beam heat:** the beam alone heats rocks, rising at 0.8/s and cooling at
+  0.35/s, spread 380 units round where it burns. It glows in the **cracks
+  first**: the local lows of the height map, found by comparing the height
+  with a coarse mip level of itself. It runs orange to yellow and never
+  reaches white. The core can't be beamed, so it never heats.
+- **Damage cracks** move to A4, where rocks first take damage.
+- **Depth without parallax:**
+  - **Shadows on ships only.** A field rock casts its outline away from the
+    light, and a ship inside it is darkened by how much of its hull is
+    covered (0.6 when fully in shadow). It fades over about 150 units, so a
+    ship slides into a shadow rather than blinking. Nothing is drawn on the
+    starfield.
+  - **Foreground debris:** small, dark and never solid, round each field and
+    2500 past it. Drawn last in the world, moving 35% faster than the world
+    as the camera moves and drawn larger by the same factor.
+- **Style:** coarsened a little by default (0.3). The texture is snapped to a
+  coarser grid and the light falls in bands, so it sits nearer the pixel-art
+  ships. A slider runs from photographic to blocky.
+- **The core:** the same stone, only bigger.
+
+_(After the playtest: "too much stuff in the foreground — both asteroids and
+stars".)_
+- **The foreground debris is off** by default (fill 0); its sliders stay.
+- **Shadows were drawn on the starfield**, as soft dark halos behind every rock.
+  But the starfield is far behind everything, and a rock in space can't shade
+  it, so they read as smudges hanging in space. Now shadows fall only on
+  ships: a ship in a field rock's shadow is darkened, sampled at nine points
+  over its hull. Single rocks lie under the ships and cast nothing on them.
+- **The starfield was never behind the play.** `TiledRenderer` shifted each
+  layer by −view × strength, which moves it *faster* than the world, while its
+  comment said slower. So the star layers slid past at 1.2× and 1.4× the
+  world's speed and read as nearer than the rocks. Now a layer shifts *with*
+  the view:
+  - the three star layers move at 0.2×, 0.4× and 0.6× the world's speed;
+  - the play is the fastest-moving thing on screen, so it reads as nearest;
+  - planets sit between, at depth 0.25 (moving 0.75×). That's `level1`'s
+    four, and the editor's default for new scenery.
+  - L2's "depth 0 reads as the furthest" was true only of the old starfield.
+
+_(Found while building:)_ the first heat went by "lower than the heat",
+and this height map is mostly broad hills and hollows, so the burn was one flat
+white blob. Comparing each point with its neighbourhood (a coarse mip) finds
+the cracks instead.
+
+_(To confirm:)_ all on sliders under **Asteroids → Look**:
+- the light's direction, height and strength, ambient, and tint;
+- coarsening;
+- heat colour, reach, rise, cool and radius;
+- shadow distance (160) and darkness on a ship (0.6);
+- debris parallax, shade (0.25) and fill (0: off after the playtest).
 
 #### A4. Breaking up, and what a rock is worth
 
 **Open questions**
+- Damage cracks, moved here from A3: as a rock weakens, its cracks show
+  before it breaks, using the same high-pass crack mask as the heat.
 - How does it break?
   - **a.** into wedges along the fan: still star-shaped from the old centre,
     so no new algorithm;

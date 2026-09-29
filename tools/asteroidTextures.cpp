@@ -133,6 +133,31 @@ int main(int argc, char **argv)
 	}
 	stbi_write_png((out + "rock_normal.png").c_str(), size, size, 3, normalOut.data(), size * 3);
 
+	// ---- Packed: what the asteroid shader reads, in one texture (A3). -------
+	// An effect sees one texture, so everything the lighting needs goes in
+	// its four channels: R brightness, G and B the normal's x and y, A height.
+	// z is not stored -- a normal is a unit vector, so z is sqrt(1 - x² - y²)
+	// and points out of the surface. What is lost is the colour's hue from
+	// place to place: the shader multiplies brightness by one tint, the
+	// rock's average colour, printed below. Every channel is data, not
+	// colour, and the GPU's mip levels average each channel on its own, so
+	// the normals stay normals at every level.
+	std::vector<unsigned char> packed((size_t)size * size * 4);
+	double sum[3] = {0, 0, 0}, lumaSum = 0;
+	for (size_t i = 0; i < (size_t)size * size; i++)
+	{
+		const float r = colourSmall[i * 3], g = colourSmall[i * 3 + 1], b = colourSmall[i * 3 + 2];
+		const float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+		sum[0] += r; sum[1] += g; sum[2] += b; lumaSum += luma;
+		packed[i * 4 + 0] = byte(luma);
+		packed[i * 4 + 1] = normalOut[i * 3 + 0];
+		packed[i * 4 + 2] = normalOut[i * 3 + 1];
+		packed[i * 4 + 3] = heightOut[i];
+	}
+	stbi_write_png((out + "rock_packed.png").c_str(), size, size, 4, packed.data(), size * 4);
+	std::printf("packed rock_packed.png; tint (average colour / average brightness) %.3f %.3f %.3f\n",
+		sum[0] / lumaSum, sum[1] / lumaSum, sum[2] / lumaSum);
+
 	// How tilted the surface is on average: 1 is flat. A bumpy rock sits
 	// somewhere around 0.8 - 0.9; near 1 means `strength` is too low to see.
 	std::printf("wrote %dx%d colour, height, normal; mean normal z %.3f (strength %.1f)\n",

@@ -296,7 +296,7 @@ namespace
 		{
 			level::Scenery s;
 			s.art = scenery::artName(sceneryArt);
-			s.position = at; // depth 0: drawn where it is placed
+			s.position = placedFrom(at, s.depth); // drawn where it is placed, at its default depth
 			level.scenery.push_back(s);
 			return {Kind::Scenery, (int)level.scenery.size() - 1};
 		}

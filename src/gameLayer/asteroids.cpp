@@ -8,7 +8,9 @@
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <unordered_map>
 
 namespace asteroids
@@ -16,7 +18,10 @@ namespace asteroids
 
 namespace
 {
+	// A3: one texture holding brightness, the normal's x and y, and height
+	// (resources/asteroid/rock_packed.png), read by the asteroid shader.
 	wgpu2d::Texture rockTexture;
+	wgpu2d::Effect rockEffect;
 
 	struct Rock
 	{
@@ -40,9 +45,66 @@ namespace
 
 		int field = -1;                 // which field it belongs to; -1 a single rock
 		bool core = false;              // its field's core: immovable, never struck, solid to ships
+
+		// A3: the beam's heat, 0 .. 1, and where it burns, in the rock's frame.
+		float heat = 0.f;
+		glm::vec2 heatAt = {};
 	};
 
 	std::vector<Rock> rocks;
+
+	// A3: small dark rocks in front of everything, never solid, moving faster
+	// than the world as the camera moves -- nearer the eye than the play. They
+	// are drawn, not simulated: a shape, a place and a turn.
+	struct Debris
+	{
+		std::vector<glm::vec2> outline;
+		glm::vec2 position = {};
+		float angle = 0.f;
+		float bound = 0.f;
+		glm::vec2 uvOffset = {};
+	};
+	std::vector<Debris> debris;
+
+	// ---- The look (A3) ----
+	// The light: the direction it comes from, round the screen (0 from the
+	// right, 90 from below -- the world is y-down) and how high above the
+	// plane. One for the game for now; per level later.
+	float lightAzimuth = 225.f;    // from the upper left
+	float lightElevation = 40.f;
+	float lightStrength = 1.1f;
+	float ambient = 0.35f;
+	// The rock's hue, which the packed texture's brightness channel dropped:
+	// its average colour over its average brightness, as the texture tool
+	// prints it.
+	glm::vec3 tint = {1.154f, 0.976f, 0.783f};
+	float coarsen = 0.3f;          // 0 photographic .. 1 blocky and banded
+	// Heat: rises while the beam is on a rock, and cools after.
+	glm::vec3 heatColour = {1.f, 0.42f, 0.08f};
+	float heatReach = 0.8f;        // how far from the deepest cracks toward the ridges full heat glows
+	float heatRise = 0.8f;         // per second under the beam
+	float heatCool = 0.35f;        // per second after
+	float heatRadius = 380.f;      // how far round the burn it spreads
+	// Shadows fall only on ships. A field rock, above the ships, casts its
+	// outline away from the light; a ship inside that is darkened by how much
+	// of its hull is covered. Nothing is drawn on the starfield: it is far
+	// behind everything, and a rock in space cannot shade it -- drawn there,
+	// the shadows read as dark smudges hanging in space. Single rocks are
+	// under the ships and cast nothing on them.
+	float shadowDistance = 160.f;
+	float shadowAlpha = 0.6f;      // how dark a ship fully in shadow goes
+	// Foreground debris: how much faster than the world it moves (0 moves
+	// with it), how much of it there is, and how dark.
+	float debrisParallax = 0.35f;
+	float debrisFill = 0.f;        // off by default: it crowded the foreground (A3 playtest)
+	float debrisShade = 0.25f;
+	float debrisMargin = 2500.f;   // it reaches this far past a field's paint
+
+	glm::vec2 lightFlat()
+	{
+		const float a = glm::radians(lightAzimuth);
+		return {std::cos(a), std::sin(a)};
+	}
 	std::vector<level::Asteroid> placedCopy; // to regrow when a shape slider moves
 	std::vector<level::AsteroidField> fieldsCopy; // also the areas inField tests
 
@@ -196,38 +258,74 @@ namespace
 
 	// The fan, as renderTriangles takes it: three corners per triangle, the
 	// rock's centre first. Texture coordinates come from where each corner
-	// sits *on the rock*, so the texture is fixed to it and would turn with
-	// it (A2); positions are those corners placed in the world.
-	void drawRock(wgpu2d::Renderer2D &renderer, const Rock &r)
+	// sits *on the rock*, so the texture is fixed to it and turns with it;
+	// positions are those corners placed in the world, scaled by `grow` (the
+	// foreground debris is drawn larger, being nearer).
+	//
+	// The vertex colour is not a colour here: it is what the asteroid shader
+	// needs per rock (see asteroid.wgsl) -- the light's direction in the
+	// rock's own frame, the rim, and the beam's heat. Carried on the vertices,
+	// every rock shares one set of effect parameters and so one draw.
+	void drawFan(wgpu2d::Renderer2D &renderer, const std::vector<glm::vec2> &outline,
+		const polygon::Placement &at, glm::vec2 uvOffset, float shade, float heat, glm::vec2 heatAt,
+		float grow = 1.f)
 	{
-		const size_t n = r.outline.size();
+		const size_t n = outline.size();
 		if (n < 3 || rockTexture.id == 0) { return; }
 
 		static std::vector<glm::vec2> positions, uvs;
 		static std::vector<glm::vec4> colours;
 		positions.clear(); uvs.clear(); colours.clear();
 
-		const glm::vec4 centreColour = {glm::vec3(brightness), 1.f};
-		const glm::vec4 rimColour = {glm::vec3(brightness * rimShade), 1.f};
+		// The light turned into the rock's frame: the one rotation the shader
+		// would otherwise need the rock's angle for.
+		const glm::vec2 light = polygon::directionToLocal(at, lightFlat()) * 0.5f + 0.5f;
+		auto heatOf = [&](glm::vec2 local)
+		{
+			if (heat <= 0.f) { return 0.f; }
+			const float t = std::clamp(1.f - glm::distance(local, heatAt) / std::max(heatRadius, 1.f), 0.f, 1.f);
+			return heat * t * t * (3.f - 2.f * t);
+		};
 		const float scale = 1.f / std::max(textureWorldSize, 1.f);
-		auto uvOf = [&](glm::vec2 local) { return local * scale + r.uvOffset; };
+		auto uvOf = [&](glm::vec2 local) { return local * scale + uvOffset; };
+		const glm::vec4 centre = {light, shade, heatOf({0.f, 0.f})};
 
 		for (size_t i = 0; i < n; i++)
 		{
-			const glm::vec2 a = r.outline[i];
-			const glm::vec2 b = r.outline[(i + 1) % n];
-			positions.push_back(r.placement.position);
-			positions.push_back(polygon::toWorld(r.placement, a));
-			positions.push_back(polygon::toWorld(r.placement, b));
+			const glm::vec2 a = outline[i];
+			const glm::vec2 b = outline[(i + 1) % n];
+			positions.push_back(at.position);
+			positions.push_back(polygon::toWorld(at, a * grow));
+			positions.push_back(polygon::toWorld(at, b * grow));
 			uvs.push_back(uvOf({0.f, 0.f}));
 			uvs.push_back(uvOf(a));
 			uvs.push_back(uvOf(b));
-			colours.push_back(centreColour);
-			colours.push_back(rimColour);
-			colours.push_back(rimColour);
+			colours.push_back(centre);
+			colours.push_back({light, shade * rimShade, heatOf(a)});
+			colours.push_back({light, shade * rimShade, heatOf(b)});
 		}
 		renderer.renderTriangles(positions.data(), uvs.data(), colours.data(), positions.size(), rockTexture);
 	}
+
+	void drawRock(wgpu2d::Renderer2D &renderer, const Rock &r)
+	{
+		drawFan(renderer, r.outline, r.placement, r.uvOffset, brightness, r.heat, r.heatAt);
+	}
+
+	// The asteroid shader and its parameters: the same for every rock, which
+	// is what lets them all go in one draw.
+	void beginRocks(wgpu2d::Renderer2D &renderer)
+	{
+		wgpu2d::EffectParams params;
+		const float elevation = glm::radians(lightElevation);
+		params.a = {tint, ambient};
+		params.b = {std::cos(elevation), std::sin(elevation), lightStrength, coarsen};
+		params.c = {heatColour, heatReach};
+		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+		renderer.setEffect(rockEffect, params);
+	}
+
+	void endRocks(wgpu2d::Renderer2D &renderer) { renderer.clearEffect(); }
 
 	void drawOutline(wgpu2d::Renderer2D &renderer, const Rock &r)
 	{
@@ -367,19 +465,34 @@ namespace
 bool init()
 {
 	// Smooth rather than pixelated: it is a photograph, and nearest filtering
-	// on one at a fraction of its size shimmers as the camera moves. Mipmaps
-	// for the same reason when zoomed out. Repeating, for big rocks.
-	const char *path = RESOURCES_PATH "asteroid/rock_colour.png";
+	// on one at a fraction of its size shimmers as the camera moves (the
+	// shader coarsens it on purpose instead). Mipmaps for the same reason when
+	// zoomed out. Repeating, for big rocks.
+	const char *path = RESOURCES_PATH "asteroid/rock_packed.png";
 	rockTexture.loadFromFile(path, false, true, true);
 	if (rockTexture.id == 0)
 	{
 		std::cerr << "asteroids: failed to load " << path << "\n";
 		return false;
 	}
+
+	const char *shaderPath = RESOURCES_PATH "shaders/asteroid.wgsl";
+	std::ifstream file(shaderPath, std::ios::binary);
+	std::stringstream source;
+	source << file.rdbuf();
+	rockEffect = wgpu2d::createEffect(source.str().c_str(), "asteroid");
+	if (!file.is_open() || rockEffect.id == 0)
+	{
+		std::cerr << "asteroids: " << shaderPath << " is missing or did not compile\n";
+		return false;
+	}
 	return true;
 }
 
-void cleanup() { rockTexture.cleanup(); }
+void cleanup()
+{
+	rockTexture.cleanup();
+}
 
 void reset(const std::vector<level::Asteroid> &placed, const std::vector<level::AsteroidField> &fields)
 {
@@ -388,6 +501,37 @@ void reset(const std::vector<level::Asteroid> &placed, const std::vector<level::
 	rocks.clear();
 	for (const level::Asteroid &a : placed) { rocks.push_back(grow(a)); }
 	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, rocks); }
+
+	// The foreground debris: sparse and small, round each field and a way
+	// past it, from the field's seed.
+	debris.clear();
+	for (const level::AsteroidField &f : fields)
+	{
+		glm::vec2 lo, hi;
+		if (!fieldBounds(f, lo, hi)) { continue; }
+		scatter::Params params;
+		params.seed = mix(f.seed ^ 0xdeb415U);
+		params.maxRadius = f.maxSize * 0.6f;
+		params.minRadius = f.maxSize * 0.15f;
+		params.gap = f.maxSize * 4.f;
+		params.layers = 1;
+		params.fill = debrisFill;
+		const glm::vec2 margin(debrisMargin);
+		for (const scatter::Item &item : scatter::scatter(lo - margin, hi + margin,
+			[](glm::vec2) { return true; }, params))
+		{
+			polygon::StarParams shape;
+			shape.vertexCount = 14;
+			Debris d;
+			d.outline = polygon::starShaped(item.seed, item.radius, shape);
+			d.bound = polygon::boundingRadius(d.outline);
+			d.position = item.position;
+			const uint32_t h = mix(item.seed);
+			d.angle = (h & 0xffff) / 65535.f * 6.2831853f;
+			d.uvOffset = {((h >> 16) & 0xff) / 255.f, (h >> 24) / 255.f};
+			debris.push_back(std::move(d));
+		}
+	}
 }
 
 float hiddenShade() { return shadeInField; }
@@ -461,6 +605,11 @@ void beam(int rock, glm::vec2 point, glm::vec2 direction, float dt)
 	if (rock < 0 || rock >= (int)rocks.size() || dt <= 0.f || rocks[rock].core) { return; }
 	Rock &r = rocks[rock];
 	rigid::applyForce(r.body, point, direction * beamPush, dt);
+	// And heats where it burns (A3). The spot follows the beam gently, so
+	// sweeping it drags the glow along rather than jumping it.
+	const glm::vec2 local = polygon::toLocal(r.placement, point);
+	r.heatAt = r.heat > 0.f ? glm::mix(r.heatAt, local, std::min(1.f, dt * 10.f)) : local;
+	r.heat = std::min(1.f, r.heat + heatRise * dt);
 	clampMotion(r);
 	wake(r);
 }
@@ -511,6 +660,12 @@ void ram(glm::vec2 centre, float radius, glm::vec2 direction, bool newRam)
 void update(float dt)
 {
 	if (dt <= 0.f) { return; }
+
+	// Heat cools on every rock, moving or not (A3).
+	for (Rock &r : rocks)
+	{
+		if (r.heat > 0.f) { r.heat = std::max(0.f, r.heat - heatCool * dt); }
+	}
 
 	// Motion: the awake ones only. A field rock also springs toward home --
 	// an acceleration, so big and small settle in the same time.
@@ -638,27 +793,78 @@ bool coreContact(glm::vec2 centre, float radius, CoreContact &out)
 	return false;
 }
 
-void draw(wgpu2d::Renderer2D &renderer)
+namespace
 {
-	// Off screen, skip it: the batch would draw it anyway.
-	const glm::vec4 view = renderer.getViewRect();
-	for (const Rock &r : rocks)
+	// One layer of rocks through the asteroid shader, then any outlines.
+	void drawLayer(wgpu2d::Renderer2D &renderer, bool fieldLayer)
 	{
-		if (r.inField || !onScreen(view, r)) { continue; }
-		drawRock(renderer, r);
-		if (showOutlines) { drawOutline(renderer, r); }
+		// Off screen, skip it: the batch would draw it anyway.
+		const glm::vec4 view = renderer.getViewRect();
+		beginRocks(renderer);
+		for (const Rock &r : rocks)
+		{
+			if (r.inField != fieldLayer || !onScreen(view, r)) { continue; }
+			drawRock(renderer, r);
+		}
+		endRocks(renderer);
+		if (showOutlines)
+		{
+			for (const Rock &r : rocks)
+			{
+				if (r.inField == fieldLayer && onScreen(view, r)) { drawOutline(renderer, r); }
+			}
+		}
 	}
 }
 
-void drawFields(wgpu2d::Renderer2D &renderer)
+void draw(wgpu2d::Renderer2D &renderer) { drawLayer(renderer, false); }
+
+void drawFields(wgpu2d::Renderer2D &renderer) { drawLayer(renderer, true); }
+
+float shadowOn(glm::vec2 centre, float radius)
 {
-	const glm::vec4 view = renderer.getViewRect();
+	// Nine points over the hull -- its centre, and eight round it at two
+	// thirds of its radius -- each in shadow or not: the share in shadow
+	// darkens it, so a ship slides into a shadow rather than blinking into it.
+	static const glm::vec2 spots[9] = {
+		{0.f, 0.f}, {1.f, 0.f}, {-1.f, 0.f}, {0.f, 1.f}, {0.f, -1.f},
+		{0.7071f, 0.7071f}, {-0.7071f, 0.7071f}, {0.7071f, -0.7071f}, {-0.7071f, -0.7071f}};
+	const glm::vec2 away = lightFlat() * shadowDistance;
+	float darkest = 0.f;
 	for (const Rock &r : rocks)
 	{
-		if (!r.inField || !onScreen(view, r)) { continue; }
-		drawRock(renderer, r);
-		if (showOutlines) { drawOutline(renderer, r); }
+		if (!r.inField) { continue; } // single rocks lie under the ships
+		polygon::Placement cast = r.placement;
+		cast.position -= away;
+		if (glm::distance(centre, cast.position) > r.bound + radius) { continue; }
+		int covered = 0;
+		for (const glm::vec2 &s : spots)
+		{
+			if (polygon::contains(r.outline, polygon::toLocal(cast, centre + s * (radius * 0.66f)))) { covered++; }
+		}
+		darkest = std::max(darkest, covered / 9.f);
+		if (darkest >= 1.f) { break; }
 	}
+	return darkest * shadowAlpha;
+}
+
+void drawForeground(wgpu2d::Renderer2D &renderer)
+{
+	if (debris.empty() || debrisShade <= 0.f) { return; }
+	const glm::vec4 view = renderer.getViewRect();
+	const glm::vec2 camera = glm::vec2(view.x, view.y) + glm::vec2(view.z, view.w) * 0.5f;
+	beginRocks(renderer);
+	for (const Debris &d : debris)
+	{
+		// Nearer the eye than the play: it moves further than the world does
+		// as the camera moves, and is drawn larger by the same factor.
+		const glm::vec2 at = d.position + (d.position - camera) * debrisParallax;
+		const float reach = d.bound * (1.f + debrisParallax);
+		if (at.x + reach < view.x || at.x - reach > view.x + view.z
+			|| at.y + reach < view.y || at.y - reach > view.y + view.w) { continue; }
+		drawFan(renderer, d.outline, {at, d.angle}, d.uvOffset, debrisShade, 0.f, {}, 1.f + debrisParallax);
+	}
+	endRocks(renderer);
 }
 
 void drawPlacements(wgpu2d::Renderer2D &renderer, const std::vector<level::Asteroid> &placed,
@@ -670,11 +876,16 @@ void drawPlacements(wgpu2d::Renderer2D &renderer, const std::vector<level::Aster
 	for (const level::Asteroid &a : placed) { grown.push_back(grow(a)); }
 	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, grown); }
 	const glm::vec4 view = renderer.getViewRect();
+	beginRocks(renderer);
 	for (const Rock &r : grown)
 	{
-		if (!onScreen(view, r)) { continue; }
-		drawRock(renderer, r);
-		if (!r.inField) { drawOutline(renderer, r); } // a field's rocks are too many to outline
+		if (onScreen(view, r)) { drawRock(renderer, r); }
+	}
+	endRocks(renderer);
+	for (const Rock &r : grown)
+	{
+		// A field's rocks are too many to outline.
+		if (!r.inField && onScreen(view, r)) { drawOutline(renderer, r); }
 	}
 }
 
@@ -704,6 +915,26 @@ void debugUi()
 		ImGui::SliderFloat("Spring damping", &springDamping, 0.1f, 2.f, "%.2f");
 		ImGui::TextDisabled("Density applies when rocks are grown (next round)");
 		ImGui::SliderFloat("Density", &density, 1e-5f, 1e-3f, "%.5f", ImGuiSliderFlags_Logarithmic);
+		ImGui::TreePop();
+	}
+	if (ImGui::TreeNode("Look"))
+	{
+		ImGui::SliderFloat("Light from", &lightAzimuth, 0.f, 360.f, "%.0f deg (0 right, 90 below)");
+		ImGui::SliderFloat("Light height", &lightElevation, 5.f, 90.f, "%.0f deg");
+		ImGui::SliderFloat("Light strength", &lightStrength, 0.f, 3.f, "%.2f");
+		ImGui::SliderFloat("Ambient", &ambient, 0.f, 1.f, "%.2f");
+		ImGui::ColorEdit3("Tint", &tint.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+		ImGui::SliderFloat("Coarsen", &coarsen, 0.f, 1.f, "%.2f");
+		ImGui::ColorEdit3("Heat colour", &heatColour.x);
+		ImGui::SliderFloat("Heat reach", &heatReach, 0.f, 1.f, "%.2f (0 deepest cracks only)");
+		ImGui::SliderFloat("Heat rise", &heatRise, 0.05f, 5.f, "%.2f /s under the beam");
+		ImGui::SliderFloat("Heat cool", &heatCool, 0.01f, 3.f, "%.2f /s");
+		ImGui::SliderFloat("Heat radius", &heatRadius, 50.f, 2000.f, "%.0f");
+		ImGui::SliderFloat("Shadow distance", &shadowDistance, 0.f, 600.f, "%.0f");
+		ImGui::SliderFloat("Shadow darkness", &shadowAlpha, 0.f, 1.f, "%.2f on a ship fully in shadow");
+		ImGui::SliderFloat("Debris parallax", &debrisParallax, 0.f, 1.5f, "%.2f");
+		ImGui::SliderFloat("Debris shade", &debrisShade, 0.f, 1.f, "%.2f");
+		if (ImGui::SliderFloat("Debris fill", &debrisFill, 0.f, 1.f, "%.2f")) { reset(placedCopy, fieldsCopy); }
 		ImGui::TreePop();
 	}
 	if (ImGui::TreeNode("Cores"))

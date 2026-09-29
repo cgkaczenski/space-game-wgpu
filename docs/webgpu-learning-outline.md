@@ -690,7 +690,7 @@ tool in `src/gameLayer/levelEditor.cpp`
 `asteroids::update`, `shot`, `beam`, `blast`, `ram` in
 `src/gameLayer/asteroids.cpp`
 
-### A3. A lit rock — *ahead*
+### A3. A lit rock — *built*
 
 - **Normal mapping in 2D:** Lambert diffuse, brightness = max(N · L, 0), with
   N read from the map and L the direction to the light. **Tangent space** is the
@@ -716,6 +716,62 @@ tool in `src/gameLayer/levelEditor.cpp`
 - **Per-quad effect parameters** (F6) carry each rock's angle, heat and damage.
   Rocks with different parameters split the batch into more runs (12), so the
   parameters are the price of the look.
+
+**What the build taught.** Two of the plans above changed on contact:
+- **Channel packing, not two maps side by side.** The side-by-side layout
+  breaks under a repeating sampler (it wraps across the join) and mipmaps
+  seam at the join. So one RGBA texture holds brightness, normal x, normal y
+  and height, and a single tint puts the hue back. Games do this all the time
+  (a "mask" or "ORM" texture). It only works because the mip levels here
+  average each channel on its own (N4's compute shader). A mip builder that
+  weighted colour by alpha would have bent the normals wherever the height
+  was low.
+- **Per-object data on the vertices, not per-quad parameters.** Per-rock
+  effect parameters would have split the batch into one draw per rock. The
+  vertex colour carries it instead, and all rocks share one parameter set
+  and one draw:
+  - the light's direction, turned on the CPU into each rock's frame (so the
+    shader needs no angle);
+  - the rim;
+  - heat, faded with distance from the burn.
+
+  Heat fits in alpha because rocks are opaque and the shader writes alpha 1.
+- **High-pass by mip difference.** "Lower than a threshold" on a height map
+  that is mostly broad hills picks hollows, not cracks. The first heat was one
+  flat white blob. A coarse mip level is the local average height, so average
+  minus height is what stands out from its neighbourhood (a high-pass filter)
+  for the price of one more texture read.
+- **Coarsening without shimmer.** Snapping uv to a coarser grid has a zero
+  derivative inside each step, so the hardware would choose mip 0 everywhere
+  and alias. `textureSampleGrad` with the *unsnapped* coordinate's
+  derivatives keeps the right mip level.
+- **A shadow needs something to land on.** The first shadows were the rock's
+  own fan in black, soft because its outer corners were transparent and the
+  rasterizer faded across each triangle. They were drawn on the starfield,
+  which is far behind everything, and read as smudges in space. Now a shadow
+  is a question asked of each ship: is it inside a field rock's outline
+  shifted away from the light? Nine sample points over the hull give a share,
+  so the tint fades rather than snaps. It is a per-object answer, not a
+  per-pixel one. An exact shadow edge across a ship would need a mask of
+  where the ships are (a stencil or a render target, N7).
+- **Parallax as decoration only.** Foreground debris moves further than the
+  world by (position − camera) × k and is drawn (1 + k) larger. Because it is
+  never solid, being drawn where it isn't costs nothing, and the rocks that
+  block and hide stay in the world plane. *(Built, then turned off by default:
+  it crowded the foreground.)*
+- **Depth is read from speed, whatever the draw order.** The starfield was
+  shifted by −view × strength, which moves a layer *faster* than the world.
+  Its comment said slower, and nobody noticed until solid rocks appeared in
+  the world plane, with stars drawn behind them sliding past faster than
+  they did. The eye trusts relative motion over layering, so the stars read
+  as in front. Shifted *with* the view (by view × strength), a layer moves at
+  (1 − strength) × the world. Every background layer then moves slower than
+  the play, and the play reads as nearest.
+
+**Code:** `resources/shaders/asteroid.wgsl` · `drawFan`, `shadowOn`,
+`beginRocks`, `drawForeground` and the heat in
+`src/gameLayer/asteroids.cpp` · the packed output in
+`tools/asteroidTextures.cpp` · `resources/asteroid/rock_packed.png`
 
 ### A4. Breaking up — *ahead*
 

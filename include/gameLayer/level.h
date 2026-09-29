@@ -25,11 +25,12 @@
 //   scenery Planet1 -6000 9000 2700 0                art x y size depth
 //
 // Scenery depth is parallax: 0 moves with the world, and toward 1 a piece
-// moves less. 0 is the one that reads as distant here: the starfield's
-// furthest layer moves with the world and its nearer layers faster, so a piece
-// moving slower than the world is slower than every star behind it and looks
-// towed along by the ship. Above 0 is for something that should seem to hang
-// in the sky. A piece is exactly at its x y when the camera is centred there.
+// moves less -- further away. The starfield's layers move at 0.2 to 0.6 of the
+// world's speed, so a planet belongs between them and the play: 0.25 (moving
+// 0.75) is just behind it. At 0 a piece moves with the ships and rocks, and
+// reads as being at their depth. (Before A3 the stars moved *faster* than the
+// world, and 0 was the one that read as distant.) A piece is exactly at its
+// x y when the camera is centred there.
 //
 // Rings are the closing circle's stages: the arena first, then each ring in
 // turn, largest to smallest, then the last one closes to nothing. Order in the
@@ -71,7 +72,7 @@ namespace level
 		std::string art;       // a name scenery.cpp knows, e.g. Planet1
 		glm::vec2 position = {};
 		float size = 2000.f;   // world units across
-		float depth = 0.f;     // 0 .. <1; see above
+		float depth = 0.25f;   // 0 .. <1; see above
 	};
 
 	// One stage of the closing circle: where it closes to.

@@ -58,7 +58,7 @@ paint -16145 -150 239
 paint -16160 -20 239
 paint -16190 140 239
 
-scenery Planet1 -4000 -7000 2700 0
-scenery Planet2 6000 2500 2000 0
-scenery Planet3 -13000 7500 1200 0
-scenery Planet4 11000 -9000 1000 0
+scenery Planet1 -4000 -7000 2700 0.25
+scenery Planet2 6000 2500 2000 0.25
+scenery Planet3 -13000 7500 1200 0.25
+scenery Planet4 11000 -9000 1000 0.25

@@ -11,15 +11,18 @@ namespace
 {
 	constexpr int layerCount = 3;
 
-	// Back to front. The furthest layer does not move with the camera at all.
-	// background4.png, the planets, was the front layer; levels place those
-	// planets one at a time now, as scenery (gameplay roadmap L2).
+	// Back to front. Every layer moves slower than the world, the furthest
+	// slowest -- at 0.2, 0.4 and 0.6 of its speed -- so the whole starfield is
+	// behind the play, and the play (ships, rocks, shots) is the fastest thing
+	// on screen, which is what reads as nearest. background4.png, the planets,
+	// was the front layer; levels place those planets one at a time now, as
+	// scenery (gameplay roadmap L2), between these and the play.
 	const char *files[layerCount] = {
 		RESOURCES_PATH "background1.png",
 		RESOURCES_PATH "background2.png",
 		RESOURCES_PATH "background3.png",
 	};
-	constexpr float parallax[layerCount] = {0.f, 0.2f, 0.4f};
+	constexpr float parallax[layerCount] = {0.8f, 0.6f, 0.4f};
 
 	wgpu2d::Texture textures[layerCount];
 	TiledRenderer layers[layerCount];
