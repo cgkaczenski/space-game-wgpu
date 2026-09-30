@@ -72,11 +72,17 @@ namespace asteroids
 	void update(float gameDeltaTime);
 
 	// A shot of `damage` hit `rock` at `point`, flying along `direction`
-	// (unit). Missiles push harder.
+	// (unit). Missiles push harder. It hurts the rock too: anything breaks a
+	// rock (A4) -- along its cracks, into shards that fly apart, sink into the
+	// background out of play, and gather where the rock stood -- but only the
+	// beam mines one.
 	void shot(int rock, glm::vec2 point, glm::vec2 direction, float damage, bool missile);
 
-	// The beam on `rock` at `point` for `gameDeltaTime`: a steady push.
-	void beam(int rock, glm::vec2 point, glm::vec2 direction, float gameDeltaTime);
+	// The beam on `rock` at `point` for `gameDeltaTime`: a slight push -- the
+	// rock creeps, it is not shoved -- and mining (A4) -- it wears the rock at `damagePerSecond` (scaled for rock)
+	// and the rock sheds its ore as orbs. Only the beam mines; the core
+	// neither yields nor glows.
+	void beam(int rock, glm::vec2 point, glm::vec2 direction, float damagePerSecond, float gameDeltaTime);
 
 	// An explosion at `at`: rocks near it are shoved outward, less further off.
 	void blast(glm::vec2 at, float strength = 1.f);
@@ -88,7 +94,8 @@ namespace asteroids
 	// ---- Cores ----
 	//
 	// Each field has a core: a rock bigger than any of the field's own, at the
-	// painted area's middle unless dragged in the editor. It is what the
+	// painted area's middle unless dragged in the editor -- and never past the
+	// paint: in a narrow field it shrinks to fit. It is what the
 	// field's rocks are seen to fall back toward. It never moves, is never
 	// pushed, beamed or broken, and rocks bounce off it. Ships do not pass through it: a ship
 	// that touches one is thrown back out and hit, the player's shield
@@ -115,10 +122,20 @@ namespace asteroids
 	// way is out, and where to put it.
 	bool coreContact(glm::vec2 centre, float radius, CoreContact &out);
 
+	// Whether `rock` (an index from hitCircle or raycast) is a field's core --
+	// the one rock the beam cannot touch -- and if so, its centre.
+	bool isCore(int rock, glm::vec2 *centre = nullptr);
+
 	// Where a field's core is: dragged there, or the painted area's middle.
 	glm::vec2 fieldCore(const level::AsteroidField &field);
 
-	// This round's single rocks, in the world, under the ships.
+	// How far a field's core reaches from its centre: `coreScale` times the
+	// field's max rock size, shrunk if needed so it lies inside the painted
+	// area. 0 for a field with no paint.
+	float coreRadius(const level::AsteroidField &field);
+
+	// This round's single rocks, in the world, under the ships -- and under
+	// them, what broken rocks became: shards, out of play (A4).
 	void draw(wgpu2d::Renderer2D &renderer);
 
 	// This round's field rocks, over the ships.

@@ -1,7 +1,5 @@
 #include <resources.h>
 
-#include <effects.h>
-#include <engine/collisionSystem.h>
 #include "imgui.h"
 
 #include <algorithm>
@@ -14,21 +12,10 @@ namespace resources
 
 namespace
 {
-	// The rock, and a soft radial falloff for the glow over it. The glow is
-	// built rather than loaded, like the fireball's in effects.cpp: it is one
-	// gradient, and a file for it would be a file to keep in step.
-	wgpu2d::Texture rock;
+	// A soft radial falloff for the orbs' glow. Built rather than loaded, like
+	// the fireball's in effects.cpp: it is one gradient, and a file for it
+	// would be a file to keep in step.
 	wgpu2d::Texture glow;
-
-	struct Deposit
-	{
-		glm::vec2 position = {};
-		float amount = 0.f;
-		float full = 0.f;      // what it held when the round began
-		float angle = 0.f;     // the rock's own turn, so they are not identical
-		float worked = 0.f;    // 1 the instant the beam takes from it, fading
-		float loose = 0.f;     // mined but not yet worth a whole orb
-	};
 
 	// What the beam knocks loose, and what a dead enemy leaves. An orb is
 	// thrown clear, hangs where it stopped, and only comes for the ship once
@@ -47,7 +34,6 @@ namespace
 		float phase = 0.f;      // its own, so a cloud does not pulse as one
 	};
 
-	std::vector<Deposit> deposits;
 	std::vector<Orb> orbs;
 
 	float hold = 0.f;
@@ -55,10 +41,8 @@ namespace
 	float interruptLeft = 0.f;
 
 	// Tuning.
-	float defaultDepositAmount = 6.f;
-	float radius = 320.f;          // the rock's, for the beam and for drawing
-	float miningPerSecond = 1.2f;
 	float interruptSeconds = 0.6f;
+	float spillOrbValue = 1.f;     // a dead player's hold scatters in orbs of this
 	float enemyFragmentValue = 0.15f;
 	int enemyFragmentCount = 2;
 
@@ -112,65 +96,28 @@ namespace
 		orbs.push_back(o);
 	}
 
-	// A spent deposit does not sit there as a husk: it goes the way a ship
-	// goes (gameplay roadmap C4a), through that same function -- one blast,
-	// and the rock's own sprite cut into pieces that fly apart, spin, slow
-	// and stay. What is left of a worked route is a field of rubble.
-	void breakUp(const Deposit &d)
-	{
-		// effects turns a facing into the angle it draws the pieces at. This
-		// is the facing whose angle is the rock's own, so the pieces start
-		// exactly where those parts of the rock were.
-		const float t = glm::radians(d.angle - 90.f);
-		const glm::vec2 facing = {-std::cos(t), std::sin(t)};
-		effects::shipDestroyed(rock, {0.f, 1.f, 1.f, 0.f}, d.position, facing, {},
-			radius * 2.f);
-	}
-
-	// 0 empty .. 1 untouched.
-	float fullness(const Deposit &d)
-	{
-		return d.full > 0.f ? std::clamp(d.amount / d.full, 0.f, 1.f) : 0.f;
-	}
 }
 
 bool init()
 {
-	// Shared with the scenery, which owns its own copy: two consumers, and a
-	// texture handle is cheap.
-	rock.loadFromFile(RESOURCES_PATH "space/ShatteredPlanet8.png", true);
-	if (rock.id == 0) { return false; }
 	return buildGlowTexture();
 }
 
 void cleanup()
 {
-	rock.cleanup();
 	glow.cleanup();
 }
 
-void reset(const std::vector<level::Resource> &placed)
+void reset()
 {
-	deposits.clear();
 	orbs.clear();
 	hold = 0.f;
 	interruptLeft = 0.f;
-
-	for (const level::Resource &r : placed)
-	{
-		Deposit d;
-		d.position = r.position;
-		d.amount = std::max(r.amount, 0.f);
-		d.full = d.amount;
-		d.angle = randomBetween(0.f, 360.f);
-		deposits.push_back(d);
-	}
 }
 
 void update(float dt, glm::vec2 playerPos, bool playerPresent)
 {
 	interruptLeft = std::max(0.f, interruptLeft - dt);
-	for (Deposit &d : deposits) { d.worked = std::max(0.f, d.worked - dt * 5.f); }
 
 	for (int i = 0; i < (int)orbs.size(); i++)
 	{
@@ -228,61 +175,10 @@ void update(float dt, glm::vec2 playerPos, bool playerPresent)
 	}
 }
 
-float rayToDeposit(glm::vec2 origin, glm::vec2 direction, float reach)
-{
-	float nearest = -1.f;
-	for (const Deposit &d : deposits)
-	{
-		const float t = collision::rayToCircle(origin, direction, {d.position, radius});
-		if (t >= 0.f && t < reach && (nearest < 0.f || t < nearest)) { nearest = t; }
-	}
-	return nearest;
-}
-
-float mine(glm::vec2 origin, glm::vec2 direction, float dt)
-{
-	if (interruptLeft > 0.f) { return 0.f; }
-
-	int target = -1;
-	float nearest = 1e30f;
-	for (int i = 0; i < (int)deposits.size(); i++)
-	{
-		const float t = collision::rayToCircle(origin, direction, {deposits[i].position, radius});
-		if (t >= 0.f && t < nearest) { nearest = t; target = i; }
-	}
-	if (target < 0) { return 0.f; }
-
-	Deposit &d = deposits[target];
-	const float taken = std::min(d.amount, miningPerSecond * dt);
-	d.amount -= taken;
-	d.worked = 1.f;
-
-	// The ore does not teleport into the hold: it comes off the rock as orbs,
-	// thrown back toward whoever is burning it, and has to reach the ship.
-	d.loose += taken;
-	while (d.loose >= orbValue || (d.amount <= 0.f && d.loose > 0.001f))
-	{
-		const float value = std::min(orbValue, d.loose);
-		d.loose -= value;
-		// Back along the beam, give or take: knocked off the face being burned.
-		const float spread = randomBetween(-0.7f, 0.7f);
-		const glm::vec2 back = -direction;
-		const glm::vec2 out = {back.x * std::cos(spread) - back.y * std::sin(spread),
-			back.x * std::sin(spread) + back.y * std::cos(spread)};
-		emit(d.position + out * (radius * 0.8f), out, value);
-	}
-
-	// Emptied: it comes apart and is gone. Its last orbs are already out, so
-	// nothing of the ore goes with it.
-	if (d.amount <= 0.f)
-	{
-		breakUp(d);
-		deposits.erase(deposits.begin() + target);
-	}
-	return taken;
-}
-
 void interrupt() { interruptLeft = interruptSeconds; }
+bool interrupted() { return interruptLeft > 0.f; }
+
+void emitOrb(glm::vec2 at, glm::vec2 direction, float value) { emit(at, direction, value); }
 
 void enemyDropped(glm::vec2 position)
 {
@@ -297,13 +193,14 @@ void playerDropped(glm::vec2 position)
 {
 	if (hold <= 0.f) { return; }
 
-	// One pile, mined back like any deposit: what was carried is still ore.
-	Deposit d;
-	d.position = position;
-	d.amount = hold;
-	d.full = hold;
-	d.angle = randomBetween(0.f, 360.f);
-	deposits.push_back(d);
+	// What was carried scatters from the wreck, still ore. The round restarts
+	// on death, so this lasts only as long as the wreck is watched -- it was a
+	// deposit, until asteroids replaced deposits (A4).
+	for (float left = hold; left > 0.001f; left -= spillOrbValue)
+	{
+		const float angle = randomBetween(0.f, 6.2831853f);
+		emit(position, {std::cos(angle), std::sin(angle)}, std::min(spillOrbValue, left));
+	}
 	hold = 0.f;
 }
 
@@ -315,38 +212,9 @@ void extracted()
 
 float held() { return hold; }
 float banked() { return points; }
-float defaultAmount() { return defaultDepositAmount; }
-
-void draw(wgpu2d::Renderer2D &renderer)
-{
-	for (const Deposit &d : deposits)
-	{
-		// A worked deposit darkens as it goes, so how much is left reads off
-		// the rock as well as off its glow.
-		const float lit = 0.45f + 0.55f * fullness(d);
-		const glm::vec4 tint = {lit, lit * 0.95f, lit * 0.8f, 1.f};
-		renderer.renderRectangle({d.position - glm::vec2(radius), glm::vec2(radius * 2.f)},
-			rock, tint, {}, d.angle);
-	}
-}
 
 void drawGlow(wgpu2d::Renderer2D &renderer, float time)
 {
-	for (const Deposit &d : deposits)
-	{
-		const float left = fullness(d);
-		if (left <= 0.f) { continue; }
-
-		// A slow pulse, and brighter while it is being taken: the glow is the
-		// tell that there is something here worth stopping for.
-		const float pulse = 0.75f + 0.25f * std::sin(time * 2.f + d.angle);
-		const float strength = left * pulse + d.worked * 0.9f;
-		const glm::vec4 gold = {1.f, 0.78f, 0.25f, 1.f};
-		const float size = radius * 3.2f;
-		renderer.renderRectangle({d.position - glm::vec2(size * 0.5f), glm::vec2(size)},
-			glow, gold * (0.55f * strength));
-	}
-
 	for (const Orb &o : orbs)
 	{
 		// Waiting, it breathes slowly; chasing, it runs bright -- the speed
@@ -367,16 +235,13 @@ void debugUi()
 	ImGui::Text("Hold %.2f   banked %.2f", hold, points);
 	int waiting = 0, chasing = 0;
 	for (const Orb &o : orbs) { (o.homing ? chasing : waiting)++; }
-	ImGui::Text("%d deposits, %d orbs (%d waiting, %d chasing)",
-		(int)deposits.size(), (int)orbs.size(), waiting, chasing);
+	ImGui::Text("%d orbs (%d waiting, %d chasing)", (int)orbs.size(), waiting, chasing);
 	if (interruptLeft > 0.f) { ImGui::TextColored({1.f, 0.5f, 0.3f, 1.f}, "Mining interrupted"); }
 	ImGui::SameLine();
 	if (ImGui::SmallButton("Clear points")) { points = 0.f; }
 
-	ImGui::SliderFloat("Mining per second", &miningPerSecond, 0.1f, 10.f);
 	ImGui::SliderFloat("Interrupt s", &interruptSeconds, 0.f, 3.f);
-	ImGui::SliderFloat("Deposit radius", &radius, 100.f, 1500.f, "%.0f");
-	ImGui::SliderFloat("New deposit amount", &defaultDepositAmount, 1.f, 30.f);
+	ImGui::SliderFloat("Spill orb value", &spillOrbValue, 0.1f, 5.f);
 	ImGui::SliderFloat("Fragment value", &enemyFragmentValue, 0.f, 2.f);
 	ImGui::SliderInt("Fragments per kill", &enemyFragmentCount, 0, 8);
 

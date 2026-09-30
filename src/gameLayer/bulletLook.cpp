@@ -173,7 +173,7 @@ namespace
 }
 
 void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-	bool hit, float time)
+	BeamImpact impact, float time, glm::vec2 surfaceNormal)
 {
 	if (capsule.id == 0) { return; }
 	const glm::vec2 along = end - start;
@@ -192,7 +192,7 @@ void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
 		{centre - glm::vec2(glowLength * 0.5f, beamGlowWidth * 0.5f), glowLength, beamGlowWidth},
 		capsule, glm::vec4{color.r, color.g, color.b, 1.f}, {}, rotation);
 
-	if (hit)
+	if (impact == BeamImpact::Burn)
 	{
 		// Where it burns: a round flare, flickering. The capsule's middle
 		// drawn short is round enough.
@@ -201,6 +201,41 @@ void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
 		const glm::vec4 burst = color * 1.2f;
 		renderer.renderRectangle({end - glm::vec2(size * 0.5f, size * 0.5f / aspect * 2.f),
 			size, size / aspect * 2.f}, capsule, glm::vec4{burst.r, burst.g, burst.b, 1.f}, {}, rotation);
+	}
+	else if (impact == BeamImpact::Deflect)
+	{
+		// It does nothing here, and must look it: no flare, no colour -- the
+		// beam's light splashing flat off the surface instead. A hard bright
+		// bar lying along the surface where it strikes, and sparks skating off
+		// along the surface both ways, lifting a little away from it, each
+		// flickering on its own. Along the surface rather than reflected: hit
+		// square on, a reflection points straight back up the beam and is
+		// lost in its glow.
+		glm::vec2 n = surfaceNormal;
+		const float nl = glm::length(n);
+		n = nl > 1e-4f ? n / nl : -direction;
+		const glm::vec2 along = {-n.y, n.x};
+		const float flatRotation = glm::degrees(std::atan2(-along.y, along.x));
+		const float flicker = 0.85f + 0.15f * std::sin(time * 61.f);
+		const glm::vec4 white = {0.85f, 0.9f, 1.f, 1.f};
+		const float bar = impactSize * 0.9f * flicker;
+		const float thick = impactSize * 0.1f;
+		renderer.renderRectangle({end - glm::vec2(bar * 0.5f, thick * 0.5f), bar, thick},
+			capsule, white, {}, flatRotation);
+
+		for (int k = 0; k < 4; k++)
+		{
+			const float side = (k % 2 == 0) ? 1.f : -1.f;
+			const float jitter = std::sin(time * (37.f + 11.f * k) + k * 2.1f);
+			const float lift = 0.2f + 0.2f * (k / 2) + 0.1f * jitter; // radians off the surface
+			const glm::vec2 d = glm::normalize(along * side * std::cos(lift) + n * std::sin(lift));
+			const float sparkLength = impactSize * (0.7f + 0.3f * jitter);
+			const float sparkRotation = glm::degrees(std::atan2(-d.y, d.x));
+			const glm::vec2 mid = end + d * (sparkLength * 0.5f + 20.f);
+			const float bright = 0.6f + 0.4f * (0.5f + 0.5f * jitter);
+			renderer.renderRectangle({mid - glm::vec2(sparkLength * 0.5f, 8.f), sparkLength, 16.f},
+				capsule, glm::vec4(white.r, white.g, white.b, 1.f) * bright, {}, sparkRotation);
+		}
 	}
 }
 

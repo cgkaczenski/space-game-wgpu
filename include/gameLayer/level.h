@@ -11,7 +11,6 @@
 //   arena 20000                             radius; the arena is centred on 0,0
 //   start -17000 0 0                        x y facing
 //   enemy rusher 4000 1200 180              kind x y facing: rusher | sniper
-//   resource 3000 6000 6                    x y amount (gameplay roadmap L3)
 //   marker gate 15000 -1000                 kind x y: gate
 //   ring 9000 -1500 12000                   x y radius (gameplay roadmap L4)
 //   asteroid 3000 -800 900 1234             x y radius seed (gameplay roadmap A1)
@@ -20,8 +19,9 @@
 //   erase 1300 -350 200                     ... and cutting the field's area
 //   core -5000 -1600                        x y: the field's core, if moved (A2)
 //
-// `marker resource x y` from before L3 still loads, as a deposit of the
-// default amount.
+// Deposits are gone (A4): asteroids are the ore now. A `resource x y amount`
+// line from before -- or the older `marker resource x y` -- still loads, as a
+// single asteroid sized by the amount, and is saved as one.
 //   scenery Planet1 -6000 9000 2700 0                art x y size depth
 //
 // Scenery depth is parallax: 0 moves with the world, and toward 1 a piece
@@ -52,16 +52,10 @@ namespace level
 		float facingDegrees = 0.f;
 	};
 
-	struct Resource
-	{
-		glm::vec2 position = {};
-		float amount = 6.f;    // how much is in it to mine
-	};
-
 	struct Marker
 	{
 		// Only the gate so far. Resources were markers before L3 gave them
-		// something to be.
+		// something to be, and are asteroids since A4.
 		enum class Kind { Gate };
 		Kind kind = Kind::Gate;
 		glm::vec2 position = {};
@@ -105,7 +99,7 @@ namespace level
 	struct AsteroidField
 	{
 		uint32_t seed = 1;
-		float maxSize = 400.f;  // the largest rock's radius
+		float maxSize = 90.f;   // the largest rock's radius: small rocks, many of them (level3's look)
 		float maxGap = 40.f;    // room between rocks, on top of their size
 		std::vector<FieldStamp> stamps;
 
@@ -133,7 +127,6 @@ namespace level
 		glm::vec2 start = {};
 		float startFacingDegrees = 0.f;
 		std::vector<EnemyPlacement> enemies;
-		std::vector<Resource> resources;
 		std::vector<Marker> markers;
 		std::vector<Ring> rings;
 		std::vector<Asteroid> asteroids;

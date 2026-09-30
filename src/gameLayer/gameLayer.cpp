@@ -256,7 +256,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 
 	// What there is to mine this round (gameplay roadmap L3). Points banked by
 	// extracting are not a round's and survive.
-	resources::reset(currentLevel.resources);
+	resources::reset();
 	asteroids::reset(currentLevel.asteroids, currentLevel.fields); // gameplay roadmap A1, A1b
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
@@ -932,7 +932,8 @@ bool gameLogic(float deltaTime)
 
 	const weapons::Beam beam = weapons::beam();
 	glm::vec2 beamEnd = {};
-	bool beamHit = false;
+	bulletLook::BeamImpact beamImpact = bulletLook::BeamImpact::None;
+	glm::vec2 beamSurface = {}; // the core's outward normal where a deflected beam meets it
 	if (beam.firing)
 	{
 		energy::uncloak();
@@ -947,36 +948,34 @@ bool gameLogic(float deltaTime)
 			if (t >= 0.f && t < reach) { reach = t; target = e; }
 		}
 
-		// A deposit stops the beam as an enemy does, and being burned is how
-		// it is mined (gameplay roadmap L3). Nearer than the enemy, the ore
-		// takes the beam and the enemy behind it is spared.
-		const float ore = resources::rayToDeposit(beam.origin, beam.direction, reach);
-		bool miningNow = false;
-		if (ore >= 0.f)
-		{
-			reach = ore;
-			target = -1;
-			miningNow = true;
-		}
-
-		// A rock stops it before either (gameplay roadmap A1): nothing behind
-		// a rock is burned or mined, and from on top of one it goes nowhere.
+		// A rock stops it (gameplay roadmap A1): nothing behind a rock is
+		// burned, and from on top of one it goes nowhere. Burning a rock is
+		// how ore is mined (A4) -- asteroids replaced the deposits.
 		int rockHit = -1;
 		const float rock = asteroids::raycast(beam.origin, beam.direction, reach, &rockHit);
 		if (rock >= 0.f)
 		{
 			reach = rock;
 			target = -1;
-			miningNow = false;
 		}
 
 		beamEnd = beam.origin + beam.direction * reach;
-		beamHit = target >= 0 || miningNow || rock >= 0.f;
+		// A core is the one rock the beam cannot touch (A4): it glances off,
+		// and is drawn to, rather than burning.
+		glm::vec2 coreCentre;
+		if (asteroids::isCore(rockHit, &coreCentre))
+		{
+			beamImpact = bulletLook::BeamImpact::Deflect;
+			beamSurface = beamEnd - coreCentre;
+		}
+		else if (target >= 0 || rock >= 0.f) { beamImpact = bulletLook::BeamImpact::Burn; }
 
-		// And a steady push where it burns (A2).
-		if (rockHit >= 0) { asteroids::beam(rockHit, beamEnd, beam.direction, time.game); }
-
-		if (miningNow) { resources::mine(beam.origin, beam.direction, time.game); }
+		// A steady push where it burns (A2), wearing the rock down as it
+		// sheds its ore (A4).
+		if (rockHit >= 0)
+		{
+			asteroids::beam(rockHit, beamEnd, beam.direction, beam.damagePerSecond, time.game);
+		}
 
 		if (target >= 0 && !hitboxDebug::isDamageFrozen())
 		{
@@ -1289,9 +1288,6 @@ bool gameLogic(float deltaTime)
 	// What each knows: red engaged, amber searching.
 	for (const auto &e : session.enemies) { effects::drawAwareness(renderer, e, effectClock); }
 
-	// Deposits sit in the world like ships do, under the wrecks.
-	resources::draw(renderer);
-
 	// Wrecks sit where ships sit: after them, under everything else.
 	effects::drawDebris(renderer);
 
@@ -1377,7 +1373,10 @@ bool gameLogic(float deltaTime)
 		}
 		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
 	}
-	if (beam.firing) { bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamHit, effectClock); }
+	if (beam.firing)
+	{
+		bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamImpact, effectClock, beamSurface);
+	}
 	effects::drawGlow(renderer);
 	resources::drawGlow(renderer, effectClock);
 	arena::draw(renderer, renderer.currentCamera.zoom);

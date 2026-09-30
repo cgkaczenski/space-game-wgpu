@@ -271,6 +271,9 @@ that — and doing so also lifts the zoom-out floor.
   markers for three resources and a gate, two or three planets.
 
 ### L3. Resources for extraction
+_(Changed in A4:)_ deposits are gone. Asteroids are the ore: every rock but a
+field's core is mined with the beam, and sheds these same orbs. The rest of L3
+-- orbs, the hold, interruption, banking -- stands.
 For now, points earned.
 
 **Decided (first pass)**
@@ -613,7 +616,7 @@ Built on P1 (moves like the player) and B1 (has the player's kit).
   one more field in the cloak's pass, the way the gate's swirl was added.
 - A boss health bar is the HUD bar again, and the empty-energy shake exists.
 
-### Asteroids (A1–A4)
+### Asteroids (A1–A5)
 
 Rocks with a shape of their own, textured from a real rock material, that move
 when you shoot them. The questions under each item are settled **when that item
@@ -957,24 +960,159 @@ _(To confirm:)_ all on sliders under **Asteroids → Look**:
 
 #### A4. Breaking up, and what a rock is worth
 
-**Open questions**
-- Damage cracks, moved here from A3: as a rock weakens, its cracks show
-  before it breaks, using the same high-pass crack mask as the heat.
-- How does it break?
-  - **a.** into wedges along the fan: still star-shaped from the old centre,
-    so no new algorithm;
-  - **b.** into newly generated smaller rocks: simplest, but they don't fit
-    together;
-  - **c.** cut along the shot's line and ear-clip the pieces: the most real,
-    and the most work.
-- What breaks it: damage from any weapon, or only the beam, as with deposits?
-- How small before a piece stops being a rock, and what is left then: debris
-  like the wrecks (C4a), orbs (L3), nothing?
-- **As a resource:** does mining a rock work like a deposit (beam in, orbs
-  out)? Do rocks replace deposits, or sit beside them?
-- Do the pieces keep the parent's motion? (Each piece's velocity should be the
-  parent's velocity plus its spin at that point.)
-- A cap on pieces alive, like the wreck field's 400?
+**Decided (first pass)**
+- **Every rock but a field's core breaks**, field rocks included. Anything
+  damages a rock: shots (anyone's), missiles, the beam, blasts, the ram. **Only
+  the beam mines.**
+- **Asteroids replace deposits completely.** They're the only ore.
+  - `resources` keeps the orbs, the hold, interruption and banking.
+  - Old `resource x y amount` lines (and the older `marker resource`) load as
+    single rocks sized by the amount; `level1`'s three are now written as
+    `asteroid` lines.
+  - A dead player's hold scatters as orbs rather than a deposit. The round
+    restarts on death, so this was always only for the moments before the
+    restart.
+- **The core** yields no ore, never glows, and can't be broken. The beam on
+  it **splashes off**: no flare, no heat, just a hard white bar flat on the
+  surface and sparks skating off along it both ways.
+- **The beam barely moves a rock.** Its push is a small force (400), and
+  whatever it adds is held to a 25 u/s creep and a 0.25 rad/s roll -- only
+  what the beam added, so a rock already flying from a shot keeps its speed.
+  A force alone wasn't enough: a pebble weighs a sixtieth of a big rock, and
+  the same force hurls it. Measured: a radius-380 rock moved 26 units over the
+  3 s it took to mine, and didn't turn.
+- **A real crack network.** Each rock has one from its seed: Voronoi sites
+  inside it, one per 70000 of area (2 to 6).
+  - The borders between the Voronoi pieces are its cracks. They show as dark
+    lines one at a time, each at its own damage threshold.
+  - When the rock breaks, it breaks **along those same cracks**.
+  - Pieces that can't be fanned from their centre are ear-clipped, which is
+    what ear clipping waited for since A1.
+- **Breaking looks like an enemy's death:** a dust burst (the blast without
+  its fire), and the pieces fly apart spinning, then **sink into the
+  background** like a wreck.
+  - Pieces are **shards, out of play**: nothing hits them, they block no
+    shot, beam or sight, and they're drawn under the ships, behind every
+    rock. Over 2 s they darken to 0.45 and shrink to 0.85, so they read as
+    further off.
+  - Each flies as that part of the parent was moving (v + ω × r), kicked
+    outward, slowing like wreckage.
+  - After 1.2 s a spring eases in and **gathers them where the rock stood**
+    -- its home, for a field rock the spot it springs back to -- each to its
+    own place in the rock's shape, spread 1.12× so the cracks show. The
+    spring is critically damped and capped at 300 u/s, like the field's
+    rocks coming home.
+  - Shards don't come back to life. What's left where a rock was is a dark
+    broken silhouette of it.
+  - _(Replaced:)_ the first pass made pieces real rocks that blocked, hid,
+    pushed and broke again, and drifted back into the field's paint. Shooting
+    them ground them away -- each shot re-broke a piece until its pieces were
+    under radius 20 and became dust -- so fragments seemed to vanish.
+- **A rock the beam destroys bursts out its ore**, like a spent deposit's
+  last orbs. Everything it still held, the fraction not yet a whole orb
+  included, is thrown back the way the beam came. Pebbles hold less than one
+  orb and used to break before shedding any, so burning through a field
+  yielded nothing; now each gives one. A rock broken any other way throws
+  nothing: **its ore is lost**. Shooting a rock to pieces wastes it.
+- **The glow means "ore coming off".** A rock glows only while the beam is
+  shedding orbs from it: orange cracks near the burn, and the shader's heat.
+  It fades within a second once the beam leaves. Nothing else glows, so what
+  you can collect is clear.
+
+_(Choices made while building — to confirm:)_ all on sliders under
+**Asteroids → Breaking and ore**:
+- **Health** grows with area^0.75, at 0.3 for a rock of area 10000. A pebble
+  takes a shot or two, and a rock of radius 380 about 3 s of beam. The beam
+  wears rock 4× faster than it hurts ships, since it's the mining tool.
+- **Other damage:** blasts 0.5 at their centre; the ram 1.5.
+- **Ore** grows with area, 1.2e-5 per unit (a radius-380 rock holds about 5),
+  shed as orbs of 0.25.
+- **Pieces:**
+  - smaller than radius 20 are dust;
+  - thrown out at 220 u/s with a spin kick.
+- **Shards:** flight 1.2 s (drag 1.6/s), sink 2 s, gather spring 4 s, 300
+  u/s, spread 1.12, rest spin 0.12 rad/s; 400 kept, the oldest shrinking away
+  over 1 s.
+
+_(Found while building:)_
+- **Pieces vanished.** With a minimum piece radius of 60, blasting a field left
+  only dust: its rocks are mostly pebbles, whose pieces were all too small. At
+  20 a pebble leaves pieces too.
+- **Rocks never glowed.** Making the glow fade quickly made it cool faster than
+  the beam heats it, so a burning rock never warmed. Now it only cools once
+  the beam has left.
+
+Measured on `level2`:
+- The beam wore the rock by the start from 5.3 ore to 0.3 in 3 s, and it
+  broke into 6 shards, bursting the rest: 5.29 ore reached the hold.
+- A strong blast at the field's edge broke 20 rocks into 36 shards, thrown up
+  to 1150 from their places. All were back within 2 units by 9 s after the
+  blast.
+- The core was never hurt.
+
+#### A5. Rocks with volume, and a core of its own stone
+
+The A3 shader lit each pixel from the texture's normal map alone. That is
+small bumps only, so a rock had no lit side and no dark side, only a
+straight-line darkening toward the rim; its edge was a hard polygon
+stair-step; and the core, three times the size, read as a flat cut-out of
+repeating wallpaper.
+
+**Decided:** all four of the shading changes below, and a different stone for
+the core. Rocks don't shadow each other.
+
+- **A dome.** Each rock is a height field: a dome for its shape, flat in the
+  middle and turning away toward the edge, with the texture's bumps on top.
+  It has a lit side, a dark side and a line between them.
+- **Shadows inside the rock.** From each pixel the shader steps 12 times
+  across the height map toward the light; where a ridge stands above the ray,
+  the pixel is in its shadow.
+- **Smooth edges.** The last pixel inside the outline fades out.
+- **A large-scale layer.** The same texture again at five times the size,
+  blended in, so a big rock has big features.
+- **The core's own stone:** dark, cool and glossy, like basalt, with a
+  specular highlight, stronger large features and rounder edges. It reads
+  at a glance as a different thing: the one rock that never moves, can't be
+  mined and hurts to touch.
+
+_(Choices made while building -- to confirm:)_ on sliders under
+**Asteroids → Look → Stone** and **Core stone**:
+- Stone: ambient 0.35, large features 0.3, round edges 1.6, self-shadow 0.8,
+  shine 0.06.
+- Core stone: tint (0.62, 0.68, 0.82), ambient 0.2, large features 0.8, round
+  edges 2.5, self-shadow 1, shine 0.5.
+- The old "Rim shade" slider is gone: the dome replaced it.
+
+_(Found while building:)_ `wgpu2d` effects had three free vec4s, and a lit
+material needs sixteen numbers. `EffectParams` gained a fourth, `d`, the way
+`c` was added for the CRT.
+
+**Cores fit their fields** (found in `level1`, fixed with A5):
+- `level1`'s field is a thin strip (about 480 wide) painted with max size
+  400, so its core was 2400 across: it covered the strip and left no room for
+  rocks, and it swallowed the four enemies beside the start.
+- **A core now shrinks to fit inside its paint.** It's grown at full size,
+  then each corner is walked out along its own direction to where the paint
+  ends, and the whole outline is scaled so every corner fits. The real shape
+  fits, not a circle round it. Erased holes don't count, since a clearing
+  round the core is its room: `level2`'s core sits over one and keeps its full
+  size. It never goes below 0.5× the max size (**Cores → Core min fit**), so
+  one dragged out of the paint is still a rock. `level1`'s is now 239;
+  `level2`'s and `level3`'s are unchanged.
+- **The editor never deletes a field on one click, but no longer ignores it.**
+  Right-clicking a field or its core selects the field, and the panel's
+  button reads **Delete field**. It used to do nothing on a core, and a right
+  click on a field could fall through to the planet behind it and delete
+  that. The core's handle and pick radius follow its fitted size.
+- **Each painted patch is its own field.** A Paint stroke used to go into the
+  selected field wherever it started, and the field stays selected after a
+  stroke, so a second patch far away joined the first and their one core
+  landed between them. Now a stroke grows the field it starts on (its paint
+  under the brush's middle or half-way out), and one started on open space
+  starts a new field. "Start a new field" still forces one, even over another
+  field's paint.
+- **New fields default to max size 90, gap 40**: `level3`'s small, many
+  rocks, which look best.
 
 ---
 

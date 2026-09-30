@@ -51,6 +51,11 @@ namespace rigid
 	// origin to the centre of mass.
 	MassProperties fromFan(const std::vector<glm::vec2> &outline, glm::vec2 apex, float density);
 
+	// The same, from any triangles: three indices into `points` each, as ear
+	// clipping gives them (A4) -- for a shape no single apex can fan.
+	MassProperties fromTriangles(const std::vector<glm::vec2> &points, const std::vector<int> &triangles,
+		float density);
+
 	// A body of those properties at rest, its centre of mass at `position`.
 	Body makeBody(const MassProperties &properties, glm::vec2 position, float angle = 0.f);
 

@@ -435,7 +435,7 @@ rest of this file only describes things that exist. So each concept below
 says whether it is **built** or **ahead** of the work, and as each of A1–A4
 lands, its part becomes an ordinary block with a Code line. The items, and
 what is still open about them, are in
-[`gameplay-roadmap.md`](gameplay-roadmap.md) under "Asteroids (A1–A4)".*
+[`gameplay-roadmap.md`](gameplay-roadmap.md) under "Asteroids (A1–A5)".*
 
 ### Getting textures into the game — *built*
 
@@ -736,6 +736,8 @@ tool in `src/gameLayer/levelEditor.cpp`
   - heat, faded with distance from the burn.
 
   Heat fits in alpha because rocks are opaque and the shader writes alpha 1.
+  (A5 changed this layout: the light moved to a uniform, the rim became the
+  dome's "how far to the edge", and alpha now also carries a shade.)
 - **High-pass by mip difference.** "Lower than a threshold" on a height map
   that is mostly broad hills picks hollows, not cracks. The first heat was one
   flat white blob. A coarse mip level is the local average height, so average
@@ -773,19 +775,126 @@ tool in `src/gameLayer/levelEditor.cpp`
 `src/gameLayer/asteroids.cpp` · the packed output in
 `tools/asteroidTextures.cpp` · `resources/asteroid/rock_packed.png`
 
-### A4. Breaking up — *ahead*
+### A4. Breaking up — *built*
 
-- **Splitting a fan into wedges:** a run of neighbouring fan triangles is still
-  star-shaped from the old centre, which is now one of its corners. So it can
-  still be fanned from that corner, and no new algorithm is needed.
-- **Cutting by a line:** clip each side against the line (Sutherland–Hodgman
-  for convex pieces). The pieces can be concave, which is where ear clipping
-  earns its keep.
-- **Handing on the motion:** a piece's velocity is the parent's velocity plus
-  the parent's spin at the piece's centre, v + ω × r. So the pieces fly apart
-  the way the spinning parent was already moving, and momentum is kept.
-- **Pools and caps:** a fixed budget of live pieces, oldest out first, like the
+- **Voronoi fracture.** Scatter a few *sites* inside the rock. Each piece is
+  the part of the rock nearer its own site than any other: the rock clipped,
+  one **perpendicular bisector** at a time, to the side nearer its site. A
+  bisector is the line of points equally far from two sites, so the half
+  nearer site i is where p · (sⱼ − sᵢ) ≤ (|sⱼ|² − |sᵢ|²) / 2.
+- **Sutherland–Hodgman, one half-plane at a time.** Walk the edges; keep what
+  is inside; where an edge crosses the line, add the crossing. An edge running
+  *along* the line, from one crossing to the next, is a new border. Labelling
+  it with the neighbour's index is what turns the clip into a **crack
+  network**: the same borders are drawn as cracks before the break, and are
+  where it breaks. Each crack gets a random threshold, so damage opens them
+  one by one.
+- **Point in any polygon: the crossing number.** A ray from the point crosses
+  the outline an odd number of times exactly when the point is inside. The fan
+  test used until now only holds for star-shaped shapes; pieces need not be.
+- **Ear clipping.** An ear is three neighbouring corners whose triangle turns
+  the polygon's way and holds no other corner. Clip it and repeat; O(n²). It
+  is only needed when a fan fails, and the test for that is whether every fan
+  triangle turns the same way.
+- **Mass from any triangles** is the same sum as from a fan: area, centroid and
+  second moment per triangle, then the parallel axis theorem. It matched the
+  fan on a real rock to five digits. (Built for pieces that were rocks; the
+  shards that replaced them have no mass, so nothing in the game calls it
+  now. It stays in `engine/rigidBody`.)
+- **Handing on the motion:** a piece's velocity is the parent's plus the
+  parent's spin at the piece's centre, v + ω × r, plus a kick outward. Each
+  piece's texture offset moves by its centroid, so it wears exactly the stone
+  it was.
+- **Scaling laws make tuning honest.** Ore goes with area, so a rock twice
+  as wide holds four times as much. Health goes with area^0.75, so a big rock
+  is tougher without taking minutes.
+- **Don't change what you're iterating.** Breaking removes a rock. Done
+  inside the loop that hurt it, that would remove rocks under the loop, and a
+  reference held across it would dangle. So damage only
+  marks rocks, and `processBreaks` runs after the loop. One call site still
+  broke and then touched the old rock; the fix was to break last.
+- **A thing in play vs. a picture of one.** A broken rock's pieces became
+  *shards*: a separate list with only a shape, a place, a velocity and a
+  spin -- no body, no health, no hit test. Leaving them out of the rock list
+  is what takes them out of play; nothing has to check a flag.
+- **A spring to a slot.** Each shard remembers where it sat in the rock and
+  where the rock's home is, and a critically damped spring (the A2 one, eased
+  in after the flight) pulls it there -- the pieces reassemble into a broken
+  silhouette of the rock.
+- **Clamping only what you added.** The beam's push is held to a creep by
+  removing any velocity along the beam above the cap -- but only above
+  whatever the rock already had, so the beam never brakes a rock a shot sent
+  flying.
+- **Pools and caps:** at most 400 shards, the oldest shrinking away, like the
   wreck field (C4a).
+
+**Code:** `voronoiFracture`, `earClip`, `fanWorksFrom`, `contains`,
+`signedArea` and `centroid` in `src/engine/polygon.cpp` · `fromTriangles` in
+`src/engine/rigidBody.cpp` · `ensureCracks`, `hurt`, `breakInto`,
+`processBreaks`, `updateShards`, `drawShards`, `drawCracks` and the mining in
+`src/gameLayer/asteroids.cpp` · `BeamImpact::Deflect` in `bulletLook` ·
+`effects::rockBurst` · `resources::emitOrb`
+
+### A5. Volume: a height field, lit and self-shadowed — *built*
+
+- **A surface as a height field.** The rock is treated as a height at every
+  point: a *dome* for its overall shape, plus the texture's height map for
+  detail. Lighting and shadows both come from that one idea.
+- **The dome's normal from the fan.** Each fan triangle runs from the rock's
+  centre to one straight edge, so a value of 0 at the centre and 1 at the
+  corners, blended across the triangle by the GPU, is *exactly* how far this
+  pixel is toward the edge. The corners also carry their own outward
+  direction. The dome's normal tilts along that direction by t², so the
+  middle is flat and the edges turn away.
+- **Blending normal maps ("whiteout").** To lay a detail normal over a base
+  one, add their tilts (xy) and multiply their ups (z). A bump on a slope
+  tilts the slope further, which adding and renormalizing would flatten. It
+  is applied twice: the dome, then the large-scale layer, then the detail.
+- **Screen-space derivatives recover a rotation.** The texture is laid on
+  each rock at one fixed scale and turned with it. So `dpdx(uv)` and
+  `dpdy(uv)` -- how the texture coordinate changes one pixel right and one
+  pixel down -- are the rock's rotation, scaled. A world direction pushed
+  through them comes out in the rock's own frame. The CPU used to turn the
+  light per rock and send it on the vertices; now it's one uniform, and the
+  two vertex slots it used carry where the pixel is on the rock instead.
+- **Self-shadowing by ray marching a height map.** From each pixel, step
+  toward the light across the height map, the ray climbing at the light's
+  elevation. If the height map anywhere stands above the ray, the pixel is
+  in shadow; how far above sets how dark, which softens the shadow's edge.
+  It uses `textureSampleLevel`, which, unlike `textureSample`, is allowed
+  inside a loop because it takes no derivatives.
+- **Derivatives only in uniform control flow.** `dpdx`, `fwidth` and
+  `textureSample` compare neighbouring pixels, so every pixel of a 2×2 quad
+  must reach them together. They are all taken first, before any loop or
+  branch.
+- **Analytic anti-aliasing.** `fwidth(t)` is how much t changes across one
+  pixel, so (1 − t) / fwidth(t) is the distance to the edge *in pixels*.
+  Fading alpha over the last pixel smooths the silhouette without MSAA.
+- **Blinn-Phong specular.** The highlight is brightest where the surface
+  faces the *halfway* vector between the light and the eye (straight above,
+  in 2D). A high power makes it small and sharp, which reads as hard, glossy
+  stone. The core has a lot of it; the ordinary stone almost none.
+- **Two octaves of one texture.** The texture sampled again at 1/5 the
+  frequency (with its derivatives scaled to match, so the mip level stays
+  right) gives big features to big rocks without a second image.
+- **Packing data into what's there.** The vertex colour's alpha is heat when
+  it's positive and a shade when it's negative: nothing is both hot and
+  shaded, so one float carries either. A shard cut into triangles with no
+  centre marks its edge value −1, and the shader falls back to the corners'
+  directions.
+- **Fitting a shape inside a region.** To fit a star-shaped outline inside a
+  painted area, walk each corner's ray out from the centre until it leaves
+  the area; the smallest (exit distance ÷ corner distance) is the scale that
+  fits them all. Because the shape is star-shaped from its centre, the edges
+  between corners stay inside too, as long as the area doesn't have a notch
+  narrower than one corner spacing.
+- **A wider parameter block.** `EffectParams` gained a fourth vec4, `d`. The
+  uniform slot grew from 80 to 96 bytes; the dynamic offsets between slots
+  were already rounded up to the device's alignment, so nothing else moved.
+
+**Code:** `resources/shaders/asteroid.wgsl` · `drawFan`, `beginRocks`,
+`Surface` in `src/gameLayer/asteroids.cpp` · `EffectParams::d` in
+`include/render/wgpu2d.h`, `EffectUniforms` in `src/render/wgpuContext.cpp`
 
 ---
 

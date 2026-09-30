@@ -43,6 +43,7 @@ namespace
 		glm::vec2 position;
 		float size;        // the ship's size
 		float age;
+		bool dust = false; // a rock breaking: a dull pale puff, no fire, no flash
 	};
 
 	std::vector<Piece> pieces;
@@ -114,6 +115,9 @@ namespace
 	// first version read as a dim brown smudge once the fade had begun.
 	const glm::vec4 coreColor = glm::vec4(1.0f, 0.85f, 0.55f, 1.f) * 2.4f;
 	const glm::vec4 fireColor = glm::vec4(1.0f, 0.42f, 0.12f, 1.f) * 1.8f;
+	// A rock's dust: the colour of the stone, dim, added over the dark, so it
+	// reads as a cloud catching light rather than as fire.
+	const glm::vec4 dustColor = glm::vec4(0.55f, 0.47f, 0.38f, 1.f) * 0.55f;
 
 	float randomBetween(float a, float b)
 	{
@@ -297,6 +301,13 @@ glm::vec2 shakeOffset(float realDeltaTime)
 		amplitude * std::sin(6.2831853f * shakeFrequencyY * shakePhase + 1.1f)};
 }
 
+void rockBurst(glm::vec2 position, float size)
+{
+	Blast b{position, size, 0.f};
+	b.dust = true;
+	blasts.push_back(b);
+}
+
 void shipDestroyed(wgpu2d::Texture texture, glm::vec4 cell, glm::vec2 position,
 	glm::vec2 facing, glm::vec2 velocity, float size)
 {
@@ -437,9 +448,10 @@ void drawGlow(wgpu2d::Renderer2D &renderer)
 
 		// The fire: large, orange, fading as it spreads.
 		const float fireSize = b.size * (0.5f + blastGrowth * swell);
-		glm::vec4 fire = fireColor * fade;
+		glm::vec4 fire = (b.dust ? dustColor : fireColor) * fade;
 		fire.a = 1.f;
 		renderer.renderRectangle({b.position - glm::vec2(fireSize * 0.5f), fireSize, fireSize}, glow, fire);
+		if (b.dust) { continue; } // no white-hot flash in a rock
 
 		// The flash: small, white-hot, gone in the first third.
 		const float flashFade = std::max(0.f, 1.f - t * 3.f);

@@ -48,7 +48,7 @@ namespace
 	// layout (N5) all belong here eventually; adding a field then is a few
 	// lines, and guessing at four futures now is how the wrong key gets built.
 	// What an effect fragment shader can read. One block per effect draw.
-	// std140-ish by construction: four vec4s, 16-byte aligned throughout, so
+	// std140-ish by construction: vec4s only, 16-byte aligned throughout, so
 	// the WGSL struct and this one cannot drift apart silently.
 	struct EffectUniforms
 	{
@@ -57,8 +57,9 @@ namespace
 		float a[4] = {};          // whatever the effect wants
 		float b[4] = {};
 		float c[4] = {};
+		float d[4] = {};
 	};
-	static_assert(sizeof(EffectUniforms) == 80, "effect uniforms must stay 5 x vec4");
+	static_assert(sizeof(EffectUniforms) == 96, "effect uniforms must stay 6 x vec4");
 
 	struct PipelineKey
 	{
@@ -404,7 +405,7 @@ namespace
 
 	bool sameEffectParams(const wgpu2d::EffectParams &a, const wgpu2d::EffectParams &b)
 	{
-		return a.a == b.a && a.b == b.b && a.c == b.c;
+		return a.a == b.a && a.b == b.b && a.c == b.c && a.d == b.d;
 	}
 	wgpu2d::Texture white1pxSquareTexture;    // gl2d's untextured path samples this
 
@@ -2233,6 +2234,7 @@ namespace
 				uniforms.a[k] = frameEffectParams[i].a[k];
 				uniforms.b[k] = frameEffectParams[i].b[k];
 				uniforms.c[k] = frameEffectParams[i].c[k];
+				uniforms.d[k] = frameEffectParams[i].d[k];
 			}
 			g.queue.writeBuffer(g.effectBuffer,
 				(uint64_t)(effectSlotBase + i) * g.effectSlotStride, &uniforms, sizeof(uniforms));

@@ -10,38 +10,65 @@ namespace rigid
 namespace
 {
 	float cross(glm::vec2 a, glm::vec2 b) { return a.x * b.y - a.y * b.x; }
+
+	// Sums triangles into mass properties. `next` hands back one triangle's
+	// corners at a time, false when there are no more.
+	template <typename Next>
+	MassProperties sumTriangles(Next next, float density)
+	{
+		MassProperties m;
+		float area = 0.f;
+		glm::vec2 weighted = {};
+		float momentAboutOrigin = 0.f; // area-weighted second moment, before density
+		glm::vec2 a, b, c;
+		while (next(a, b, c))
+		{
+			// Signed: a shape that winds the other way comes out negative on
+			// every triangle, and the ratios below do not care.
+			const float triangle = 0.5f * cross(b - a, c - a);
+			area += triangle;
+			weighted += triangle * (a + b + c) / 3.f;
+			// A triangle's polar second moment about the origin, per unit
+			// density: area / 6 * (a.a + b.b + c.c + a.b + b.c + c.a).
+			momentAboutOrigin += triangle / 6.f
+				* (glm::dot(a, a) + glm::dot(b, b) + glm::dot(c, c)
+					+ glm::dot(a, b) + glm::dot(b, c) + glm::dot(c, a));
+		}
+		if (std::abs(area) < 1e-6f) { return m; }
+		m.area = std::abs(area);
+		m.centroid = weighted / area;
+		m.mass = density * m.area;
+		// Parallel axis theorem, backwards: the moment about the origin is the
+		// moment about the centroid plus mass × (distance between them)².
+		m.inertia = density * std::abs(momentAboutOrigin) - m.mass * glm::dot(m.centroid, m.centroid);
+		return m;
+	}
+}
+
+MassProperties fromTriangles(const std::vector<glm::vec2> &points, const std::vector<int> &triangles,
+	float density)
+{
+	size_t at = 0;
+	return sumTriangles([&](glm::vec2 &a, glm::vec2 &b, glm::vec2 &c)
+	{
+		if (at + 3 > triangles.size()) { return false; }
+		a = points[triangles[at]]; b = points[triangles[at + 1]]; c = points[triangles[at + 2]];
+		at += 3;
+		return true;
+	}, density);
 }
 
 MassProperties fromFan(const std::vector<glm::vec2> &outline, glm::vec2 apex, float density)
 {
-	MassProperties m;
-	float area = 0.f;
-	glm::vec2 weighted = {};
-	float momentAboutOrigin = 0.f; // area-weighted second moment, before density
+	size_t i = 0;
 	const size_t n = outline.size();
-	for (size_t i = 0; i < n; i++)
+	return sumTriangles([&](glm::vec2 &a, glm::vec2 &b, glm::vec2 &c)
 	{
-		const glm::vec2 a = apex, b = outline[i], c = outline[(i + 1) % n];
-		// Signed: a fan that winds the other way comes out negative on every
-		// triangle, and the ratios below do not care.
-		const float triangle = 0.5f * cross(b - a, c - a);
-		area += triangle;
-		weighted += triangle * (a + b + c) / 3.f;
-		// A triangle's polar second moment about the origin, per unit
-		// density: area / 6 * (a.a + b.b + c.c + a.b + b.c + c.a).
-		momentAboutOrigin += triangle / 6.f
-			* (glm::dot(a, a) + glm::dot(b, b) + glm::dot(c, c)
-				+ glm::dot(a, b) + glm::dot(b, c) + glm::dot(c, a));
-	}
-	if (std::abs(area) < 1e-6f) { return m; }
-
-	m.area = std::abs(area);
-	m.centroid = weighted / area;
-	m.mass = density * m.area;
-	// Parallel axis theorem, backwards: the moment about the origin is the
-	// moment about the centroid plus mass × (distance between them)².
-	m.inertia = density * std::abs(momentAboutOrigin) - m.mass * glm::dot(m.centroid, m.centroid);
-	return m;
+		if (i >= n) { return false; }
+		a = apex; b = outline[i]; c = outline[(i + 1) % n];
+		i++;
+		return true;
+	}, density);
 }
 
 Body makeBody(const MassProperties &p, glm::vec2 position, float angle)

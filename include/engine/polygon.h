@@ -62,7 +62,11 @@ namespace polygon
 
 	// All in the polygon's own frame.
 
-	// Inside one of the fan's triangles.
+	// Inside the polygon -- any simple polygon, star-shaped or not. A ray from
+	// the point crosses the outline an odd number of times exactly when the
+	// point is inside (the crossing-number, or even-odd, rule). It was a test
+	// against the fan's triangles, which only holds while the fan is valid;
+	// broken pieces (A4) need not be star-shaped from anywhere in particular.
 	bool contains(const std::vector<glm::vec2> &outline, glm::vec2 point);
 
 	// A circle touches it: its centre is inside, or an edge is within reach.
@@ -76,4 +80,40 @@ namespace polygon
 	// The segment from `a` to `b` touches it: either end inside, or it crosses
 	// an edge. A line of sight through a rock is blocked.
 	bool touchesSegment(const std::vector<glm::vec2> &outline, glm::vec2 a, glm::vec2 b);
+
+	// ---- Beyond star-shaped (gameplay roadmap A4) ----
+
+	// The polygon's area, signed: positive when its corners run
+	// counter-clockwise in y-up terms (clockwise on a y-down screen).
+	float signedArea(const std::vector<glm::vec2> &outline);
+	glm::vec2 centroid(const std::vector<glm::vec2> &outline);
+
+	// A fan from `apex` covers the polygon exactly: every fan triangle turns
+	// the same way, none flat. What "star-shaped from apex" means in practice.
+	bool fanWorksFrom(const std::vector<glm::vec2> &outline, glm::vec2 apex);
+
+	// Triangles for any simple polygon, by **ear clipping**: an ear is three
+	// neighbouring corners whose triangle turns the polygon's way and holds no
+	// other corner. Cut it off, and the rest is a polygon one corner smaller;
+	// repeat. O(n²), and fine for rocks of a few dozen corners. Returns corner
+	// indices, three per triangle; fewer than n - 2 triangles means it gave up
+	// on a polygon that crosses itself.
+	std::vector<int> earClip(const std::vector<glm::vec2> &outline);
+
+	// One piece of a Voronoi fracture: the part of the polygon nearer its site
+	// than any other. `crack[i]` says whether the edge from points[i] to
+	// points[i + 1] is a crack -- a border with a neighbouring piece -- rather
+	// than part of the old outline. `neighbour[i]` is that piece's index, or -1.
+	struct Piece
+	{
+		std::vector<glm::vec2> points;
+		std::vector<int> neighbour;
+	};
+
+	// Breaks the polygon along the Voronoi diagram of `sites`: one piece per
+	// site. Each piece is the polygon clipped, one bisector at a time, to the
+	// side nearer its own site (Sutherland-Hodgman with half-planes). Every
+	// border between two pieces is where cracks show before it breaks.
+	std::vector<Piece> voronoiFracture(const std::vector<glm::vec2> &outline,
+		const std::vector<glm::vec2> &sites);
 }

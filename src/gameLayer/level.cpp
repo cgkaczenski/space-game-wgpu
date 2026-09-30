@@ -19,6 +19,19 @@ glm::vec2 direction(float degrees)
 
 namespace
 {
+	// An old deposit as a rock: a radius that grows with what it held, and a
+	// seed from where it sat, so it loads the same rock every time.
+	Asteroid depositAsRock(glm::vec2 at, float amount)
+	{
+		Asteroid a;
+		a.position = at;
+		a.radius = 250.f + 30.f * std::max(amount, 0.f);
+		// Unsigned arithmetic: it wraps by definition, where signed overflow
+		// would be undefined.
+		a.seed = ((uint32_t)(int)at.x * 73856093u) ^ ((uint32_t)(int)at.y * 19349663u);
+		return a;
+	}
+
 	// One line, already stripped of its comment. False if it does not parse.
 	bool parseLine(std::istringstream &in, const std::string &word, Level &out)
 	{
@@ -43,10 +56,13 @@ namespace
 		}
 		if (word == "resource")
 		{
-			Resource r;
-			if (!(in >> r.position.x >> r.position.y)) { return false; }
-			in >> r.amount; // optional: the default stands
-			out.resources.push_back(r);
+			// A deposit, from before asteroids replaced them (A4): a rock
+			// where it was, sized by how much it held.
+			glm::vec2 at;
+			float amount = 6.f;
+			if (!(in >> at.x >> at.y)) { return false; }
+			in >> amount; // optional, as it was
+			out.asteroids.push_back(depositAsRock(at, amount));
 			return true;
 		}
 		if (word == "marker")
@@ -54,8 +70,8 @@ namespace
 			std::string kind;
 			glm::vec2 at;
 			if (!(in >> kind >> at.x >> at.y)) { return false; }
-			// Before L3 a resource was a marker. Read it as a deposit.
-			if (kind == "resource") { out.resources.push_back({at, Resource().amount}); return true; }
+			// Before L3 a resource was a marker; since A4 a rock.
+			if (kind == "resource") { out.asteroids.push_back(depositAsRock(at, 6.f)); return true; }
 			if (kind != "gate") { return false; }
 			out.markers.push_back({Marker::Kind::Gate, at});
 			return true;
@@ -167,11 +183,6 @@ bool save(const char *path, const Level &level)
 	{
 		file << "enemy " << (e.behaviour == Enemy::Behaviour::KeepDistance ? "sniper" : "rusher")
 			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees << "\n";
-	}
-	file << "\n";
-	for (const Resource &r : level.resources)
-	{
-		file << "resource " << r.position.x << " " << r.position.y << " " << r.amount << "\n";
 	}
 	file << "\n";
 	for (const Marker &m : level.markers)

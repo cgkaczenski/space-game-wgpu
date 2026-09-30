@@ -61,10 +61,17 @@ namespace bulletLook
 	// halves like a bullet: the glow under additive, the core over alpha.
 	// The glow is the capsule stretched to the beam's length, and a bright
 	// burst where the beam stops; the core tiles the sheet's cyan beam
-	// segment, scrolling with `time` so the beam reads as moving. `hit` is
-	// whether the end is on something, for the burst.
+	// segment, scrolling with `time` so the beam reads as moving. `impact`
+	// is what the end is on:
+	//   None     nothing -- the beam runs to the edge of the view
+	//   Burn     something it hurts: a flickering flare
+	//   Deflect  something it cannot touch -- an asteroid field's core (A4):
+	//            no flare, only a hard white bar flat on the surface and
+	//            sparks skating off along it both ways -- `surfaceNormal`
+	//            gives the surface -- so it reads as splashing off.
+	enum class BeamImpact { None, Burn, Deflect };
 	void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-		bool hit, float time);
+		BeamImpact impact, float time, glm::vec2 surfaceNormal = {});
 	void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
 		float time);
 

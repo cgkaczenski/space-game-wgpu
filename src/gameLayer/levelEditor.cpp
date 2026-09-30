@@ -1,6 +1,5 @@
 #include <levelEditor.h>
 
-#include <resources.h>
 #include <asteroids.h>
 #include <scenery.h>
 #include <shipSprite.h>
@@ -28,13 +27,11 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Resource, Gate, Ring, Asteroid, Paint, Scenery };
-	// A deposit's ring in the editor, matching how big one is in play.
-	constexpr float depositRadius = 320.f;
+	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery };
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Resource, Marker, Ring, Asteroid, Field, Core, Scenery };
+	enum class Kind { None, Start, Enemy, Marker, Ring, Asteroid, Field, Core, Scenery };
 	struct Pick
 	{
 		Kind kind = Kind::None;
@@ -50,6 +47,7 @@ namespace
 	bool painting = false;
 	bool paintErasing = false;
 	int paintField = -1;
+	bool paintNewField = false; // "Start a new field": the next stroke makes one, even over paint
 	glm::vec2 lastStamp = {};
 	glm::vec2 cursorWorld = {}; // for drawing the brush
 
@@ -105,7 +103,6 @@ namespace
 		{
 		case Kind::Start: return level.start;
 		case Kind::Enemy: return level.enemies[p.index].position;
-		case Kind::Resource: return level.resources[p.index].position;
 		case Kind::Marker: return level.markers[p.index].position;
 		case Kind::Ring: return level.rings[p.index].position;
 		case Kind::Asteroid: return level.asteroids[p.index].position;
@@ -128,7 +125,6 @@ namespace
 		{
 		case Kind::Start: level.start = to; break;
 		case Kind::Enemy: level.enemies[p.index].position = to; break;
-		case Kind::Resource: level.resources[p.index].position = to; break;
 		case Kind::Marker: level.markers[p.index].position = to; break;
 		case Kind::Ring: level.rings[p.index].position = to; break;
 		case Kind::Asteroid: level.asteroids[p.index].position = to; break;
@@ -162,10 +158,8 @@ namespace
 	// scenery: a planet is big and behind everything, and should not steal a
 	// click aimed at a ship in front of it.
 	// Fields are picked last among the placements, by being inside the painted
-	// area, and only when asked: a right click deletes what it picks, and one
-	// stray click should not wipe a whole painted field.
-	Pick pickAt(const level::Level &level, glm::vec2 at, float shipSize, float enemySize,
-		bool includeFields = true)
+	// area -- or on their core, which is picked before the field around it.
+	Pick pickAt(const level::Level &level, glm::vec2 at, float shipSize, float enemySize)
 	{
 		Pick best;
 		float bestDistance = 1e30f;
@@ -179,10 +173,6 @@ namespace
 		for (int i = 0; i < (int)level.enemies.size(); i++)
 		{
 			consider(Kind::Enemy, i, level.enemies[i].position, enemySize * 0.5f);
-		}
-		for (int i = 0; i < (int)level.resources.size(); i++)
-		{
-			consider(Kind::Resource, i, level.resources[i].position, depositRadius);
 		}
 		for (int i = 0; i < (int)level.markers.size(); i++)
 		{
@@ -198,19 +188,16 @@ namespace
 		}
 		if (best.kind != Kind::None) { return best; }
 
-		if (includeFields)
+		// A field's core, before the field it sits in.
+		for (int i = (int)level.fields.size() - 1; i >= 0; i--)
 		{
-			// A field's core, before the field it sits in.
-			for (int i = (int)level.fields.size() - 1; i >= 0; i--)
-			{
-				const level::AsteroidField &f = level.fields[i];
-				if (glm::distance(at, asteroids::fieldCore(f)) <= f.maxSize * 1.5f) { return {Kind::Core, i}; }
-			}
-			// The most recently made on top.
-			for (int i = (int)level.fields.size() - 1; i >= 0; i--)
-			{
-				if (level.fields[i].contains(at)) { return {Kind::Field, i}; }
-			}
+			const level::AsteroidField &f = level.fields[i];
+			if (glm::distance(at, asteroids::fieldCore(f)) <= asteroids::coreRadius(f) * 0.5f) { return {Kind::Core, i}; }
+		}
+		// The most recently made on top.
+		for (int i = (int)level.fields.size() - 1; i >= 0; i--)
+		{
+			if (level.fields[i].contains(at)) { return {Kind::Field, i}; }
 		}
 
 		for (int i = 0; i < (int)level.scenery.size(); i++)
@@ -225,16 +212,13 @@ namespace
 		switch (p.kind)
 		{
 		case Kind::Enemy: level.enemies.erase(level.enemies.begin() + p.index); break;
-		case Kind::Resource: level.resources.erase(level.resources.begin() + p.index); break;
 		case Kind::Marker: level.markers.erase(level.markers.begin() + p.index); break;
 		case Kind::Ring: level.rings.erase(level.rings.begin() + p.index); break;
 		case Kind::Asteroid: level.asteroids.erase(level.asteroids.begin() + p.index); break;
-		case Kind::Field: level.fields.erase(level.fields.begin() + p.index); break;
-		case Kind::Core:
-			// A core is not removed, only sent back to the middle.
-			level.fields[p.index].coreMoved = false;
-			edited = true;
-			return;
+		// A core is its field's: deleting it deletes the field. Only ever from
+		// the panel's button -- a right click on either only selects the field.
+		case Kind::Field:
+		case Kind::Core: level.fields.erase(level.fields.begin() + p.index); break;
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
 		default: return; // the start stays: a level needs one
 		}
@@ -256,14 +240,6 @@ namespace
 			e.position = at;
 			level.enemies.push_back(e);
 			return {Kind::Enemy, (int)level.enemies.size() - 1};
-		}
-		case Tool::Resource:
-		{
-			level::Resource r;
-			r.position = at;
-			r.amount = resources::defaultAmount();
-			level.resources.push_back(r);
-			return {Kind::Resource, (int)level.resources.size() - 1};
 		}
 		case Tool::Gate:
 		{
@@ -310,7 +286,6 @@ namespace
 		{
 		case Kind::Start: return true;
 		case Kind::Enemy: return p.index >= 0 && p.index < (int)level.enemies.size();
-		case Kind::Resource: return p.index >= 0 && p.index < (int)level.resources.size();
 		case Kind::Marker: return p.index >= 0 && p.index < (int)level.markers.size();
 		case Kind::Ring: return p.index >= 0 && p.index < (int)level.rings.size();
 		case Kind::Asteroid: return p.index >= 0 && p.index < (int)level.asteroids.size();
@@ -398,8 +373,18 @@ void update(level::Level &level, wgpu2d::Renderer2D &renderer, glm::vec2 mouse,
 		{
 			if (!rightPanning)
 			{
-				remove(level, pickAt(level, screenToWorld(rightStart, width, height),
-					pickShipSize, pickEnemySize, false));
+				// One stray click should not wipe a whole painted field, so on a
+				// field or its core it selects the field instead, and the panel
+				// offers "Delete field". Picked with fields included, so a click
+				// on a field never falls through to the planet behind it.
+				const Pick p = pickAt(level, screenToWorld(rightStart, width, height),
+					pickShipSize, pickEnemySize);
+				if (p.kind == Kind::Field || p.kind == Kind::Core)
+				{
+					selected = {Kind::Field, p.index};
+					dragging = false;
+				}
+				else { remove(level, p); }
 			}
 			rightDown = false;
 		}
@@ -426,16 +411,29 @@ void update(level::Level &level, wgpu2d::Renderer2D &renderer, glm::vec2 mouse,
 		if (mouseFree && platform::isLMousePressed())
 		{
 			paintErasing = platform::isButtonHeld(platform::Button::Shift);
-			// Into the selected field; else the one under the brush; else,
-			// painting, a new one. Erasing needs a field to erase from.
-			paintField = selected.kind == Kind::Field ? selected.index : -1;
-			if (paintField < 0)
+			// Into the field the brush starts on -- its middle, or half-way out,
+			// so a stroke begun at a field's edge still grows it; the most
+			// recent field on top. Started on open space, a new field: each
+			// patch is a field with its own core. (Painting into the selected
+			// field wherever the stroke began made a far-off second patch part
+			// of the first, and its core landed between the two.) Erasing on
+			// open space erases from the selected field; it needs one.
+			paintField = -1;
+			if (!paintNewField || paintErasing)
 			{
-				for (int i = (int)level.fields.size() - 1; i >= 0; i--)
+				for (int i = (int)level.fields.size() - 1; i >= 0 && paintField < 0; i--)
 				{
-					if (level.fields[i].contains(world)) { paintField = i; break; }
+					for (int k = 0; k <= 8; k++)
+					{
+						const float angle = 0.7853982f * (float)k;
+						const glm::vec2 probe = world + (k == 0 ? glm::vec2(0.f)
+							: glm::vec2(std::cos(angle), std::sin(angle)) * (brushRadius * 0.5f));
+						if (level.fields[i].contains(probe)) { paintField = i; break; }
+					}
 				}
 			}
+			if (paintField < 0 && paintErasing && selected.kind == Kind::Field) { paintField = selected.index; }
+			if (!paintErasing) { paintNewField = false; }
 			if (paintField < 0 && !paintErasing)
 			{
 				level::AsteroidField f;
@@ -551,14 +549,6 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		}
 	}
 
-	// Deposits: a gold ring, with a second one showing how much is in it.
-	for (const level::Resource &r : level.resources)
-	{
-		renderer.renderCircleOutline(r.position, {1.f, 0.8f, 0.2f, 0.9f}, depositRadius, 3.f * px, 32);
-		const float fill = std::clamp(r.amount / 20.f, 0.05f, 1.f);
-		renderer.renderCircleOutline(r.position, {1.f, 0.85f, 0.35f, 0.6f},
-			depositRadius * fill, 2.f * px, 24);
-	}
 
 	for (const level::EnemyPlacement &e : level.enemies)
 	{
@@ -577,7 +567,7 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		const level::AsteroidField &f = level.fields[selected.index];
 		renderer.renderCircleOutline(asteroids::fieldCore(f),
 			selected.kind == Kind::Core ? glm::vec4(1.f) : glm::vec4(1.f, 0.8f, 0.3f, 0.9f),
-			f.maxSize * 1.5f, 3.f * px, 48);
+			asteroids::coreRadius(f) * 0.5f, 3.f * px, 48);
 	}
 
 	if (selected.kind != Kind::None && selected.kind != Kind::Field && selected.kind != Kind::Core
@@ -585,7 +575,6 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 	{
 		float radius = look.enemySize * 0.6f;
 		if (selected.kind == Kind::Start) { radius = look.shipSize * 0.7f; }
-		if (selected.kind == Kind::Resource) { radius = depositRadius * 1.2f; }
 		if (selected.kind == Kind::Marker) { radius = gateRadius * 1.15f; }
 		if (selected.kind == Kind::Ring) { radius = ringHandlePixels * 1.5f * px; }
 		if (selected.kind == Kind::Asteroid) { radius = level.asteroids[selected.index].radius * 1.4f; }
@@ -606,7 +595,7 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::SameLine();
 	if (ImGui::Button("Exit")) { request = Request::Exit; }
 	if (unsaved) { ImGui::TextColored({1.f, 0.7f, 0.2f, 1.f}, "Unsaved changes"); }
-	ImGui::TextDisabled("L: select/drag/place  R: delete  R-drag/WASD: pan  wheel: zoom");
+	ImGui::TextDisabled("L: select/drag/place  R: delete (a field: select)  R-drag/WASD: pan  wheel: zoom");
 
 	if (ImGui::DragFloat("Arena radius", &level.arenaRadius, 50.f, 1000.f, 100000.f, "%.0f")) { edited = true; }
 
@@ -614,7 +603,6 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::RadioButton("Select", &t, (int)Tool::Select); ImGui::SameLine();
 	ImGui::RadioButton("Rusher", &t, (int)Tool::Rusher); ImGui::SameLine();
 	ImGui::RadioButton("Sniper", &t, (int)Tool::Sniper);
-	ImGui::RadioButton("Resource", &t, (int)Tool::Resource); ImGui::SameLine();
 	ImGui::RadioButton("Gate", &t, (int)Tool::Gate); ImGui::SameLine();
 	ImGui::RadioButton("Ring", &t, (int)Tool::Ring); ImGui::SameLine();
 	ImGui::RadioButton("Asteroid", &t, (int)Tool::Asteroid); ImGui::SameLine();
@@ -624,9 +612,12 @@ Request debugUi(level::Level &level, bool unsaved)
 	if (tool == Tool::Paint)
 	{
 		ImGui::TextDisabled("L-drag: paint  Shift+L-drag: erase  -/=: brush size");
-		ImGui::TextDisabled("Paints the selected field, the one under the brush, or a new one");
+		ImGui::TextDisabled("Started on a field, a stroke grows it; on open space, it starts a new one");
 		ImGui::SliderFloat("Brush", &brushRadius, 50.f, 20000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
-		if (selected.kind == Kind::Field && ImGui::Button("Start a new field")) { selected = {}; }
+		if (paintNewField) { ImGui::TextDisabled("The next stroke starts a new field"); }
+		else if (ImGui::Button("Start a new field")) { paintNewField = true; selected = {}; }
+		ImGui::SameLine();
+		ImGui::TextDisabled("(even over another's paint)");
 	}
 	if (tool == Tool::Scenery)
 	{
@@ -665,14 +656,6 @@ Request debugUi(level::Level &level, bool unsaved)
 		}
 		if (ImGui::DragFloat2("Position", &e.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
 		if (ImGui::SliderFloat("Facing", &e.facingDegrees, -180.f, 180.f, "%.0f deg")) { edited = true; }
-		break;
-	}
-	case Kind::Resource:
-	{
-		level::Resource &r = level.resources[selected.index];
-		ImGui::Text("Deposit");
-		if (ImGui::DragFloat2("Position", &r.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
-		if (ImGui::DragFloat("Amount", &r.amount, 0.25f, 0.5f, 100.f, "%.1f")) { edited = true; }
 		break;
 	}
 	case Kind::Marker:
@@ -715,6 +698,7 @@ Request debugUi(level::Level &level, bool unsaved)
 		if (ImGui::SliderFloat("Max gap", &f.maxGap, 0.f, 1500.f, "%.0f", ImGuiSliderFlags_Logarithmic)) { edited = true; }
 		ImGui::TextDisabled("Select tool: drag inside it to move the whole field");
 		ImGui::TextDisabled("Its core (the ring) drags on its own");
+		ImGui::TextDisabled("Its core fits inside the paint: paint wider for a bigger one");
 		break;
 	}
 	case Kind::Core:
@@ -748,7 +732,8 @@ Request debugUi(level::Level &level, bool unsaved)
 	default: break;
 	}
 
-	if (selected.kind != Kind::Start && ImGui::Button("Delete"))
+	const bool field = selected.kind == Kind::Field || selected.kind == Kind::Core;
+	if (selected.kind != Kind::Start && ImGui::Button(field ? "Delete field" : "Delete"))
 	{
 		remove(level, selected);
 	}

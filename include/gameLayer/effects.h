@@ -32,6 +32,11 @@ namespace effects
 	void shipDestroyed(wgpu2d::Texture texture, glm::vec4 cell, glm::vec2 position,
 		glm::vec2 facing, glm::vec2 velocity, float size);
 
+	// A rock breaking (gameplay roadmap A4): a pale puff of dust that swells
+	// and fades like a blast, without the fire or the flash. The pieces are the
+	// rock's own business -- real rocks that fly apart -- so there is no debris.
+	void rockBurst(glm::vec2 position, float size);
+
 	// Game time.
 	void update(float gameDeltaTime);
 
