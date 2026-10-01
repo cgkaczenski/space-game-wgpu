@@ -80,7 +80,7 @@ namespace
 		float bestDistance = 0.f;
 		for (const Enemy &e : *enemies)
 		{
-			const float d = glm::distance(point, e.position);
+			const float d = glm::distance(point, e.body.position);
 			if (best == 0 || d < bestDistance) { best = e.id; bestDistance = d; }
 		}
 		return best;
@@ -306,7 +306,7 @@ void steerMissiles(std::vector<Bullet> &bullets, const std::vector<Enemy> &enemi
 		{
 			if (const Enemy *target = findEnemy(b.targetId, enemies))
 			{
-				const glm::vec2 toTarget = target->position - b.position;
+				const glm::vec2 toTarget = target->body.position - b.position;
 				const float distance = glm::length(toTarget);
 				if (distance > 0.001f) { wanted = toTarget / distance; }
 			}

@@ -93,20 +93,22 @@ void reset()
 	phase = 0.f;
 }
 
+float ease(float level, float throttle, float dt)
+{
+	// The clamp keeps a stalled frame from snapping the plume to full or off
+	// in one step.
+	const float rate = (throttle > level) ? risePerSecond : fallPerSecond;
+	level += (throttle - level) * std::min(1.f, rate * std::max(0.f, dt));
+	return level < 0.004f ? 0.f : level; // settle exactly, so an idle ship records no quads at all
+}
+
 void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize,
 	glm::vec2 facing, float throttle, float dt)
 {
 	if (glow.id == 0) { return; }
 
-	// Ease towards the throttle. The clamp keeps a stalled frame from
-	// snapping the plume to full or off in one step.
-	const float rate = (throttle > level) ? risePerSecond : fallPerSecond;
-	level += (throttle - level) * std::min(1.f, rate * std::max(0.f, dt));
-	if (level < 0.004f)
-	{
-		level = 0.f; // settle exactly, so an idle ship records no quads at all
-		return;
-	}
+	level = ease(level, throttle, dt);
+	if (level <= 0.f) { return; }
 	phase += dt;
 
 	// One setBlendMode around the whole plume. It costs no extra draw run in

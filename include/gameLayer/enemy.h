@@ -18,9 +18,6 @@ struct Enemy
 	unsigned int id = 0;
 
 	glm::uvec2 type = {}; //used to index into the texture atlas
-	glm::vec2 position = {};
-
-	glm::vec2 viewDirection = {1,0};
 
 	// Which function enemyAi calls. Same data, same draw; the policy is not a
 	// subclass. CloseIn flies at the player. KeepDistance faces them and holds
@@ -28,12 +25,13 @@ struct Enemy
 	enum class Behaviour { CloseIn, KeepDistance };
 	Behaviour behaviour = Behaviour::CloseIn;
 
-	// Movement: the same integrator and options as the player. Enemies roll
-	// Instant, which is how they have always moved; a Momentum enemy is a
-	// loadout change, not new code.
-	glm::vec2 velocity = {};
-	movement::Options move = movement::instant(1500.f);
-	float turnSpeed = 3.f;
+	// Its body: position, velocity, facing (where it looks, and where its
+	// sight cone points), how it moves and how fast it turns -- the same kind
+	// of body as the player's, moved by the same movement::step (gameplay
+	// roadmap P1). enemyAi only decides the intent. Its numbers are rolled per
+	// class at spawn.
+	movement::Body body;
+	float plume = 0.f;            // the engine's glow, eased toward its thrust
 
 	// The gun, parked here because there is no Weapon yet. bulletSpeed is the
 	// weapon's -- flight uses Bullet::speed, and this is copied onto it at fire.
@@ -46,9 +44,8 @@ struct Enemy
 
 	// Disabled after being rammed (gameplay roadmap C4b): no steering, no
 	// firing, just carried along by the blow and spinning, until `stunned`
-	// runs out. See enemyAi::stun.
+	// runs out. The blow is on the body's velocity (P1). See enemyAi::stun.
 	float stunned = 0.f;          // seconds left
-	glm::vec2 knockback = {};     // world units per second, fading
 	float spinRate = 0.f;         // radians per second
 
 	// What it knows (gameplay roadmap C5). It sees along a cone from its nose,
@@ -71,9 +68,12 @@ struct Enemy
 
 	// Seconds before touching an asteroid field's core hurts it again (A2).
 	float coreGrace = 0.f;
+	// Seconds before bumping the player hurts again (P1): one bump, one hit,
+	// however many frames the two stay in contact.
+	float bumpGrace = 0.f;
 
 	collision::Circle getHitbox() const
 	{
-		return game::shipHitbox(position, enemyShipSize);
+		return game::shipHitbox(body.position, enemyShipSize);
 	}
 };

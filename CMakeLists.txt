@@ -92,6 +92,7 @@ add_library(engine STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/cameraFollow.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/cameraZoom.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/movement.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/steering.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/closingZone.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/polygon.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/scatter.cpp"

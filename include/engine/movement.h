@@ -72,4 +72,74 @@ namespace movement
 	// of input lands in the same place at 240 fps or at 10.
 	void integrate(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 intent,
 		const Options &options, float deltaTime);
+
+	// ---- A body (gameplay roadmap P1) ------------------------------------
+	//
+	// Anything that flies itself is one of these, and `step` moves them all
+	// the same way. Whatever decides where it goes -- keys, an AI policy --
+	// only fills in an Intent. Facing and thrust are separate, so a body can
+	// point one way and push another: strafe, back off, or fly where it looks.
+
+	struct Body
+	{
+		glm::vec2 position = {};
+		glm::vec2 velocity = {};
+		glm::vec2 facing = {1.f, 0.f}; // unit: where the nose points
+		Options move;                  // how thrust becomes motion
+		float turnRate = 0.f;          // radians per second; 0 turns at once
+		// For being pushed and bumping: the same blow moves a lighter body
+		// more. Thrust is an acceleration, so mass does not change how a body
+		// flies, only how it is knocked about.
+		float mass = 1.f;
+		// Whether it bumps into things at all. False, it passes through:
+		// `collide` ignores any pair with a body that is not solid, and
+		// anything else that pushes bodies about should ask this first. The
+		// owner decides what makes its body intangible -- in this game, a
+		// cloak.
+		bool solid = true;
+		// What `step` last pushed with, in the world's frame, length 0..1 --
+		// for whatever draws an engine.
+		glm::vec2 thrust = {};
+	};
+
+	struct Intent
+	{
+		// Where to point, any length. Zero keeps the current facing.
+		glm::vec2 face = {};
+		// Thrust in the world's frame, plus `forward` along the nose once it
+		// has turned. Their sum is shortened to length 1 if longer.
+		glm::vec2 thrust = {};
+		float forward = 0.f;
+	};
+
+	// Turns toward `intent.face` -- by at most turnRate * deltaTime, or all
+	// the way when turnRate is 0 -- then thrusts and moves through
+	// `integrate`.
+	void step(Body &body, const Intent &intent, float deltaTime);
+
+	// `facing` (unit) turned toward `want` (unit) by at most `maxRadians`,
+	// the shorter way round.
+	glm::vec2 turnToward(glm::vec2 facing, glm::vec2 want, float maxRadians);
+
+	// A blow: `impulse` changes the velocity by impulse / mass, at once. A
+	// blow of 1000 moves a body of mass 1 at 1000 more, one of mass 2 at 500.
+	void push(Body &body, glm::vec2 impulse);
+
+	// Two bodies as circles of radius `radiusA` and `radiusB`. If they
+	// overlap, they are moved apart, the lighter further; if they are also
+	// closing, they bump: the speed along the line between their centres is
+	// exchanged as an equal and opposite impulse, so their total momentum is
+	// kept, and `restitution` of the closing speed comes back as separating
+	// speed (0 they stop together along that line, 1 a perfect bounce). Speed
+	// across the line is untouched, so a glancing touch only deflects. If
+	// either body is not `solid`, nothing happens: no contact.
+	struct Contact
+	{
+		bool touched = false;
+		// How fast they were closing along the line between them; 0 if they
+		// touched without closing -- resting against each other. How hard the
+		// bump was, for whoever decides what a bump costs.
+		float impactSpeed = 0.f;
+	};
+	Contact collide(Body &a, float radiusA, Body &b, float radiusB, float restitution);
 }

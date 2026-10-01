@@ -44,62 +44,50 @@ namespace
 	}
 }
 
-Result update(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 &facing,
-	glm::vec2 mouseDirection, float gameDeltaTime, bool drifting)
+glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting)
 {
 	using platform::Button;
-
 	const float right = held(Button::D, Button::Right) - held(Button::A, Button::Left);
 	const float forward = held(Button::W, Button::Up) - held(Button::S, Button::Down);
 
-	Result result;
-	result.aim = mouseDirection;
-
-	// Turning comes first and is the same whether or not the ship is drifting:
-	// the cloak takes thrust away, not the hull's heading.
+	// Turning is the same whether or not the ship is drifting: the cloak takes
+	// thrust away, not the hull's heading.
+	movement::Intent intent;
 	switch (controls)
 	{
 	case Controls::MouseThrust:
 	case Controls::ScreenDirections:
-		facing = mouseDirection;
+		intent.face = mouseDirection;
 		break;
-
 	case Controls::TurnWithKeys:
-		// Renormalised because repeated small rotations drift off unit length.
-		facing = glm::normalize(rotate(facing, right * turnSpeed * gameDeltaTime));
+		intent.face = rotate(ship.facing, right * turnSpeed * gameDeltaTime);
 		break;
 	}
-	result.facing = facing;
+	ship.turnRate = 0.f; // the hull snaps where it is told (P1: the player's keeps snapping)
 
 	if (drifting)
 	{
 		// Momentum with no acceleration and no drag: exactly constant velocity,
-		// through the same integrator as everything else. No throttle, so no
-		// plume.
-		movement::integrate(position, velocity, {}, movement::momentum(0.f, 0.f),
-			gameDeltaTime);
-		return result;
+		// through the same step as everything else. No thrust, so no plume.
+		ship.move = movement::momentum(0.f, 0.f);
+		movement::step(ship, intent, gameDeltaTime);
+		return mouseDirection;
 	}
 
-	glm::vec2 intent = {};
 	switch (controls)
 	{
 	case Controls::MouseThrust:
 	case Controls::TurnWithKeys:
-		intent = facing * forward;
-		result.throttle = forward != 0.f ? 1.f : 0.f;
+		intent.forward = forward;
 		break;
-
 	case Controls::ScreenDirections:
-		intent = {right, -forward};
-		result.throttle = (right != 0.f || forward != 0.f) ? 1.f : 0.f;
+		intent.thrust = {right, -forward};
 		break;
 	}
 
-	movement::integrate(position, velocity, intent,
-		useMomentum ? momentumOptions : instantOptions, gameDeltaTime);
-
-	return result;
+	ship.move = useMomentum ? momentumOptions : instantOptions;
+	movement::step(ship, intent, gameDeltaTime);
+	return mouseDirection;
 }
 
 void debugUi()

@@ -1,6 +1,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <enemyAi.h>
 
+#include <engine/steering.h>
 #include "imgui.h"
 #include <glm/glm.hpp>
 #include <glm/gtx/transform.hpp>
@@ -36,48 +37,93 @@ namespace
 		return {v.x * c - v.y * s, v.x * s + v.y * c};
 	}
 
-	// Turns the enemy's facing toward `direction` (unit) by at most rate * dt.
-	void turnToward(Enemy &enemy, glm::vec2 direction, float rate, float dt)
+	// How each class flies (gameplay roadmap P1). Every enemy is on Momentum,
+	// as the player is -- thrust, a little drag, a top speed -- and each class
+	// has its own feel. Rolled at spawn, so a change applies to new spawns
+	// (Reset game respawns a level's).
+	struct Flight
 	{
-		const glm::vec2 v = enemy.viewDirection;
-		const float angle = std::atan2(v.x * direction.y - v.y * direction.x, glm::dot(v, direction));
-		enemy.viewDirection = glm::normalize(rotated(v, std::clamp(angle, -rate * dt, rate * dt)));
+		float mass;                  // for blows and bumps: the player's is 1
+		float thrust;                // units per second squared at full intent
+		float drag;                  // per second: coasting speed halves in ln 2 / drag
+		float speedMin, speedMax;    // the top speed, rolled in this range
+		float turnMin, turnMax;      // radians per second, rolled in this range
+	};
+	// Light and twitchy: 1.5 times the player's 6000 thrust, the old Instant
+	// speeds as its cap.
+	Flight rusherFlight = {0.8f, 9000.f, 0.6f, 800.f, 1800.f, 2.2f, 4.2f};
+	// Heavy: 0.6 times the player's thrust, and slow to turn -- it used to
+	// turn at 3.5 .. 4.5.
+	Flight sniperFlight = {1.4f, 3600.f, 0.6f, 1200.f, 1600.f, 1.8f, 2.4f};
+
+	// Stunned, a ship tumbles: no thrust, no cap -- the blow is far past any
+	// top speed -- and this drag, the old knockback's fade, so the blow is
+	// mostly spent in half a second.
+	float stunDrag = 4.f;
+
+	// How each class fights, flying on engine/steering (P1, step 2). Both
+	// circle the player facing it, holding a range: a rusher close and fast,
+	// a sniper far and slow. Off the ring they arrive onto it, braking in
+	// time; far off they head for where the player is going.
+	struct Tactics
+	{
+		float range;                 // the radius it circles at
+		float orbitSpeed;            // how fast it goes round, units per second
+		float lead;                  // the most it leads the player by, seconds
+	};
+	Tactics rusherTactics = {550.f, 700.f, 1.f};
+	Tactics sniperTactics = {1900.f, 350.f, 1.f};
+	steering::Params steer;          // the controller's response and braking share
+
+	void rollFlight(Enemy &e, const Flight &f)
+	{
+		e.body.mass = f.mass;
+		e.body.move = movement::momentum(f.thrust, f.drag);
+		e.body.move.maxSpeed = randomBetween(f.speedMin, f.speedMax);
+		e.body.turnRate = randomBetween(f.turnMin, f.turnMax);
 	}
 
 	bool canSee(const Enemy &enemy, glm::vec2 playerPos, bool playerHidden)
 	{
 		if (playerHidden) { return false; }
-		const glm::vec2 toPlayer = playerPos - enemy.position;
+		const glm::vec2 toPlayer = playerPos - enemy.body.position;
 		const float distance = glm::length(toPlayer);
 		if (distance <= hearingRadius) { return true; }
 		if (distance > enemy.sightRange) { return false; }
-		const float cosine = glm::dot(toPlayer / distance, enemy.viewDirection);
+		const float cosine = glm::dot(toPlayer / distance, enemy.body.facing);
 		return cosine >= std::cos(enemy.sightHalfAngle);
 	}
 
+	// Each policy below only decides an intent -- where to face, where to
+	// thrust. `update` steps the body with it, the same step as the player's.
+
 	// Lost the player: fly to where it was last seen, then turn slowly to scan
 	// for it. The sweep is visible, because the cone turns with the nose.
-	void search(Enemy &enemy, float dt)
+	movement::Intent search(Enemy &enemy, float dt)
 	{
-		const glm::vec2 toLast = enemy.lastKnown - enemy.position;
+		movement::Intent intent;
+		const glm::vec2 toLast = enemy.lastKnown - enemy.body.position;
 		const float distance = glm::length(toLast);
 		if (distance > arriveDistance)
 		{
-			turnToward(enemy, toLast / distance, enemy.turnSpeed, dt);
-			movement::integrate(enemy.position, enemy.velocity, enemy.viewDirection, enemy.move, dt);
-			return;
+			intent.face = toLast;
+			intent.thrust = steering::arrive(enemy.body, enemy.lastKnown, {}, steer);
+			return intent;
 		}
 
-		movement::integrate(enemy.position, enemy.velocity, {}, enemy.move, dt);
+		// There: hold the spot -- arriving brakes to it, rather than coasting
+		// past -- and turn slowly to scan.
 		const float sweep = (enemy.id % 2u) ? scanRate : -scanRate;
-		enemy.viewDirection = glm::normalize(rotated(enemy.viewDirection, sweep * dt));
+		intent.face = rotated(enemy.body.facing, sweep * dt);
+		intent.thrust = steering::arrive(enemy.body, enemy.lastKnown, {}, steer);
 		enemy.searchLeft -= dt;
 		if (enemy.searchLeft <= 0.f) { enemy.awareness = Enemy::Awareness::Unaware; }
+		return intent;
 	}
 
-	// Nothing to go on: drift in slow curves at part speed, changing the curve
+	// Nothing to go on: drift in slow curves at part thrust, changing the curve
 	// every couple of seconds. Patrols replace this once levels give places.
-	void wander(Enemy &enemy, float dt)
+	movement::Intent wander(Enemy &enemy, float dt)
 	{
 		enemy.wanderTimer -= dt;
 		if (enemy.wanderTimer <= 0.f)
@@ -85,15 +131,14 @@ namespace
 			enemy.wanderTurn = randomBetween(-0.8f, 0.8f);
 			enemy.wanderTimer = randomBetween(1.5f, 3.f);
 		}
-		enemy.viewDirection = glm::normalize(rotated(enemy.viewDirection, enemy.wanderTurn * dt));
-		movement::integrate(enemy.position, enemy.velocity,
-			enemy.viewDirection * wanderSpeedFraction, enemy.move, dt);
+		// At part of its top speed along its nose: a velocity to hold, not a
+		// thrust -- part thrust against a little drag still reaches the cap.
+		movement::Intent intent;
+		intent.face = rotated(enemy.body.facing, enemy.wanderTurn * dt);
+		intent.thrust = steering::matchVelocity(enemy.body,
+			intent.face * (wanderSpeedFraction * movement::topSpeed(enemy.body.move)), steer);
+		return intent;
 	}
-
-	// Sniper's hang-back ring. Spawn offset is 2000, so they appear already
-	// near this range and hold it rather than charging in.
-	constexpr float preferredDistance = 1900.f;
-	constexpr float rangeSlack = 300.f;
 
 	glm::vec2 towardPlayer(glm::vec2 from, glm::vec2 playerPos, float *distance)
 	{
@@ -128,75 +173,33 @@ namespace
 
 	bool alignedTo(const Enemy &enemy, glm::vec2 directionToPlayer)
 	{
-		return glm::length(directionToPlayer + enemy.viewDirection) >= enemy.fireRange;
+		return glm::length(directionToPlayer + enemy.body.facing) >= enemy.fireRange;
 	}
 
-	// Fly where you look, and look at the player. The old single behaviour.
-	bool closeIn(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos)
+	// Close in and circle tight, fast, facing the player -- guns on it all
+	// the way round. It used to fly where it looked, straight at the player,
+	// which with momentum overshoots: it passed through and had to come
+	// round again. Which way round is the id's.
+	movement::Intent closeIn(const Enemy &enemy, glm::vec2 playerPos, glm::vec2 playerVelocity)
 	{
-		const glm::vec2 directionToPlayer = towardPlayer(enemy.position, playerPos, nullptr);
-
-		glm::vec2 newDirection = {};
-		if (glm::length(directionToPlayer + enemy.viewDirection) <= 0.2f)
-		{
-			if (rand() % 2)
-			{
-				newDirection = glm::vec2(directionToPlayer.y, -directionToPlayer.x);
-			}
-			else
-			{
-				newDirection = glm::vec2(-directionToPlayer.y, directionToPlayer.x);
-			}
-		}
-		else
-		{
-			newDirection =
-				gameDeltaTime * enemy.turnSpeed * directionToPlayer + enemy.viewDirection;
-		}
-
-		enemy.viewDirection = glm::normalize(newDirection);
-
-		// Wants to go where it looks. This used to multiply the speed by the
-		// length of newDirection -- within a few percent of 1, so a per-frame
-		// wobble rather than a feature -- and is plain full intent now.
-		movement::integrate(enemy.position, enemy.velocity, enemy.viewDirection,
-			enemy.move, gameDeltaTime);
-
-		return tickGun(enemy, gameDeltaTime, alignedTo(enemy, directionToPlayer));
+		movement::Intent intent;
+		intent.face = towardPlayer(enemy.body.position, playerPos, nullptr);
+		intent.thrust = steering::orbit(enemy.body, playerPos, playerVelocity,
+			rusherTactics.range, rusherTactics.orbitSpeed, enemy.id % 2u == 0u, rusherTactics.lead, steer);
+		return intent;
 	}
 
-	// Face the player, move independently: retreat when too close, close the
-	// gap when too far, orbit in between. That split is the whole policy --
-	// CloseIn cannot hang back because it only has one vector.
-	bool keepDistance(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos)
+	// Hang back and circle wide, slowly, facing the player: back off when
+	// too close, close in when too far, round in between -- all one orbit,
+	// braking onto the ring instead of swinging through it. Which way round is
+	// the sheet row's, as before (type.y).
+	movement::Intent keepDistance(const Enemy &enemy, glm::vec2 playerPos, glm::vec2 playerVelocity)
 	{
-		float distance = 0.f;
-		const glm::vec2 directionToPlayer = towardPlayer(enemy.position, playerPos, &distance);
-
-		glm::vec2 facing =
-			gameDeltaTime * enemy.turnSpeed * directionToPlayer + enemy.viewDirection;
-		const float facingLength = glm::length(facing);
-		if (facingLength > 0.f)
-		{
-			enemy.viewDirection = facing / facingLength;
-		}
-
-		glm::vec2 orbit(-directionToPlayer.y, directionToPlayer.x);
-		if (enemy.type.y % 2u == 0u) { orbit = -orbit; }
-
-		glm::vec2 move = orbit;
-		if (distance < preferredDistance - rangeSlack)
-		{
-			move = glm::normalize(-directionToPlayer + orbit * 0.6f);
-		}
-		else if (distance > preferredDistance + rangeSlack)
-		{
-			move = directionToPlayer;
-		}
-
-		movement::integrate(enemy.position, enemy.velocity, move, enemy.move, gameDeltaTime);
-
-		return tickGun(enemy, gameDeltaTime, alignedTo(enemy, directionToPlayer));
+		movement::Intent intent;
+		intent.face = towardPlayer(enemy.body.position, playerPos, nullptr);
+		intent.thrust = steering::orbit(enemy.body, playerPos, playerVelocity,
+			sniperTactics.range, sniperTactics.orbitSpeed, enemy.type.y % 2u == 0u, sniperTactics.lead, steer);
+		return intent;
 	}
 
 	void rollLoadout(Enemy &e)
@@ -206,8 +209,7 @@ namespace
 			// Column 2 of the sheet, so they read as a different ship. Two rows
 			// so they do not all orbit the same way (keepDistance uses type.y).
 			e.type = (rand() % 2) ? glm::uvec2{2, 0} : glm::uvec2{2, 1};
-			e.move = movement::instant(1200 + rand() % 400); // 1200 .. 1600
-			e.turnSpeed = 3.5f + (rand() % 1000) / 1000.f; // 3.5 .. 4.5
+			rollFlight(e, sniperFlight);
 			e.fireRange = 1.7f + (rand() % 1000) / 5000.f; // 1.7 .. 1.9
 			e.fireTimeReset = 0.8f + (rand() % 1000) / 1000.f; // 0.8 .. 1.8 s
 			e.bulletSpeed = 2800 + rand() % 1200;          // 2800 .. 4000
@@ -219,18 +221,17 @@ namespace
 		}
 
 		e.type = (rand() % 2) ? glm::uvec2{0, 0} : glm::uvec2{0, 1};
-		e.move = movement::instant(800 + rand() % 1000);  // 800 .. 1800
-		e.turnSpeed = 2.2f + (rand() % 1000) / 500.f;   // 2.2 .. 4.2
+		rollFlight(e, rusherFlight);
 		e.fireRange = 1.5f + (rand() % 1000) / 2000.f;
 		e.fireTimeReset = 0.1f + (rand() % 1000) / 500.f; // 0.1 .. 2.1 s
 		e.bulletSpeed = 1000 + rand() % 1600;            // 1000 .. 2600
 	}
 }
 
-void stun(Enemy &enemy, glm::vec2 push, float seconds)
+void stun(Enemy &enemy, glm::vec2 impulse, float seconds)
 {
 	enemy.stunned = seconds;
-	enemy.knockback = push;
+	movement::push(enemy.body, impulse);
 	// A fast tumble either way, so two rammed ships do not turn in step.
 	const float turns = 6.f + (rand() % 1000) / 200.f; // 6 .. 11 rad/s
 	enemy.spinRate = (rand() % 2) ? turns : -turns;
@@ -240,25 +241,27 @@ void alert(Enemy &enemy, glm::vec2 playerPos)
 {
 	enemy.awareness = Enemy::Awareness::Engaged;
 	enemy.lastKnown = playerPos;
-	const glm::vec2 toPlayer = playerPos - enemy.position;
+	const glm::vec2 toPlayer = playerPos - enemy.body.position;
 	const float distance = glm::length(toPlayer);
-	if (distance > 0.001f) { enemy.viewDirection = toPlayer / distance; }
+	if (distance > 0.001f) { enemy.body.facing = toPlayer / distance; }
 }
 
 bool showCones() { return conesVisible; }
 
-bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden,
-	const glm::vec2 *comeBackTo)
+bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
+	bool playerHidden, const glm::vec2 *comeBackTo)
 {
 	if (enemy.stunned > 0.f)
 	{
+		// Disabled: tumbling on the blow -- no thrust, no cap, the tumble's
+		// own quick drag. Integrated directly rather than stepped: the body
+		// keeps its own options for when it recovers, and the spin is not a
+		// turn toward anything.
 		enemy.stunned -= gameDeltaTime;
-		enemy.position += enemy.knockback * gameDeltaTime;
-		enemy.knockback *= std::exp(-4.f * gameDeltaTime);
-
-		const float a = enemy.spinRate * gameDeltaTime;
-		const glm::vec2 v = enemy.viewDirection;
-		enemy.viewDirection = {v.x * std::cos(a) - v.y * std::sin(a), v.x * std::sin(a) + v.y * std::cos(a)};
+		enemy.body.facing = glm::normalize(rotated(enemy.body.facing, enemy.spinRate * gameDeltaTime));
+		enemy.body.thrust = {};
+		movement::integrate(enemy.body.position, enemy.body.velocity, {},
+			movement::momentum(0.f, stunDrag), gameDeltaTime);
 		return false;
 	}
 
@@ -275,38 +278,38 @@ bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerH
 		enemy.searchLeft = searchSeconds;
 	}
 
+	movement::Intent intent;
+	bool fighting = false;
 	if (comeBackTo && enemy.awareness != Enemy::Awareness::Engaged)
 	{
+		// Flying back into the closing circle, straight there at full thrust,
+		// still looking.
 		enemy.awareness = Enemy::Awareness::Unaware;
-		const glm::vec2 toward = *comeBackTo - enemy.position;
-		const float distance = glm::length(toward);
-		if (distance > 0.001f) { turnToward(enemy, toward / distance, enemy.turnSpeed, gameDeltaTime); }
-		movement::integrate(enemy.position, enemy.velocity, enemy.viewDirection, enemy.move, gameDeltaTime);
-		return false;
+		intent.face = *comeBackTo - enemy.body.position;
+		intent.forward = 1.f;
 	}
-
-	switch (enemy.awareness)
+	else
 	{
-	case Enemy::Awareness::Searching:
-		search(enemy, gameDeltaTime);
-		return false;
-
-	case Enemy::Awareness::Unaware:
-		wander(enemy, gameDeltaTime);
-		return false;
-
-	case Enemy::Awareness::Engaged:
-		break;
+		switch (enemy.awareness)
+		{
+		case Enemy::Awareness::Searching: intent = search(enemy, gameDeltaTime); break;
+		case Enemy::Awareness::Unaware: intent = wander(enemy, gameDeltaTime); break;
+		case Enemy::Awareness::Engaged:
+			fighting = true;
+			intent = enemy.behaviour == Enemy::Behaviour::KeepDistance
+				? keepDistance(enemy, playerPos, playerVelocity)
+				: closeIn(enemy, playerPos, playerVelocity);
+			break;
+		}
 	}
 
-	switch (enemy.behaviour)
-	{
-	case Enemy::Behaviour::CloseIn:
-		return closeIn(enemy, gameDeltaTime, playerPos);
-	case Enemy::Behaviour::KeepDistance:
-		return keepDistance(enemy, gameDeltaTime, playerPos);
-	}
-	return false;
+	// One step for every ship, the player's included.
+	movement::step(enemy.body, intent, gameDeltaTime);
+
+	// Only a fighting enemy fires, once it has turned far enough to be
+	// aligned -- judged on the facing it has after this step's turn.
+	if (!fighting) { return false; }
+	return tickGun(enemy, gameDeltaTime, alignedTo(enemy, towardPlayer(enemy.body.position, playerPos, nullptr)));
 }
 
 Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour)
@@ -316,8 +319,8 @@ Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour)
 	Enemy e;
 	e.id = nextId++;
 	e.behaviour = behaviour;
-	e.position = position;
-	e.viewDirection = facing;
+	e.body.position = position;
+	e.body.facing = facing;
 	rollLoadout(e);
 	return e;
 }
@@ -369,7 +372,41 @@ void debugUi()
 	ImGui::SliderFloat("Hearing", &hearingRadius, 0.f, 1500.f, "%.0f");
 	ImGui::SliderFloat("Search time", &searchSeconds, 0.5f, 15.f, "%.1f s");
 	ImGui::SliderFloat("Scan speed", &scanRate, 0.2f, 5.f, "%.1f rad/s");
-	ImGui::SliderFloat("Wander speed", &wanderSpeedFraction, 0.f, 1.f, "%.2f");
+	ImGui::SliderFloat("Wander thrust", &wanderSpeedFraction, 0.f, 1.f, "%.2f");
+
+	// P1: how each class flies. Rolled at spawn.
+	auto flightUi = [](const char *name, Flight &f)
+	{
+		if (!ImGui::TreeNode(name)) { return; }
+		ImGui::TextDisabled("New spawns; Reset game respawns a level's");
+		ImGui::SliderFloat("Mass", &f.mass, 0.1f, 5.f, "%.2f (the player is 1)");
+		ImGui::SliderFloat("Thrust", &f.thrust, 500.f, 30000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Falloff", &f.drag, 0.f, 3.f, "%.2f");
+		ImGui::DragFloatRange2("Top speed", &f.speedMin, &f.speedMax, 10.f, 100.f, 6000.f, "%.0f");
+		ImGui::DragFloatRange2("Turn rate", &f.turnMin, &f.turnMax, 0.05f, 0.1f, 15.f, "%.1f rad/s");
+		ImGui::TreePop();
+	};
+	flightUi("Rusher flight", rusherFlight);
+	flightUi("Sniper flight", sniperFlight);
+
+	// P1 step 2: how they fight with it. Live, for every enemy.
+	auto tacticsUi = [](const char *name, Tactics &t)
+	{
+		if (!ImGui::TreeNode(name)) { return; }
+		ImGui::SliderFloat("Range", &t.range, 100.f, 4000.f, "%.0f");
+		ImGui::SliderFloat("Orbit speed", &t.orbitSpeed, 0.f, 2000.f, "%.0f");
+		ImGui::SliderFloat("Lead", &t.lead, 0.f, 3.f, "%.2f s");
+		ImGui::TreePop();
+	};
+	tacticsUi("Rusher tactics", rusherTactics);
+	tacticsUi("Sniper tactics", sniperTactics);
+	ImGui::SliderFloat("Stun drag", &stunDrag, 0.5f, 10.f, "%.1f /s (tumbling after a ram)");
+	if (ImGui::TreeNode("Steering"))
+	{
+		ImGui::SliderFloat("Response", &steer.responseTime, 0.02f, 2.f, "%.2f s");
+		ImGui::SliderFloat("Brake share", &steer.brakeShare, 0.1f, 1.f, "%.2f of full thrust");
+		ImGui::TreePop();
+	}
 }
 
 }

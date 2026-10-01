@@ -40,6 +40,13 @@ namespace thruster
 	void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize,
 		glm::vec2 facing, float throttle, float dt);
 
+	// The plume's easing on its own: `level` moved toward `throttle` by `dt`,
+	// rising faster than it falls so the engine catches at once and dies
+	// away, and settled to exactly 0 when nearly out. `draw` runs the
+	// player's through this; anything else with an engine -- an enemy (P1) --
+	// keeps its own level and eases it here.
+	float ease(float level, float throttle, float dt);
+
 	// The same plume with no memory: the caller supplies how lit it is and
 	// where in its flicker, so any number of things can have one -- a missile's
 	// exhaust -- without disturbing the ship's easing. `draw` above is this

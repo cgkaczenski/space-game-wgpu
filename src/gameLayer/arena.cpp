@@ -161,7 +161,7 @@ float burnFlash() { return flash; }
 float burnEnemy(Enemy &enemy, float dt)
 {
 	enemy.burnFlash = std::max(0.f, enemy.burnFlash - flashFadePerSecond * dt);
-	return tickBurn(enemy.position, dt, enemyBurnPerSecond, enemy.burnTimer, enemy.burnFlash);
+	return tickBurn(enemy.body.position, dt, enemyBurnPerSecond, enemy.burnTimer, enemy.burnFlash);
 }
 
 void drawBurnFlash(wgpu2d::Renderer2D &renderer, float shipFlash, glm::vec2 position,

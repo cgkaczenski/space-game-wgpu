@@ -63,19 +63,24 @@ namespace
 // toggles, tuning -- lives in the feature that owns it and survives.
 struct Session
 {
-	glm::vec2 playerPos = {100,100};
-	glm::vec2 playerVelocity = {};
-	glm::vec2 playerFacing = {1,0};
+	// The player's ship: the same kind of body as every enemy's, moved by the
+	// same movement::step (gameplay roadmap P1). playerMove turns the keys
+	// into its intent.
+	movement::Body ship = []
+	{
+		movement::Body b;
+		b.position = {100, 100};
+		return b;
+	}();
+	// Where the player's shots go -- the mouse, not necessarily the hull --
+	// kept from the last frame flown, for frames that are not.
+	glm::vec2 aim = {1, 0};
 
 	std::vector<Bullet> bullets;
 
 	std::vector<Enemy> enemies;
 
 	float health = 1.f;
-
-	// Last frame's flying: what the ship shows while it is not being flown --
-	// paused, or wreckage.
-	playerMove::Result player;
 
 	float spawnEnemyTimerSecconds = 3;
 };
@@ -97,6 +102,7 @@ wgpu2d::Texture shipSheet;
 wgpu2d::TextureAtlasPadding shipAtlas;
 
 constexpr float shipSize = 250.f;
+const glm::vec4 enemyPlumeColour = {1.f, 0.45f, 0.18f, 1.f}; // the player's is blue
 
 // Enemies further than this from the player are removed -- in the endless
 // mode only, with no level loaded. Named because the zoom-out limit depends on
@@ -144,6 +150,53 @@ bool levelLoaded = false;
 // searching enemies stay awake wherever they are, so a chase does not freeze
 // just off screen.
 float wakeMargin = 0.25f;
+// Ships bump (gameplay roadmap P1): how much of the closing speed comes back
+// apart. 0 they stop together, 1 a perfect bounce.
+float shipBounce = 0.4f;
+// A bump between the player and an enemy hurts both, a little: the player's
+// shield blocks it as it blocks a shot; enemies have none yet (B1). Only a
+// real impact -- closing faster than `bumpMinSpeed` -- and once per
+// `bumpGrace`, so ships resting against each other do not grind each other
+// down. Enemy against enemy only bumps.
+float bumpDamage = 0.05f;        // to the player's hull
+float bumpEnemyDamage = 0.05f;   // to the enemy's life (1 at full)
+float bumpMinSpeed = 200.f;      // units per second of closing speed
+float bumpGrace = 0.5f;          // seconds
+
+// ---- Bumps and intangibility: the convention --------------------------------
+//
+// A ship either bumps into things or passes through them, and one flag says
+// which: `movement::Body::solid`. Cloaked, the player's ship is not solid --
+// it passes through enemies and through asteroid field cores, and nothing it
+// passes feels it.
+//
+// To keep that true as the game grows, two rules:
+//
+//   1. Something that makes a ship intangible clears that ship's `solid`, and
+//      does nothing else about bumps. The cloak does it in syncSolid() below;
+//      a boss that cloaks (gameplay roadmap B2) would clear its own body's.
+//
+//   2. Every bump respects `solid`, one of two ways:
+//      - Body against Body: go through movement::collide. It already ignores
+//        a pair where either side is not solid, so the call site adds no check.
+//      - Anything that is not a Body -- a field's core today; a wall, a mine
+//        or a gate's rim tomorrow -- checks `body.solid` itself before it
+//        pushes or hurts the ship. See the core contacts below.
+//
+// So a new bump never tests the cloak, and a new kind of intangibility never
+// touches a bump: they meet only at `solid`. Grep for `.solid` to find every
+// place that honours it.
+//
+// What `solid` does not cover: shots, the beam, missiles and blasts are not
+// bumps. Whether those reach a cloaked ship is energy::onHit's business.
+
+// The player's ship is solid unless cloaked. Called before each pass that can
+// bump the ship, because the cloak can drop partway through a frame -- firing
+// uncloaks.
+void syncSolid()
+{
+	session.ship.solid = !energy::isCloaked();
+}
 bool sceneryVisible = true;
 int awakeEnemies = 0; // last frame's, for the panel
 
@@ -234,15 +287,15 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	else { arena::start(0.f, {}); }
 	if (levelLoaded)
 	{
-		session.playerPos = currentLevel.start;
-		session.playerFacing = level::direction(currentLevel.startFacingDegrees);
+		session.ship.position = currentLevel.start;
+		session.ship.facing = level::direction(currentLevel.startFacingDegrees);
 		for (const level::EnemyPlacement &p : currentLevel.enemies)
 		{
 			session.enemies.push_back(enemyAi::spawnAt(p.position,
 				level::direction(p.facingDegrees), p.behaviour));
 		}
 	}
-	if (startAt) { session.playerPos = *startAt; }
+	if (startAt) { session.ship.position = *startAt; }
 
 	// The way out (gameplay roadmap L5): the level's first gate, if it has one.
 	{
@@ -269,7 +322,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 
 	// Zero dead zone and zero leash: snap straight onto the player.
 	cameraBase = camera::follow(
-		cameraBase, session.playerPos,
+		cameraBase, session.ship.position,
 		{(float)renderer.windowW, (float)renderer.windowH},
 		{550.f, 0.f, 0.f});
 	renderer.currentCamera.position = cameraBase;
@@ -281,8 +334,8 @@ void killEnemy(int index)
 {
 	const Enemy &e = session.enemies[index];
 	effects::enemyKilled(e, shipSheet, shipAtlas.get(e.type.x, e.type.y));
-	asteroids::blast(e.position); // the blast shoves rocks near it (A2)
-	resources::enemyDropped(e.position); // fragments among the wreckage (L3)
+	asteroids::blast(e.body.position); // the blast shoves rocks near it (A2)
+	resources::enemyDropped(e.body.position); // fragments among the wreckage (L3)
 	session.enemies.erase(session.enemies.begin() + index);
 }
 
@@ -307,12 +360,12 @@ void sessionDebugUi()
 
 	if (ImGui::Button("Spawn rusher"))
 	{
-		session.enemies.push_back(enemyAi::spawnNear(session.playerPos, Enemy::Behaviour::CloseIn));
+		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::CloseIn));
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Spawn sniper"))
 	{
-		session.enemies.push_back(enemyAi::spawnNear(session.playerPos, Enemy::Behaviour::KeepDistance));
+		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::KeepDistance));
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Reset game"))
@@ -328,7 +381,7 @@ void sessionDebugUi()
 	}
 
 	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
-	ImGui::Text("Player at %.0f, %.0f", session.playerPos.x, session.playerPos.y);
+	ImGui::Text("Player at %.0f, %.0f", session.ship.position.x, session.ship.position.y);
 	ImGui::Checkbox("Health regen", &healthRegenEnabled);
 }
 
@@ -531,6 +584,16 @@ void debugPanelUi()
 	debugPanel::section("Ram", ram::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemyAi::debugUi);
+	debugPanel::section("Ship bumps", []
+	{
+		ImGui::SliderFloat("Bounce", &shipBounce, 0.f, 1.f, "%.2f of the closing speed");
+		ImGui::TextDisabled("Player against enemy: both hurt, the player's shield blocks; never cloaked");
+		ImGui::SliderFloat("Damage to player", &bumpDamage, 0.f, 0.5f, "%.2f of the hull");
+		ImGui::SliderFloat("Damage to enemy", &bumpEnemyDamage, 0.f, 1.f, "%.2f of its life");
+		ImGui::SliderFloat("Hardest touch that is free", &bumpMinSpeed, 0.f, 2000.f, "%.0f u/s");
+		ImGui::SliderFloat("Grace", &bumpGrace, 0.f, 3.f, "%.2f s between hits");
+		ImGui::TextDisabled("Masses: player 1; enemies under Enemies -> flight");
+	});
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
 	debugPanel::section("Shield", shield::debugUi);
 	debugPanel::section("CRT", crt::debugUi);
@@ -703,78 +766,78 @@ bool gameLogic(float deltaTime)
 	}
 	shield::setRam(ram::barrierLevel(), ram::direction());
 
-	playerMove::Result player;
+	// The ship's body is moved by playerMove -- or, in the states below that
+	// take the controls away, set directly: the warp and the ram are not
+	// thrust. `thrust` is set too, since it is what lights the plume.
 	if (gameState::current() == gameState::State::Extracting)
 	{
 		// The warp: straight out along the heading, faster every moment, the
 		// ram's afterimages and streaks behind it. The camera holds (below),
 		// so the ship leaves the screen before it goes white.
-		session.playerVelocity = session.playerFacing * gameState::warpSpeed();
-		session.playerPos += session.playerVelocity * time.game;
-		player = session.player;
-		player.facing = session.playerFacing;
-		player.throttle = 1.f;
+		session.ship.velocity = session.ship.facing * gameState::warpSpeed();
+		session.ship.position += session.ship.velocity * time.game;
+		session.ship.thrust = session.ship.facing;
 
-		effects::ramTrail(session.playerPos, session.playerFacing, shipSize,
+		effects::ramTrail(session.ship.position, session.ship.facing, shipSize,
 			shipAtlas.get(3, 0), time.game);
 	}
 	else if (!controls)
 	{
 		// Paused, the hull holds still -- playerMove would snap it to the
 		// mouse even with no time passing. Dying, it is not drawn.
-		player = session.player;
 	}
 	else if (ram::windingUp())
 	{
 		// The wind-up: a moment's dip back, facing the ram, while the prow
 		// brightens. The anticipation is what makes the lunge read as heavy.
-		session.playerVelocity = -ram::direction() * ram::windupBackSpeed();
-		session.playerPos += session.playerVelocity * time.game;
-		session.playerFacing = ram::direction();
-		player.facing = ram::direction();
-		player.aim = mouseDirection;
-		player.throttle = 0.f;
+		session.ship.velocity = -ram::direction() * ram::windupBackSpeed();
+		session.ship.position += session.ship.velocity * time.game;
+		session.ship.facing = ram::direction();
+		session.ship.thrust = {};
+		session.aim = mouseDirection;
 	}
 	else if (ram::active())
 	{
 		// The surge overrides flying: straight along the ram, past the normal
 		// top speed. When it ends the ship still has this velocity, and the
 		// momentum settings take it from there -- the speed cap brings it back.
-		session.playerVelocity = ram::direction() * ram::surgeSpeed();
-		session.playerPos += session.playerVelocity * time.game;
-		session.playerFacing = ram::direction();
-		player.facing = ram::direction();
-		player.aim = mouseDirection;
-		player.throttle = 1.f;
+		session.ship.velocity = ram::direction() * ram::surgeSpeed();
+		session.ship.position += session.ship.velocity * time.game;
+		session.ship.facing = ram::direction();
+		session.ship.thrust = ram::direction();
+		session.aim = mouseDirection;
 
-		effects::ramTrail(session.playerPos, ram::direction(), shipSize,
+		effects::ramTrail(session.ship.position, ram::direction(), shipSize,
 			shipAtlas.get(3, 0), time.game);
 	}
 	else
 	{
-		player = playerMove::update(session.playerPos, session.playerVelocity,
-			session.playerFacing, mouseDirection, time.game, energy::isCloaked());
+		session.aim = playerMove::update(session.ship, mouseDirection, time.game, energy::isCloaked());
 	}
-	session.player = player;
 
 	// An asteroid field's core is solid (gameplay roadmap A2): the ship is put
 	// back on its surface, thrown back out, and -- once per touch -- hit.
 	// The shield blocks it and breaks, as a shot would; with it down, the
 	// hull takes the damage. The ram's prow takes it instead when the core is
-	// ahead of it, as it takes shots from the front. Cloaked, nothing hits.
+	// ahead of it, as it takes shots from the front. A core is not a Body, so
+	// this bump checks `solid` itself (the convention, above): cloaked, the
+	// ship passes through the core untouched. Uncloaking inside one puts it
+	// back on the surface, and that touch hurts.
+	syncSolid();
 	{
 		static float coreGrace = 0.f;
 		coreGrace = std::max(0.f, coreGrace - time.game);
-		const collision::Circle hull = game::shipHitbox(session.playerPos, shipSize);
+		const collision::Circle hull = game::shipHitbox(session.ship.position, shipSize);
 		asteroids::CoreContact contact;
-		if (gameState::playerPresent() && asteroids::coreContact(hull.center, hull.radius, contact))
+		if (gameState::playerPresent() && session.ship.solid
+			&& asteroids::coreContact(hull.center, hull.radius, contact))
 		{
 			const asteroids::CoreRules &rules = asteroids::coreRules();
-			session.playerPos = contact.pushTo;
-			const float inward = glm::dot(session.playerVelocity, contact.outward);
-			if (inward < 0.f) { session.playerVelocity -= (1.f + rules.bounce) * inward * contact.outward; }
-			const float out = glm::dot(session.playerVelocity, contact.outward);
-			if (out < rules.minOutSpeed) { session.playerVelocity += (rules.minOutSpeed - out) * contact.outward; }
+			session.ship.position = contact.pushTo;
+			const float inward = glm::dot(session.ship.velocity, contact.outward);
+			if (inward < 0.f) { session.ship.velocity -= (1.f + rules.bounce) * inward * contact.outward; }
+			const float out = glm::dot(session.ship.velocity, contact.outward);
+			if (out < rules.minOutSpeed) { session.ship.velocity += (rules.minOutSpeed - out) * contact.outward; }
 
 			if (coreGrace <= 0.f)
 			{
@@ -800,7 +863,7 @@ bool gameLogic(float deltaTime)
 	// once when every enemy is dead, and flying into it ready and uncloaked
 	// is what the debug Extract button did.
 	if (gate::update(time.game, !arena::closes() || arena::onFinalRing(), session.enemies.empty(),
-		session.playerPos, controls && !energy::isCloaked()))
+		session.ship.position, controls && !energy::isCloaked()))
 	{
 		startExtraction();
 	}
@@ -812,7 +875,7 @@ bool gameLogic(float deltaTime)
 	rammingLastFrame = ram::active();
 	if (ram::active())
 	{
-		const collision::Circle front = {session.playerPos + ram::direction() * (shipSize * 0.3f),
+		const collision::Circle front = {session.ship.position + ram::direction() * (shipSize * 0.3f),
 			shipSize * 0.65f};
 
 		// Rocks too (gameplay roadmap A2): each struck once per ram, shoved
@@ -841,11 +904,11 @@ bool gameLogic(float deltaTime)
 			// ahead, the ship -- still surging -- caught the enemy it had just
 			// struck and ran through it; aside, the ship passes it.
 			const glm::vec2 side = {-ram::direction().y, ram::direction().x};
-			const float which = glm::dot(enemy.position - session.playerPos, side) >= 0.f ? 1.f : -1.f;
+			const float which = glm::dot(enemy.body.position - session.ship.position, side) >= 0.f ? 1.f : -1.f;
 			const glm::vec2 away = glm::normalize(ram::direction() + side * which);
 			// Engaged first -- which turns it to face the player -- then the
 			// spin takes over until the stun runs out.
-			enemyAi::alert(enemy, session.playerPos);
+			enemyAi::alert(enemy, session.ship.position);
 			enemyAi::stun(enemy, away * (ram::surgeSpeed() + ram::knockbackSpeed()),
 				ram::stunSeconds());
 		}
@@ -865,7 +928,7 @@ bool gameLogic(float deltaTime)
 		// kept crossing those steps: the camera fell behind, caught up, fell
 		// behind, and the world jittered round a steadily moving ship.
 		cameraBase = camera::follow(
-			cameraBase, session.playerPos, {(float)w, (float)h},
+			cameraBase, session.ship.position, {(float)w, (float)h},
 			{time.real * 550.f, 0.f, 150.f});
 	}
 
@@ -906,9 +969,9 @@ bool gameLogic(float deltaTime)
 		+ mousePos / glm::vec2((float)w, (float)h) * glm::vec2(view.z, view.w);
 
 	weapons::FireContext fire;
-	fire.origin = session.playerPos;
-	fire.aim = player.aim; // the mouse, not necessarily the hull
-	fire.shipVelocity = session.playerVelocity;
+	fire.origin = session.ship.position;
+	fire.aim = session.aim; // the mouse, not necessarily the hull
+	fire.shipVelocity = session.ship.velocity;
 	fire.shipSize = shipSize;
 	fire.mouseWorld = mouseWorld;
 	fire.enemies = &session.enemies;
@@ -986,7 +1049,7 @@ bool gameLogic(float deltaTime)
 			}
 			else
 			{
-				enemyAi::alert(session.enemies[target], session.playerPos);
+				enemyAi::alert(session.enemies[target], session.ship.position);
 			}
 		}
 	}
@@ -998,7 +1061,7 @@ bool gameLogic(float deltaTime)
 	for (int i = 0; i < session.bullets.size(); i++)
 	{
 		
-		if (glm::distance(session.bullets[i].position, session.playerPos) > 5'000)
+		if (glm::distance(session.bullets[i].position, session.ship.position) > 5'000)
 		{
 			session.bullets.erase(session.bullets.begin() + i);
 			i--;
@@ -1041,7 +1104,7 @@ bool gameLogic(float deltaTime)
 						else
 						{
 							// Hit, it knows: engaged, turned toward the shooter.
-							enemyAi::alert(session.enemies[e], session.playerPos);
+							enemyAi::alert(session.enemies[e], session.ship.position);
 						}
 
 						session.bullets.erase(session.bullets.begin() + i);
@@ -1064,14 +1127,14 @@ bool gameLogic(float deltaTime)
 				// Not once it is wreckage or leaving: those shots fly on.
 				if (gameState::playerPresent() && !energy::isCloaked() &&
 					collisionSystem.overlaps(session.bullets[i].getHitbox(),
-					game::shipHitbox(session.playerPos, shipSize)))
+					game::shipHitbox(session.ship.position, shipSize)))
 				{
 					// Shot at all -- prow, shield or hull -- and the gate's
 					// start is lost (gameplay roadmap L5).
 					gate::playerShot();
 
 					// The ram's prow takes shots from the front while it is out.
-					if (ram::barrierUp() && glm::dot(session.bullets[i].position - session.playerPos,
+					if (ram::barrierUp() && glm::dot(session.bullets[i].position - session.ship.position,
 						ram::direction()) > 0.f)
 					{
 						session.bullets.erase(session.bullets.begin() + i);
@@ -1082,7 +1145,7 @@ bool gameLogic(float deltaTime)
 					// Relative to the ship, because the shield moves with it and
 					// the ripple has to stay anchored to the bubble.
 					const energy::HitResult hit =
-						energy::onHit(session.bullets[i].position - session.playerPos);
+						energy::onHit(session.bullets[i].position - session.ship.position);
 
 					if (hit == energy::HitResult::Damaged)
 					{
@@ -1109,7 +1172,7 @@ bool gameLogic(float deltaTime)
 	// closed to nothing, whoever is still here is done.
 	if (controls)
 	{
-		const float burn = arena::burn(session.playerPos, time.game);
+		const float burn = arena::burn(session.ship.position, time.game);
 		if (burn > 0.f)
 		{
 			session.health -= burn;
@@ -1122,12 +1185,12 @@ bool gameLogic(float deltaTime)
 	{
 		// The ship goes the way enemies do, and the world runs on around the
 		// wreck until gameState switches the picture off (gameplay roadmap L1).
-		effects::shipDestroyed(shipSheet, shipAtlas.get(3, 0), session.playerPos,
-			session.playerFacing, session.playerVelocity, shipSize);
-		asteroids::blast(session.playerPos);
+		effects::shipDestroyed(shipSheet, shipAtlas.get(3, 0), session.ship.position,
+			session.ship.facing, session.ship.velocity, shipSize);
+		asteroids::blast(session.ship.position);
 		effects::shake(1.f);
-		session.playerVelocity = {};
-		resources::playerDropped(session.playerPos); // the hold spills at the wreck
+		session.ship.velocity = {};
+		resources::playerDropped(session.ship.position); // the hold spills at the wreck
 		energy::uncloak();
 		ram::reset();
 		weapons::reset(); // no burst's second shot from the wreck
@@ -1138,7 +1201,7 @@ bool gameLogic(float deltaTime)
 		// Game time. This was the frame's own delta, so at 1% speed the ship
 		// healed at full rate while everything shooting at it crawled.
 		// Not while burning, or regen would cancel most of it.
-		if (healthRegenEnabled && !arena::outside(session.playerPos)) { session.health += time.game * 0.05; }
+		if (healthRegenEnabled && !arena::outside(session.ship.position)) { session.health += time.game * 0.05; }
 		session.health = glm::clamp(session.health, 0.f, 1.f);
 	}
 
@@ -1150,7 +1213,7 @@ bool gameLogic(float deltaTime)
 	if (!levelLoaded)
 	{
 		enemyAi::updateSpawning(session.enemies, session.spawnEnemyTimerSecconds,
-			session.playerPos, time.game);
+			session.ship.position, time.game);
 	}
 
 	// The view, grown by the wake margin: inside it, enemies are awake.
@@ -1162,13 +1225,13 @@ bool gameLogic(float deltaTime)
 	awakeEnemies = 0;
 
 	// In a field's painted area, no enemy sees the player (A1b).
-	const bool playerInField = asteroids::inField(session.playerPos);
+	const bool playerInField = asteroids::inField(session.ship.position);
 
 	for (int i = 0; i < session.enemies.size(); i++)
 	{
 
 		if (!levelLoaded
-			&& glm::distance(session.playerPos, session.enemies[i].position) > enemyDespawnDistance)
+			&& glm::distance(session.ship.position, session.enemies[i].body.position) > enemyDespawnDistance)
 		{
 			//dispawn enemy
 			session.enemies.erase(session.enemies.begin() + i);
@@ -1179,11 +1242,11 @@ bool gameLogic(float deltaTime)
 		if (levelLoaded)
 		{
 			const Enemy &e = session.enemies[i];
-			const bool inView = e.position.x >= wakeRect.x && e.position.x <= wakeRect.x + wakeRect.z
-				&& e.position.y >= wakeRect.y && e.position.y <= wakeRect.y + wakeRect.w;
+			const bool inView = e.body.position.x >= wakeRect.x && e.body.position.x <= wakeRect.x + wakeRect.z
+				&& e.body.position.y >= wakeRect.y && e.body.position.y <= wakeRect.y + wakeRect.w;
 			// Asleep -- unless the closing circle has passed it, which wakes it
 			// to fly back in (gameplay roadmap L4).
-			if (!inView && e.awareness == Enemy::Awareness::Unaware && !arena::outside(e.position))
+			if (!inView && e.awareness == Enemy::Awareness::Unaware && !arena::outside(e.body.position))
 			{
 				continue;
 			}
@@ -1202,16 +1265,22 @@ bool gameLogic(float deltaTime)
 
 		// A core is solid to enemies too (A2): put back on its surface, thrown
 		// back out tumbling, and hurt once per touch. Not an alert -- it only
-		// bumped a rock. They do not steer round cores until P1.
+		// bumped a rock. They do not steer round cores yet. With momentum (P1)
+		// it also loses the speed it had into the core, as the player does --
+		// otherwise it keeps driving into the surface every frame. No enemy
+		// can be intangible yet, but this is a bump with something that is not
+		// a Body, so it checks `solid` (the convention, at syncSolid).
 		{
 			Enemy &e = session.enemies[i];
 			e.coreGrace = std::max(0.f, e.coreGrace - time.game);
 			const collision::Circle hull = e.getHitbox();
 			asteroids::CoreContact contact;
-			if (asteroids::coreContact(hull.center, hull.radius, contact))
+			if (e.body.solid && asteroids::coreContact(hull.center, hull.radius, contact))
 			{
 				const asteroids::CoreRules &rules = asteroids::coreRules();
-				e.position = contact.pushTo;
+				e.body.position = contact.pushTo;
+				const float inward = glm::dot(e.body.velocity, contact.outward);
+				if (inward < 0.f) { e.body.velocity -= inward * contact.outward; }
 				if (e.coreGrace <= 0.f)
 				{
 					e.coreGrace = rules.grace;
@@ -1227,14 +1296,10 @@ bool gameLogic(float deltaTime)
 			}
 		}
 
-		// Ship-ship (player vs enemy, enemy vs enemy) will use
-		// collisionSystem.overlaps(hitboxA, hitboxB) and
-		// collisionSystem.separation(circleA, circleB) to push them apart.
-
 		// Cloaked, the player is in no enemy's sight (gameplay roadmap C5).
 		// Wreckage or leaving, the player is as gone as cloaked.
 		glm::vec2 wayIn;
-		const bool comingBack = arena::wayBackIn(session.enemies[i].position, wayIn);
+		const bool comingBack = arena::wayBackIn(session.enemies[i].body.position, wayIn);
 		// A rock between them hides the player as well as the cloak does
 		// (gameplay roadmap A1): what makes a rock somewhere to hide. Inside a
 		// field's painted area the player is hidden outright, gaps and all,
@@ -1242,13 +1307,13 @@ bool gameLogic(float deltaTime)
 		// alerted as ever, turns, finds nothing, and comes to search.
 		const bool hidden = energy::isCloaked() || !gameState::playerPresent()
 			|| playerInField
-			|| asteroids::blocksSight(session.enemies[i].position, session.playerPos);
-		if (enemyAi::update(session.enemies[i], time.game, session.playerPos,
+			|| asteroids::blocksSight(session.enemies[i].body.position, session.ship.position);
+		if (enemyAi::update(session.enemies[i], time.game, session.ship.position, session.ship.velocity,
 			hidden, comingBack ? &wayIn : nullptr))
 		{
 			Bullet b;
-			b.position = session.enemies[i].position;
-			b.fireDirection = session.enemies[i].viewDirection;
+			b.position = session.enemies[i].body.position;
+			b.fireDirection = session.enemies[i].body.facing;
 			// The gun's, copied onto the shot. Flight reads Bullet::speed.
 			b.speed = session.enemies[i].bulletSpeed;
 
@@ -1260,10 +1325,64 @@ bool gameLogic(float deltaTime)
 		}
 	}
 
+	// Ships bump (gameplay roadmap P1): every pair of enemies, and the player
+	// with each, pushed apart and trading momentum along the line between
+	// them -- after every ship has moved, so each pair is judged where it
+	// ended up. Not the player while the ram has the ship -- the surge sets
+	// its velocity, and strikes the enemies it meets itself -- nor once it is
+	// wreckage or leaving. Cloaked needs no check here: these are Body
+	// against Body, and collide passes through a ship that is not solid (the
+	// convention, at syncSolid).
+	syncSolid();
+	{
+		const float enemyRadius = game::shipHitboxRadius(enemyShipSize);
+		for (Enemy &e : session.enemies) { e.bumpGrace = std::max(0.f, e.bumpGrace - time.game); }
+		for (size_t a = 0; a < session.enemies.size(); a++)
+		{
+			for (size_t b = a + 1; b < session.enemies.size(); b++)
+			{
+				movement::collide(session.enemies[a].body, enemyRadius,
+					session.enemies[b].body, enemyRadius, shipBounce);
+			}
+		}
+		if (gameState::playerPresent() && !ram::active() && !ram::windingUp())
+		{
+			const float playerRadius = game::shipHitboxRadius(shipSize);
+			for (int i = 0; i < (int)session.enemies.size(); i++)
+			{
+				Enemy &e = session.enemies[i];
+				const movement::Contact contact = movement::collide(session.ship, playerRadius,
+					e.body, enemyRadius, shipBounce);
+				if (!contact.touched || contact.impactSpeed < bumpMinSpeed || e.bumpGrace > 0.f) { continue; }
+				e.bumpGrace = bumpGrace;
+
+				// The player: the shield takes it if it is up, from the side the
+				// enemy struck; with it down, the hull.
+				const glm::vec2 toward = e.body.position - session.ship.position;
+				const float distance = glm::length(toward);
+				const glm::vec2 side = distance > 1e-3f ? toward / distance : glm::vec2(1.f, 0.f);
+				if (energy::onHit(side * playerRadius) == energy::HitResult::Damaged)
+				{
+					if (!hitboxDebug::isDamageFrozen()) { session.health -= bumpDamage; }
+					hud::onDamage();
+					resources::interrupt();
+				}
+
+				// The enemy, which has no shield yet.
+				if (!hitboxDebug::isDamageFrozen()) { e.life -= bumpEnemyDamage; }
+				if (e.life <= 0.f)
+				{
+					killEnemy(i);
+					i--;
+				}
+			}
+		}
+	}
+
 #pragma endregion
 
 	effects::update(time.game);
-	resources::update(time.game, session.playerPos, gameState::playerPresent());
+	resources::update(time.game, session.ship.position, gameState::playerPresent());
 	asteroids::update(time.game); // rocks drift, spin, spring home and bump (A2)
 
 #pragma region render enemies
@@ -1277,12 +1396,26 @@ bool gameLogic(float deltaTime)
 		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 	}
 
+	// Their engines (P1): every body has a thrust now, so every enemy has a
+	// plume -- the player's, in a hostile orange, before the hulls so each
+	// covers its own. The plume is behind the nose, so it is lit by the part
+	// of the thrust along the nose; a sniper strafing sideways shows none.
+	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
+	for (auto &e : session.enemies)
+	{
+		const float forward = std::max(0.f, glm::dot(e.body.thrust, e.body.facing));
+		e.plume = thruster::ease(e.plume, forward, time.game);
+		thruster::drawPlume(renderer, e.body.position, enemyShipSize, e.body.facing, e.plume,
+			effectClock + (float)(e.id % 7u) * 0.13f, enemyPlumeColour);
+	}
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+
 	for (auto &e : session.enemies)
 	{
 		// Darkened where a field rock's shadow falls on it (A3).
-		const float lit = 1.f - asteroids::shadowOn(e.position, e.getHitbox().radius);
-		renderSpaceShip(renderer, e.position, enemyShipSize,
-			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection, {lit, lit, lit, 1.f});
+		const float lit = 1.f - asteroids::shadowOn(e.body.position, e.getHitbox().radius);
+		renderSpaceShip(renderer, e.body.position, enemyShipSize,
+			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing, {lit, lit, lit, 1.f});
 	}
 
 	// What each knows: red engaged, amber searching.
@@ -1299,7 +1432,7 @@ bool gameLogic(float deltaTime)
 		for (const auto &e : session.enemies)
 		{
 			if (e.id != b.targetId) { continue; }
-			effects::drawTargetBox(renderer, e.position, enemyShipSize * 1.3f, b.age);
+			effects::drawTargetBox(renderer, e.body.position, enemyShipSize * 1.3f, b.age);
 		}
 	}
 
@@ -1314,8 +1447,8 @@ bool gameLogic(float deltaTime)
 	if (gameState::current() != gameState::State::Dying)
 	{
 		// Before the hull, so the hull covers the end of the plume inside it.
-		thruster::draw(renderer, session.playerPos, shipSize, player.facing,
-			player.throttle, time.game);
+		thruster::draw(renderer, session.ship.position, shipSize, session.ship.facing,
+			glm::length(session.ship.thrust), time.game);
 
 		// Faded by the cloak. The hull going nearly transparent is half the
 		// effect; the other half is the world bending around it, which happens
@@ -1323,18 +1456,18 @@ bool gameLogic(float deltaTime)
 		// along its heading while it warps out. In an asteroid field, darker:
 		// in the gaps between rocks it is in their shadow (A1b).
 		// And in a field rock's shadow, darker still (A3).
-		const float shade = (gameState::playerPresent() && asteroids::inField(session.playerPos)
+		const float shade = (gameState::playerPresent() && asteroids::inField(session.ship.position)
 			? asteroids::hiddenShade() : 1.f)
-			* (1.f - asteroids::shadowOn(session.playerPos, game::shipHitbox(session.playerPos, shipSize).radius));
-		renderSpaceShip(renderer, session.playerPos, shipSize,
-			shipSheet, shipAtlas.get(3, 0), player.facing,
+			* (1.f - asteroids::shadowOn(session.ship.position, game::shipHitbox(session.ship.position, shipSize).radius));
+		renderSpaceShip(renderer, session.ship.position, shipSize,
+			shipSheet, shipAtlas.get(3, 0), session.ship.facing,
 			{shade, shade, shade, cloak::shipAlpha()}, gameState::warpStretch());
 
 		// After the hull, so the rim reads as being in front of it. Not while
 		// warping: the bubble does not stretch with the hull.
 		if (gameState::playerPresent())
 		{
-			shield::draw(renderer, session.playerPos, shipSize, time.game);
+			shield::draw(renderer, session.ship.position, shipSize, time.game);
 		}
 	}
 
@@ -1344,11 +1477,11 @@ bool gameLogic(float deltaTime)
 	// no enemy can.
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 	asteroids::drawFields(renderer);
-	if (gameState::playerPresent() && asteroids::inField(session.playerPos))
+	if (gameState::playerPresent() && asteroids::inField(session.ship.position))
 	{
 		outline::begin(renderer, 0.5f + 0.5f * std::sin(effectClock * 3.f));
-		renderSpaceShip(renderer, session.playerPos, shipSize,
-			shipSheet, shipAtlas.get(3, 0), player.facing,
+		renderSpaceShip(renderer, session.ship.position, shipSize,
+			shipSheet, shipAtlas.get(3, 0), session.ship.facing,
 			{1.f, 1.f, 1.f, cloak::shipAlpha()}, gameState::warpStretch());
 		outline::end(renderer);
 	}
@@ -1394,7 +1527,7 @@ bool gameLogic(float deltaTime)
 #pragma region debug hitboxes
 
 	hitboxDebug::draw(renderer, collisionSystem,
-		game::shipHitbox(session.playerPos, shipSize), session.enemies, session.bullets);
+		game::shipHitbox(session.ship.position, shipSize), session.enemies, session.bullets);
 
 #pragma endregion
 
@@ -1423,19 +1556,19 @@ bool gameLogic(float deltaTime)
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
 	for (const Enemy &e : session.enemies)
 	{
-		arena::drawBurnFlash(renderer, e.burnFlash, e.position, enemyShipSize,
-			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.viewDirection);
+		arena::drawBurnFlash(renderer, e.burnFlash, e.body.position, enemyShipSize,
+			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing);
 	}
 	if (gameState::current() != gameState::State::Dying)
 	{
-		arena::drawBurnFlash(renderer, arena::burnFlash(), session.playerPos, shipSize,
-			shipSheet, shipAtlas.get(3, 0), session.player.facing, cloak::shipAlpha(),
+		arena::drawBurnFlash(renderer, arena::burnFlash(), session.ship.position, shipSize,
+			shipSheet, shipAtlas.get(3, 0), session.ship.facing, cloak::shipAlpha(),
 			gameState::warpStretch());
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 	// The gate's swirl rides the cloak's pass, so it bends the same target.
 	cloak::setSwirl(gate::position(), gate::swirlRadius(), gate::swirlStrength());
-	cloak::flushWorld(renderer, session.playerPos, shipSize, w, h, time.game);
+	cloak::flushWorld(renderer, session.ship.position, shipSize, w, h, time.game);
 
 	// The arrow to the gate, once it is open. Screen pixels, from the world
 	// camera the frame was drawn in -- the HUD pushes its own.

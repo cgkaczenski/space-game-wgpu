@@ -7,6 +7,70 @@
 namespace movement
 {
 
+glm::vec2 turnToward(glm::vec2 facing, glm::vec2 want, float maxRadians)
+{
+	// The signed angle from one to the other: atan2 of the cross and the dot.
+	const float angle = std::atan2(facing.x * want.y - facing.y * want.x, glm::dot(facing, want));
+	const float turn = std::clamp(angle, -maxRadians, maxRadians);
+	const float c = std::cos(turn), s = std::sin(turn);
+	// Renormalised: repeated small rotations drift off unit length.
+	return glm::normalize(glm::vec2(facing.x * c - facing.y * s, facing.x * s + facing.y * c));
+}
+
+void step(Body &body, const Intent &intent, float deltaTime)
+{
+	const float wantLength = glm::length(intent.face);
+	if (wantLength > 1e-6f)
+	{
+		const glm::vec2 want = intent.face / wantLength;
+		body.facing = body.turnRate > 0.f ? turnToward(body.facing, want, body.turnRate * deltaTime) : want;
+	}
+
+	glm::vec2 thrust = intent.thrust + body.facing * intent.forward;
+	const float length = glm::length(thrust);
+	if (length > 1.f) { thrust /= length; }
+	body.thrust = thrust;
+	integrate(body.position, body.velocity, thrust, body.move, deltaTime);
+}
+
+void push(Body &body, glm::vec2 impulse)
+{
+	body.velocity += impulse / std::max(body.mass, 1e-4f);
+}
+
+Contact collide(Body &a, float radiusA, Body &b, float radiusB, float restitution)
+{
+	Contact contact;
+	if (!a.solid || !b.solid) { return contact; } // either passes through
+	const glm::vec2 between = b.position - a.position;
+	const float distance = glm::length(between);
+	const float overlap = radiusA + radiusB - distance;
+	if (overlap <= 0.f) { return contact; }
+	contact.touched = true;
+
+	// From a toward b; any way at all if they sit exactly on each other.
+	const glm::vec2 normal = distance > 1e-4f ? between / distance : glm::vec2(1.f, 0.f);
+	const float inverseA = 1.f / std::max(a.mass, 1e-4f);
+	const float inverseB = 1.f / std::max(b.mass, 1e-4f);
+	const float inverseSum = inverseA + inverseB;
+
+	// Apart: each moves by its share of the overlap, by inverse mass.
+	a.position -= normal * (overlap * inverseA / inverseSum);
+	b.position += normal * (overlap * inverseB / inverseSum);
+
+	// Closing along the normal? Then one impulse, equal and opposite, that
+	// turns the closing speed into restitution times it, separating.
+	const float closing = glm::dot(b.velocity - a.velocity, normal);
+	if (closing < 0.f)
+	{
+		const float j = -(1.f + std::clamp(restitution, 0.f, 1.f)) * closing / inverseSum;
+		a.velocity -= normal * (j * inverseA);
+		b.velocity += normal * (j * inverseB);
+		contact.impactSpeed = -closing;
+	}
+	return contact;
+}
+
 float topSpeed(const Options &options)
 {
 	if (options.mode == Mode::Instant) { return options.maxSpeed; }

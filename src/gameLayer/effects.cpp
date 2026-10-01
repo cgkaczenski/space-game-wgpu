@@ -208,8 +208,8 @@ void drawSight(wgpu2d::Renderer2D &renderer, const Enemy &enemy)
 	// squash for this enemy's own cone.
 	const float range = enemy.sightRange;
 	const float breadth = 2.f * range * std::tan(enemy.sightHalfAngle);
-	const glm::vec2 dir = enemy.viewDirection;
-	const glm::vec2 centre = enemy.position + dir * (range * 0.5f);
+	const glm::vec2 dir = enemy.body.facing;
+	const glm::vec2 centre = enemy.body.position + dir * (range * 0.5f);
 	const float rotation = glm::degrees(std::atan2(-dir.y, dir.x));
 	renderer.renderRectangle({centre - glm::vec2(range * 0.5f, breadth * 0.5f), range, breadth},
 		sector, color, {}, rotation);
@@ -231,7 +231,7 @@ void drawAwareness(wgpu2d::Renderer2D &renderer, const Enemy &enemy, float time)
 
 	// Above the ship on screen, whatever way the ship faces.
 	const float size = enemyShipSize * 0.14f;
-	const glm::vec2 at = enemy.position + glm::vec2(0.f, -enemyShipSize * 0.72f);
+	const glm::vec2 at = enemy.body.position + glm::vec2(0.f, -enemyShipSize * 0.72f);
 	renderer.renderRectangle({at - glm::vec2(size * 0.5f), size, size}, color, {}, 45.f);
 }
 
@@ -365,7 +365,7 @@ void shipDestroyed(wgpu2d::Texture texture, glm::vec4 cell, glm::vec2 position,
 
 void enemyKilled(const Enemy &enemy, wgpu2d::Texture shipSheet, glm::vec4 cell)
 {
-	shipDestroyed(shipSheet, cell, enemy.position, enemy.viewDirection, enemy.velocity,
+	shipDestroyed(shipSheet, cell, enemy.body.position, enemy.body.facing, enemy.body.velocity,
 		enemyShipSize);
 }
 

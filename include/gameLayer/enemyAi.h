@@ -9,8 +9,9 @@
 // carries a renderer dependency. This lives in gameLayer, not engine: the
 // steering is generic, but chasing, hanging back, and the fire rule are this
 // game's. The generic half, turning an intent into motion, is
-// engine/movement since R8: each policy decides where it wants to go, and the
-// same integrator as the player's moves it.
+// engine/movement: each policy only decides an intent -- where to face, where
+// to thrust -- and the same movement::step as the player's moves its body
+// (R8, P1).
 
 #include <enemy.h>
 #include <vector>
@@ -33,8 +34,11 @@ namespace enemyAi
 	// fighting flies straight there at full speed, still looking; one that is
 	// engaged keeps fighting wherever the fight goes. A search is dropped, not
 	// resumed, so it does not fly back out to where the player was.
-	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, bool playerHidden,
-		const glm::vec2 *comeBackTo = nullptr);
+	//
+	// `playerVelocity` is for leading: with momentum, a policy flies to where
+	// the player is going, not where they are (P1, engine/steering).
+	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
+		bool playerHidden, const glm::vec2 *comeBackTo = nullptr);
 
 	// Something of the player's hit it: it engages at once, turned toward
 	// where the player is, whatever it could see.
@@ -43,10 +47,13 @@ namespace enemyAi
 	// The debug toggle for drawing sight cones. On by default.
 	bool showCones();
 
-	// Rammed: knocked along `push`, spinning, and disabled for `seconds`.
-	// While disabled, `update` moves it by the fading push and turns it, and
-	// neither steers nor fires. It recovers facing wherever it ended up.
-	void stun(Enemy &enemy, glm::vec2 push, float seconds);
+	// Rammed: struck by `impulse` (movement::push -- a lighter enemy is
+	// thrown further), spinning, and disabled for `seconds`. While disabled
+	// it tumbles: no thrust, no speed cap, and a quick drag that brings the
+	// blow down in a fraction of a second, so it is thrown far but not
+	// forever. It neither steers nor fires, and recovers facing wherever it
+	// ended up.
+	void stun(Enemy &enemy, glm::vec2 impulse, float seconds);
 
 	// A new enemy on a ring around the player. The one-argument form picks a
 	// behaviour at random and rolls that policy's loadout.

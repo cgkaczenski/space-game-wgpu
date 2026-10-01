@@ -569,6 +569,113 @@ behaviours, and they belong in _engine_ beside the body.
 - Should the arena's leftovers (enemy sleep, flying back into the zone) also go
   through intent?
 
+**Decided (first pass)**
+- **Same model, own numbers.** Every ship flies on Momentum, as the player
+  does. Each class has its own tuning: a light, twitchy rusher (high thrust,
+  low cap) and a heavy sniper that is slow to turn. A boss can match the
+  player exactly.
+- **Enemies thrust in any direction.** Thrust and facing stay separate, as in
+  the player's ScreenDirections scheme, so a sniper keeps facing you while it
+  strafes and backs off. Their behaviour survives; only the motion gains
+  inertia.
+- **The player's hull keeps snapping to the mouse.** Enemies keep a capped turn
+  rate, which is part of how you outmanoeuvre them.
+- **Ships collide, bump and exchange momentum.** They push apart and trade
+  velocity on contact, using the existing `collision::separation`. A plain
+  bump does no damage; the ram stays the damaging hit.
+- Everything that moves a ship goes through intent, including waking up and
+  flying back into the zone, because every ship is one body.
+
+**Steps (suggestion), one session each:**
+1. **The body and intents.** One `Body` (position, velocity, facing, turn
+   rate, thrust options, throttle) and one update for every ship. The player's
+   keys and the AI each produce an intent. Enemies switch to Momentum and are
+   expected to fly badly, overshooting and oscillating, which is what step 2
+   is for. Enemy plumes come from the throttle.
+   - _Built:_ `movement::Body`, `movement::Intent` and `movement::step` in
+     `engine/movement`. The intent is a facing, a thrust in the world's frame,
+     and `forward` along the nose once it has turned. The player's ship is
+     `session.ship`; `playerMove` only turns keys into an intent, with turn
+     rate 0 (it snaps). Each enemy owns a body; its policies return intents
+     and one `step` moves it. Rushers: thrust 9000, falloff 0.6, top speed
+     800–1800, turn 2.2–4.2. Snipers: thrust 3600, falloff 0.6, top speed
+     1200–1600, turn 1.8–2.4. All on sliders under **Enemies → Rusher / Sniper
+     flight**, rolled at spawn.
+   - Enemy plumes are the player's in orange, lit by the thrust along the nose
+     (a strafing sniper shows none), eased by `thruster::ease`.
+   - A stunned enemy coasts under its own drag as well as the blow; one
+     touching a core loses its speed into it.
+   - Measured, two of each spawned round a still ship: rushers held top speed
+     and swung 80–940 from it, passing it and turning back; snipers swung
+     700–2250 around their 1600–2200 band. As expected, until step 2.
+2. **Steering with inertia**, in `engine/` beside the body: arrive (brake at
+   the stopping distance, v² / 2a), pursue (lead a moving target) and orbit
+   (thrust sideways while correcting range). Rushers and snipers are rebuilt
+   on them.
+   - _Built:_ `engine/steering`. One controller underneath,
+     `matchVelocity`: the thrust that closes the gap to a wanted velocity in
+     a response time (0.25 s), plus what holding it against drag costs. The
+     behaviours differ only in the velocity they want. **Arrive** wants
+     `sqrt(2 a d)` toward the point, braking at 0.6 of full thrust so some is
+     left to steer with. **Pursue** arrives at where the target will be.
+     **Orbit** wants the centre's velocity, plus going round, plus arriving
+     onto the ring, with the circle's inward pull (speed² / radius) added up
+     front; beyond twice the radius it pursues. Facing stays the caller's.
+   - Both classes now circle the player facing it: rushers at 550, going
+     round at 700; snipers at 1900, at 350. Searching arrives at the last
+     known spot and holds it while scanning; wandering holds part of the top
+     speed instead of part thrust. Sliders under **Enemies → Rusher / Sniper
+     tactics** and **Steering**, live.
+   - Measured round a still ship: both rushers held 550 exactly, snipers
+     1900 (step 1: 80–940 and 700–2250). Round a ship moving at 800: a rusher
+     held 543–557 and a sniper 1598–1912, following it. A rusher that rolled a
+     top speed near 800 could only match the ship and sat at 1355: the
+     rusher's speed range starts at the player's cruising speed.
+3. **Impulses and collisions.** Ram knockback becomes an impulse on velocity,
+   so a stunned ship drifts under its own drag; ship-on-ship bumps exchange
+   momentum.
+   - _Built:_ a `Body` has a **mass** (player 1, rusher 0.8, sniper 1.4 --
+     on the flight sliders). `movement::push` is a blow: velocity changes by
+     impulse / mass. `movement::collide` takes two bodies as circles: they
+     move apart by inverse mass and, if closing, exchange an equal and
+     opposite impulse along the line between them, so momentum is kept and
+     the restitution share of the closing speed comes back (**Ship bumps →
+     Bounce**, 0.4). Speed across the line is untouched: a glancing touch
+     only deflects.
+   - Every enemy pair, and the player with each enemy, after all have moved.
+     Not the player while the ram has the ship, or once it is wreckage or
+     leaving -- or **cloaked: a cloaked ship passes through**, and nothing it
+     passes feels it.
+   - **A player–enemy bump hurts both, a little**: 0.05 of the player's
+     hull, which the shield blocks as it blocks a shot, and 0.05 of the
+     enemy's life (no shields until B1). Only a real impact -- closing faster
+     than 200 u/s, as `collide` reports -- and once per 0.5 s per enemy, so
+     ships resting against each other do not grind each other down. Enemy
+     against enemy only bumps. Sliders under **Ship bumps**.
+   - Checked by throwing an enemy at a still ship: shield up, the shield took
+     it and the enemy lost 0.05; shield down, both lost 0.05; cloaked, it
+     passed through.
+   - **Cloaked, nothing bumps the ship -- one rule for every bump.** A
+     `Body` has `solid`; the cloak clears the player's (`syncSolid` in
+     `gameLayer.cpp`, where the convention is written out). Body-on-Body
+     bumps go through `movement::collide`, which ignores a pair that is not
+     solid; a bump with something that is not a Body -- a field's core --
+     checks `solid` itself. So a cloaked ship also passes through cores
+     untouched; uncloaking inside one puts it back on the surface, and that
+     touch hurts. A new bump never tests the cloak, and a new way of being
+     intangible (a cloaking boss, B2) only clears `solid`. Checked: flown
+     at level2's core at 1500 u/s, cloaked it went straight through with the
+     hull untouched; uncloaked it stopped at the surface and was hit.
+   - The ram's blow (and a core's) is a push; the old `knockback` vector is
+     gone. A stunned ship tumbles: no thrust, no cap, and the old fade as its
+     drag (**Enemies → Stun drag**, 4). A rusher is thrown 1.25 times as far
+     as before, a sniper 0.71 times.
+   - Checked: 200,000 random pairs keep momentum to 4 parts in a million,
+     match restitution to 0.003 u/s and leave no overlap. In the game, six
+     rushers crowding one ring and two snipers never overlapped, and a rammed
+     rusher (blow 8200, mass 0.8) went 2584 against 2562 predicted, recovered
+     and came back.
+
 ### B1. The player's kit for any ship
 
 A boss that has a shield, weapons, a cloak or a ram needs those systems to
