@@ -1,4 +1,5 @@
 #include <gate.h>
+#include <tuning.h>
 
 #include "imgui.h"
 #include <platformTools.h>
@@ -243,6 +244,20 @@ void draw(wgpu2d::Renderer2D &renderer, float zoom)
 	}
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("gate", {
+	{"hoverSeconds", hoverSeconds},
+	{"chargeSeconds", chargeSeconds},
+	{"chargeStartHz", chargeStartHz},
+	{"chargeEndHz", chargeEndHz},
+	{"gateRadius", gateRadius},
+	{"swirlReach", swirlReach},
+	{"bodyPerRadius", bodyPerRadius},
+	{"openSpin", openSpin},
+	{"readySpin", readySpin},
+});
+
 void debugUi()
 {
 	if (!present)
@@ -255,15 +270,15 @@ void debugUi()
 	if (ImGui::Button("Open now") && current == State::Closed) { current = State::Open; }
 	ImGui::SameLine();
 	if (ImGui::Button("Ready now")) { current = State::Ready; charged = chargeSeconds; }
-	ImGui::SliderFloat("Hover to start", &hoverSeconds, 0.f, 10.f, "%.1f s");
-	ImGui::SliderFloat("Charge", &chargeSeconds, 1.f, 120.f, "%.0f s");
-	ImGui::SliderFloat("Charge pulse from", &chargeStartHz, 0.1f, 5.f, "%.1f Hz");
-	ImGui::SliderFloat("Charge pulse to", &chargeEndHz, 1.f, 15.f, "%.1f Hz");
-	ImGui::SliderFloat("Gate radius", &gateRadius, 100.f, 2000.f, "%.0f");
-	ImGui::SliderFloat("Swirl reach", &swirlReach, 1.f, 5.f, "x%.1f radius");
-	ImGui::SliderFloat("Art size", &bodyPerRadius, 1.f, 4.f, "x%.2f radius");
-	ImGui::SliderFloat("Spin open", &openSpin, 0.f, 3.f, "%.2f rad/s");
-	ImGui::SliderFloat("Spin ready", &readySpin, 0.f, 10.f, "%.2f rad/s");
+	tune::SliderFloat("Hover to start", &hoverSeconds, 0.f, 10.f, "%.1f s");
+	tune::SliderFloat("Charge", &chargeSeconds, 1.f, 120.f, "%.0f s");
+	tune::SliderFloat("Charge pulse from", &chargeStartHz, 0.1f, 5.f, "%.1f Hz");
+	tune::SliderFloat("Charge pulse to", &chargeEndHz, 1.f, 15.f, "%.1f Hz");
+	tune::SliderFloat("Gate radius", &gateRadius, 100.f, 2000.f, "%.0f");
+	tune::SliderFloat("Swirl reach", &swirlReach, 1.f, 5.f, "x%.1f radius");
+	tune::SliderFloat("Art size", &bodyPerRadius, 1.f, 4.f, "x%.2f radius");
+	tune::SliderFloat("Spin open", &openSpin, 0.f, 3.f, "%.2f rad/s");
+	tune::SliderFloat("Spin ready", &readySpin, 0.f, 10.f, "%.2f rad/s");
 }
 
 }

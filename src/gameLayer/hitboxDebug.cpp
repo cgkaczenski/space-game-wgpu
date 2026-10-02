@@ -1,4 +1,5 @@
 #include <hitboxDebug.h>
+#include <tuning.h>
 
 #include "imgui.h"
 
@@ -79,13 +80,20 @@ void draw(wgpu2d::Renderer2D &renderer,
 	}
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("hitboxes", {
+	{"showing", showing},
+	{"freezeDamage", freezeDamage},
+});
+
 void debugUi()
 {
-	ImGui::Checkbox("Show", &showing);
+	tune::Checkbox("Show", &showing);
 	if (showing)
 	{
 		ImGui::SameLine();
-		ImGui::Checkbox("Freeze damage", &freezeDamage);
+		tune::Checkbox("Freeze damage", &freezeDamage);
 	}
 }
 

@@ -1,4 +1,5 @@
 #include <arena.h>
+#include <tuning.h>
 
 #include <shipSprite.h>
 #include "imgui.h"
@@ -239,11 +240,28 @@ void draw(wgpu2d::Renderer2D &renderer, float zoom)
 	drawRing(renderer, safe, colour, brightness, width, px);
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("arena", {
+	{"ringVisible", ringVisible},
+	{"ringWidthPixels", ringWidthPixels},
+	{"closingPaused", closingPaused},
+	{"holdSeconds", holdSeconds},
+	{"firstCloseSpeed", firstCloseSpeed},
+	{"speedGrowth", speedGrowth},
+	{"warnSeconds", warnSeconds},
+	{"warnStartHz", warnStartHz},
+	{"warnEndHz", warnEndHz},
+	{"burnPerSecond", burnPerSecond},
+	{"enemyBurnPerSecond", enemyBurnPerSecond},
+	{"burnTickSeconds", burnTickSeconds},
+});
+
 void debugUi()
 {
 	ImGui::Text("Arena radius: %.0f", arenaRadius);
-	ImGui::Checkbox("Edge ring", &ringVisible);
-	ImGui::SliderFloat("Ring width px", &ringWidthPixels, 0.5f, 10.f);
+	tune::Checkbox("Edge ring", &ringVisible);
+	tune::SliderFloat("Ring width px", &ringWidthPixels, 0.5f, 10.f);
 
 	ImGui::SeparatorText("Closing circle");
 	if (!closes())
@@ -260,16 +278,16 @@ void debugUi()
 	ImGui::Text("Safe zone: %.0f, %.0f  radius %.0f", safe.centre.x, safe.centre.y, safe.radius);
 	if (ImGui::Button("Skip phase")) { zone::skipPhase(closing); }
 	ImGui::SameLine();
-	ImGui::Checkbox("Hold schedule", &closingPaused);
-	ImGui::SliderFloat("Hold", &holdSeconds, 1.f, 180.f, "%.0f s");
-	ImGui::SliderFloat("First close speed", &firstCloseSpeed, 10.f, 2000.f, "%.0f u/s");
-	ImGui::SliderFloat("Speed growth", &speedGrowth, 1.f, 3.f, "x%.2f per stage");
-	ImGui::SliderFloat("Warning", &warnSeconds, 0.f, 30.f, "%.1f s");
-	ImGui::SliderFloat("Warning flash from", &warnStartHz, 0.2f, 5.f, "%.1f Hz");
-	ImGui::SliderFloat("Warning flash to", &warnEndHz, 1.f, 15.f, "%.1f Hz");
-	ImGui::SliderFloat("Burn", &burnPerSecond, 0.f, 0.5f, "%.3f health/s");
-	ImGui::SliderFloat("Enemy burn", &enemyBurnPerSecond, 0.f, 0.5f, "%.3f life/s");
-	ImGui::SliderFloat("Burn tick", &burnTickSeconds, 0.05f, 2.f, "%.2f s");
+	tune::Checkbox("Hold schedule", &closingPaused);
+	tune::SliderFloat("Hold", &holdSeconds, 1.f, 180.f, "%.0f s");
+	tune::SliderFloat("First close speed", &firstCloseSpeed, 10.f, 2000.f, "%.0f u/s");
+	tune::SliderFloat("Speed growth", &speedGrowth, 1.f, 3.f, "x%.2f per stage");
+	tune::SliderFloat("Warning", &warnSeconds, 0.f, 30.f, "%.1f s");
+	tune::SliderFloat("Warning flash from", &warnStartHz, 0.2f, 5.f, "%.1f Hz");
+	tune::SliderFloat("Warning flash to", &warnEndHz, 1.f, 15.f, "%.1f Hz");
+	tune::SliderFloat("Burn", &burnPerSecond, 0.f, 0.5f, "%.3f health/s");
+	tune::SliderFloat("Enemy burn", &enemyBurnPerSecond, 0.f, 0.5f, "%.3f life/s");
+	tune::SliderFloat("Burn tick", &burnTickSeconds, 0.05f, 2.f, "%.2f s");
 }
 
 }

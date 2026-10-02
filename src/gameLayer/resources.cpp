@@ -1,4 +1,5 @@
 #include <resources.h>
+#include <tuning.h>
 
 #include "imgui.h"
 
@@ -230,6 +231,24 @@ void drawGlow(wgpu2d::Renderer2D &renderer, float time)
 	}
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("resources", {
+	{"interruptSeconds", interruptSeconds},
+	{"spillOrbValue", spillOrbValue},
+	{"enemyFragmentValue", enemyFragmentValue},
+	{"enemyFragmentCount", enemyFragmentCount},
+	{"orbValue", orbValue},
+	{"orbEjectSpeed", orbEjectSpeed},
+	{"orbPauseSeconds", orbPauseSeconds},
+	{"orbWakeRadius", orbWakeRadius},
+	{"orbAccel", orbAccel},
+	{"orbMaxSpeed", orbMaxSpeed},
+	{"orbTurnStart", orbTurnStart},
+	{"orbTurnGrowth", orbTurnGrowth},
+	{"orbPickupRadius", orbPickupRadius},
+});
+
 void debugUi()
 {
 	ImGui::Text("Hold %.2f   banked %.2f", hold, points);
@@ -240,21 +259,21 @@ void debugUi()
 	ImGui::SameLine();
 	if (ImGui::SmallButton("Clear points")) { points = 0.f; }
 
-	ImGui::SliderFloat("Interrupt s", &interruptSeconds, 0.f, 3.f);
-	ImGui::SliderFloat("Spill orb value", &spillOrbValue, 0.1f, 5.f);
-	ImGui::SliderFloat("Fragment value", &enemyFragmentValue, 0.f, 2.f);
-	ImGui::SliderInt("Fragments per kill", &enemyFragmentCount, 0, 8);
+	tune::SliderFloat("Interrupt s", &interruptSeconds, 0.f, 3.f);
+	tune::SliderFloat("Spill orb value", &spillOrbValue, 0.1f, 5.f);
+	tune::SliderFloat("Fragment value", &enemyFragmentValue, 0.f, 2.f);
+	tune::SliderInt("Fragments per kill", &enemyFragmentCount, 0, 8);
 
 	ImGui::SeparatorText("Orbs");
-	ImGui::SliderFloat("Ore per orb", &orbValue, 0.05f, 4.f);
-	ImGui::SliderFloat("Eject speed", &orbEjectSpeed, 0.f, 3000.f, "%.0f");
-	ImGui::SliderFloat("Pause", &orbPauseSeconds, 0.f, 3.f, "%.2f s");
-	ImGui::SliderFloat("Wake radius", &orbWakeRadius, 200.f, 8000.f, "%.0f");
-	ImGui::SliderFloat("Chase accel", &orbAccel, 200.f, 15000.f, "%.0f");
-	ImGui::SliderFloat("Chase top speed", &orbMaxSpeed, 500.f, 12000.f, "%.0f");
-	ImGui::SliderFloat("Turn start", &orbTurnStart, 0.5f, 12.f, "%.1f rad/s");
-	ImGui::SliderFloat("Turn growth", &orbTurnGrowth, 0.f, 20.f, "%.1f rad/s per s");
-	ImGui::SliderFloat("Pickup radius", &orbPickupRadius, 60.f, 2000.f, "%.0f");
+	tune::SliderFloat("Ore per orb", &orbValue, 0.05f, 4.f);
+	tune::SliderFloat("Eject speed", &orbEjectSpeed, 0.f, 3000.f, "%.0f");
+	tune::SliderFloat("Pause", &orbPauseSeconds, 0.f, 3.f, "%.2f s");
+	tune::SliderFloat("Wake radius", &orbWakeRadius, 200.f, 8000.f, "%.0f");
+	tune::SliderFloat("Chase accel", &orbAccel, 200.f, 15000.f, "%.0f");
+	tune::SliderFloat("Chase top speed", &orbMaxSpeed, 500.f, 12000.f, "%.0f");
+	tune::SliderFloat("Turn start", &orbTurnStart, 0.5f, 12.f, "%.1f rad/s");
+	tune::SliderFloat("Turn growth", &orbTurnGrowth, 0.f, 20.f, "%.1f rad/s per s");
+	tune::SliderFloat("Pickup radius", &orbPickupRadius, 60.f, 2000.f, "%.0f");
 }
 
 }

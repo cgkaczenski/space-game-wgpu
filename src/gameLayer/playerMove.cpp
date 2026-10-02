@@ -1,4 +1,5 @@
 #include <playerMove.h>
+#include <tuning.h>
 
 #include <engine/movement.h>
 #include "imgui.h"
@@ -90,28 +91,43 @@ glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDelta
 	return mouseDirection;
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("player", {
+	{"controls", controls},
+	{"turnSpeed", turnSpeed},
+	{"useMomentum", useMomentum},
+	{"momentum.acceleration", momentumOptions.acceleration},
+	{"momentum.topSpeed", momentumOptions.maxSpeed},
+	{"momentum.falloff", momentumOptions.drag},
+	{"instant.speed", instantOptions.maxSpeed},
+});
+
 void debugUi()
 {
 	int c = (int)controls;
-	ImGui::RadioButton("W/S toward mouse", &c, (int)Controls::MouseThrust);
-	ImGui::RadioButton("A/D turn, mouse aims", &c, (int)Controls::TurnWithKeys);
-	ImGui::RadioButton("WASD screen directions", &c, (int)Controls::ScreenDirections);
+	{
+		tune::Highlight h(&controls); // the radios edit a copy
+		ImGui::RadioButton("W/S toward mouse", &c, (int)Controls::MouseThrust);
+		ImGui::RadioButton("A/D turn, mouse aims", &c, (int)Controls::TurnWithKeys);
+		ImGui::RadioButton("WASD screen directions", &c, (int)Controls::ScreenDirections);
+	}
 	controls = (Controls)c;
 
 	if (controls == Controls::TurnWithKeys)
 	{
-		ImGui::SliderFloat("Turn speed", &turnSpeed, 0.5f, 10.f, "%.1f rad/s");
+		tune::SliderFloat("Turn speed", &turnSpeed, 0.5f, 10.f, "%.1f rad/s");
 	}
 
-	ImGui::Checkbox("Momentum", &useMomentum);
+	tune::Checkbox("Momentum", &useMomentum);
 	if (useMomentum)
 	{
-		ImGui::SliderFloat("Acceleration", &momentumOptions.acceleration, 500.f, 30000.f, "%.0f",
+		tune::SliderFloat("Acceleration", &momentumOptions.acceleration, 500.f, 30000.f, "%.0f",
 			ImGuiSliderFlags_Logarithmic);
-		ImGui::SliderFloat("Top speed", &momentumOptions.maxSpeed, 200.f, 6000.f, "%.0f");
+		tune::SliderFloat("Top speed", &momentumOptions.maxSpeed, 200.f, 6000.f, "%.0f");
 
 		// Linear, not logarithmic, so the slider reaches 0.
-		ImGui::SliderFloat("Falloff", &momentumOptions.drag, 0.f, 3.f, "%.2f");
+		tune::SliderFloat("Falloff", &momentumOptions.drag, 0.f, 3.f, "%.2f");
 		if (momentumOptions.drag > 0.f)
 		{
 			ImGui::TextDisabled("coasting speed halves every %.1f s", std::log(2.f) / momentumOptions.drag);
@@ -123,7 +139,7 @@ void debugUi()
 	}
 	else
 	{
-		ImGui::SliderFloat("Speed", &instantOptions.maxSpeed, 200.f, 6000.f, "%.0f");
+		tune::SliderFloat("Speed", &instantOptions.maxSpeed, 200.f, 6000.f, "%.0f");
 	}
 }
 

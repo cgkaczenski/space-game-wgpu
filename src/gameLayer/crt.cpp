@@ -1,4 +1,5 @@
 #include <crt.h>
+#include <tuning.h>
 
 #include "imgui.h"
 #include <platformTools.h>
@@ -161,32 +162,55 @@ void apply()
 	wgpu2d::setFinalEffect(effect, params);
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("crt", {
+	{"enabled", enabled},
+	{"strength", strength},
+	{"warmth", warmth},
+	{"curvature", curvature},
+	{"scanlines", scanlines},
+	{"period", period},
+	{"mask", mask},
+	{"warpStreak", warpStreak},
+	{"fringing", fringing},
+	{"vignette", vignette},
+	{"glowOn", glowOn},
+	{"glow.threshold", glow.threshold},
+	{"glow.knee", glow.knee},
+	{"glow.width", glow.sigma},
+	{"glow.intensity", glow.intensity},
+});
+
 void debugUi()
 {
 	bool e = enabled;
-	if (ImGui::Checkbox("Enabled", &e)) { setEnabled(e); }
+	{
+		tune::Highlight h(&enabled); // a copy is edited, so it highlights for the real one
+		if (ImGui::Checkbox("Enabled", &e)) { setEnabled(e); }
+	}
 	if (!enabled) { return; }
 
 	// The master first, because it is the one a player would be given. The
 	// rest are separated because they go wrong at different rates: curvature
 	// reads as broken well before the scanlines do.
-	ImGui::SliderFloat("Strength", &strength, 0.f, 2.f);
-	ImGui::SliderFloat("Warmth", &warmth, 0.f, 1.f);
-	ImGui::SliderFloat("Curvature", &curvature, 0.f, 0.3f);
-	ImGui::SliderFloat("Scanlines", &scanlines, 0.f, 1.f);
-	ImGui::SliderFloat("Scanline period px", &period, 2.f, 32.f, "%.0f");
-	ImGui::SliderFloat("Aperture mask", &mask, 0.f, 0.5f);
-	ImGui::SliderFloat("Warp streak", &warpStreak, 0.f, 0.9f);
-	ImGui::SliderFloat("Fringing", &fringing, 0.f, 2.f);
-	ImGui::SliderFloat("Vignette", &vignette, 0.f, 1.f);
+	tune::SliderFloat("Strength", &strength, 0.f, 2.f);
+	tune::SliderFloat("Warmth", &warmth, 0.f, 1.f);
+	tune::SliderFloat("Curvature", &curvature, 0.f, 0.3f);
+	tune::SliderFloat("Scanlines", &scanlines, 0.f, 1.f);
+	tune::SliderFloat("Scanline period px", &period, 2.f, 32.f, "%.0f");
+	tune::SliderFloat("Aperture mask", &mask, 0.f, 0.5f);
+	tune::SliderFloat("Warp streak", &warpStreak, 0.f, 0.9f);
+	tune::SliderFloat("Fringing", &fringing, 0.f, 2.f);
+	tune::SliderFloat("Vignette", &vignette, 0.f, 1.f);
 
-	ImGui::Checkbox("Phosphor glow", &glowOn);
+	tune::Checkbox("Phosphor glow", &glowOn);
 	if (glowOn)
 	{
-		ImGui::SliderFloat("Glow threshold", &glow.threshold, 0.f, 1.f);
-		ImGui::SliderFloat("Glow knee", &glow.knee, 0.01f, 0.5f);
-		ImGui::SliderFloat("Glow width", &glow.sigma, 0.5f, 8.f);
-		ImGui::SliderFloat("Glow intensity", &glow.intensity, 0.f, 2.f);
+		tune::SliderFloat("Glow threshold", &glow.threshold, 0.f, 1.f);
+		tune::SliderFloat("Glow knee", &glow.knee, 0.01f, 0.5f);
+		tune::SliderFloat("Glow width", &glow.sigma, 0.5f, 8.f);
+		tune::SliderFloat("Glow intensity", &glow.intensity, 0.f, 2.f);
 	}
 }
 

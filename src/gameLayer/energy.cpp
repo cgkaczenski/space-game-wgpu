@@ -1,4 +1,5 @@
 #include <energy.h>
+#include <tuning.h>
 
 #include <cloak.h>
 #include <shipShield.h>
@@ -150,12 +151,18 @@ bool isCloaked() { return state == State::Cloaked; }
 
 float level() { return amount; }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("energy", {
+	{"refillSeconds", refillSeconds},
+});
+
 void debugUi()
 {
 	ImGui::Text("%s", stateName(state));
 	ImGui::SameLine();
 	ImGui::ProgressBar(amount, {-1.f, 0.f});
-	ImGui::SliderFloat("Refill time", &refillSeconds, 1.f, 30.f, "%.1f s");
+	tune::SliderFloat("Refill time", &refillSeconds, 1.f, 30.f, "%.1f s");
 	// Shield visuals still need testing without taking a hit and waiting.
 	if (ImGui::Button("Refill energy") && state != State::Cloaked) { raiseShield(); }
 }

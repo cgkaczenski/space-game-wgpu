@@ -401,6 +401,21 @@ will want debug controls.
 A feature exposes its own debug entry point; the panel calls them and holds
 nothing itself. Small, and much cheaper decided at six controls than at twenty.
 
+**Saved tuning** _(landed, app: `platform/tuning`)_. The panel's tuning --
+249 values, view toggles included -- can be saved in named sets in
+`resources/tuning/`, apart from the levels, and picked from a list like a
+level; **Defaults** in the list restores the code's values, and the last set
+chosen is remembered (`lastTuning.cfg`, gitignored) and loaded at launch.
+Each file registers its tunables in one `tuning::Group` at the end, after
+the variables, so a variable's default is what its declaration gives it. A
+set holds only what differs, so a default changed in the code reaches every
+set that does not override it. The controls go through `tune::` wrappers
+(ImGui's arguments) that highlight a value that is not its default, and the
+panel ends with a list of every changed value with a reset for each.
+Choosing a set restarts the round, so values read at spawn take effect. Not
+covered: the render scale (a setter, not a variable), the editor's own
+settings, and level data, which the editor saves.
+
 ### Smaller things, worth doing while nearby
 
 - **Two clocks, currently implicit.** `gameSpeedMultiplier()` scales simulation

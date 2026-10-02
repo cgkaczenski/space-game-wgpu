@@ -1,4 +1,5 @@
 #include <worldGrade.h>
+#include <tuning.h>
 
 #include "imgui.h"
 #include <platformTools.h>
@@ -116,16 +117,27 @@ void apply(wgpu2d::Renderer2D &renderer, float pauseAmount, const zone::Circle *
 	renderer.popCamera();
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("worldGrade", {
+	{"desaturate", desaturate},
+	{"brightness", brightness},
+	{"outsideOn", outsideOn},
+	{"outsideDesaturate", outsideDesaturate},
+	{"outsideBrightness", outsideBrightness},
+	{"outsideEdgePixels", outsideEdgePixels},
+});
+
 void debugUi()
 {
 	ImGui::TextDisabled("Paused");
-	ImGui::SliderFloat("Desaturate", &desaturate, 0.f, 1.f);
-	ImGui::SliderFloat("Brightness", &brightness, 0.f, 1.f);
+	tune::SliderFloat("Desaturate", &desaturate, 0.f, 1.f);
+	tune::SliderFloat("Brightness", &brightness, 0.f, 1.f);
 	ImGui::TextDisabled("Outside the closing circle");
-	ImGui::Checkbox("Grey outside", &outsideOn);
-	ImGui::SliderFloat("Outside desaturate", &outsideDesaturate, 0.f, 1.f);
-	ImGui::SliderFloat("Outside brightness", &outsideBrightness, 0.f, 1.f);
-	ImGui::SliderFloat("Edge fade px", &outsideEdgePixels, 1.f, 200.f, "%.0f");
+	tune::Checkbox("Grey outside", &outsideOn);
+	tune::SliderFloat("Outside desaturate", &outsideDesaturate, 0.f, 1.f);
+	tune::SliderFloat("Outside brightness", &outsideBrightness, 0.f, 1.f);
+	tune::SliderFloat("Edge fade px", &outsideEdgePixels, 1.f, 200.f, "%.0f");
 }
 
 }

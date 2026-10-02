@@ -1,4 +1,5 @@
 #include <effects.h>
+#include <tuning.h>
 
 #include <shipSprite.h>
 #include "imgui.h"
@@ -509,18 +510,30 @@ void drawTargetBox(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size, f
 	}
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("effects", {
+	{"debrisKept", debrisKept},
+	{"debrisSpeedMax", debrisSpeedMax},
+	{"debrisSpinMax", debrisSpinMax},
+	{"blastLife", blastLife},
+	{"shakeAmplitude", shakeAmplitude},
+	{"shakeDecay", shakeDecay},
+	{"blastGrowth", blastGrowth},
+});
+
 void debugUi()
 {
 	ImGui::Text("%d pieces, %d fireballs", (int)pieces.size(), (int)blasts.size());
-	ImGui::SliderInt("Debris kept", &debrisKept, 0, 3000);
+	tune::SliderInt("Debris kept", &debrisKept, 0, 3000);
 	if (ImGui::SmallButton("Clear debris")) { pieces.clear(); }
-	ImGui::SliderFloat("Debris speed", &debrisSpeedMax, 100.f, 3000.f, "%.0f");
-	ImGui::SliderFloat("Debris spin", &debrisSpinMax, 0.f, 1440.f, "%.0f deg/s");
-	ImGui::SliderFloat("Fireball life", &blastLife, 0.1f, 2.f, "%.2f s");
-	ImGui::SliderFloat("Shake size", &shakeAmplitude, 0.f, 200.f, "%.0f");
-	ImGui::SliderFloat("Shake decay", &shakeDecay, 1.f, 30.f, "%.1f /s");
+	tune::SliderFloat("Debris speed", &debrisSpeedMax, 100.f, 3000.f, "%.0f");
+	tune::SliderFloat("Debris spin", &debrisSpinMax, 0.f, 1440.f, "%.0f deg/s");
+	tune::SliderFloat("Fireball life", &blastLife, 0.1f, 2.f, "%.2f s");
+	tune::SliderFloat("Shake size", &shakeAmplitude, 0.f, 200.f, "%.0f");
+	tune::SliderFloat("Shake decay", &shakeDecay, 1.f, 30.f, "%.1f /s");
 	if (ImGui::SmallButton("Test shake")) { shake(1.f); }
-	ImGui::SliderFloat("Fireball size", &blastGrowth, 0.2f, 5.f, "%.1f");
+	tune::SliderFloat("Fireball size", &blastGrowth, 0.2f, 5.f, "%.1f");
 }
 
 }

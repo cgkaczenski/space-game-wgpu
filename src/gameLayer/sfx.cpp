@@ -1,4 +1,5 @@
 #include <sfx.h>
+#include <tuning.h>
 
 #include "imgui.h"
 #include <raudio.h>
@@ -45,9 +46,15 @@ void enemyShot()
 	if (enabled && loaded && !IsSoundPlaying(shot)) { PlaySound(shot); }
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("sound", {
+	{"enabled", enabled},
+});
+
 void debugUi()
 {
-	if (ImGui::Checkbox("Sound effects", &enabled) && !enabled && loaded)
+	if (tune::Checkbox("Sound effects", &enabled) && !enabled && loaded)
 	{
 		StopSound(shot);
 	}

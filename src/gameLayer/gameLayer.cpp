@@ -1,5 +1,6 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "gameLayer.h"
+#include <tuning.h>
 #include <glm/glm.hpp>
 #include <glm/gtx/transform.hpp>
 #include "platformInput.h"
@@ -108,6 +109,24 @@ constexpr float shipSize = 250.f;
 // and chosen with 1-4, and both survive a restart. A new round only resets
 // its cooldowns, ammo and charge (weapons::reset).
 weapons::Loadout playerWeapons = weapons::playersLoadout();
+
+// Its weapons' tuning (platform/tuning.h), by each weapon's file key -- the
+// player's loadout is where the panel tunes them.
+const tuning::Group tunedBurst("weapons.burst", {
+	{"cooldown", playerWeapons.slots[0].cooldown}, {"damage", playerWeapons.slots[0].damage},
+	{"speed", playerWeapons.slots[0].speed}, {"burstGap", playerWeapons.slots[0].burstGap},
+});
+const tuning::Group tunedHeavy("weapons.heavy", {
+	{"cooldown", playerWeapons.slots[1].cooldown}, {"damage", playerWeapons.slots[1].damage},
+	{"speed", playerWeapons.slots[1].speed},
+});
+const tuning::Group tunedMissile("weapons.missile", {
+	{"cooldown", playerWeapons.slots[2].cooldown}, {"damage", playerWeapons.slots[2].damage},
+	{"speed", playerWeapons.slots[2].speed},
+});
+const tuning::Group tunedLaser("weapons.laser", {
+	{"cooldown", playerWeapons.slots[3].cooldown}, {"damage", playerWeapons.slots[3].damage},
+});
 const glm::vec4 enemyPlumeColour = {1.f, 0.45f, 0.18f, 1.f}; // the player's is blue
 
 // Enemies further than this from the player are removed -- in the endless
@@ -281,6 +300,15 @@ const Feature features[] = {
 // A setting, so it survives restart.
 bool healthRegenEnabled = true;
 
+// The game's own tunables (platform/tuning.h): registered after everything
+// above, so each default is the value it is declared with.
+const tuning::Group tunedGame("game", {
+	{"healthRegen", healthRegenEnabled}, {"wakeMargin", wakeMargin}, {"scenery", sceneryVisible},
+	{"bump.bounce", shipBounce}, {"bump.damageToPlayer", bumpDamage}, {"bump.damageToEnemy", bumpEnemyDamage},
+	{"bump.minSpeed", bumpMinSpeed}, {"bump.grace", bumpGrace},
+	{"enemyBeam.range", enemyBeamRange},
+});
+
 // Where the camera is before the world shake. Follow chases from here, and the
 // shake is added on top each frame, so the shake never becomes where the
 // camera thinks it is.
@@ -392,9 +420,9 @@ void sessionDebugUi()
 		startExtraction();
 	}
 
-	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
+	tune::SliderFloat("Player Health", &session.health, 0, 1);
 	ImGui::Text("Player at %.0f, %.0f", session.ship.position.x, session.ship.position.y);
-	ImGui::Checkbox("Health regen", &healthRegenEnabled);
+	tune::Checkbox("Health regen", &healthRegenEnabled);
 }
 
 // Everything about enemies in one place: how many there are, spawning one to
@@ -552,8 +580,8 @@ void levelDebugUi()
 		levelEditor::open(glm::vec2(view.x, view.y) + glm::vec2(view.z, view.w) * 0.5f,
 			renderer.currentCamera.zoom);
 	}
-	ImGui::SliderFloat("Wake margin", &wakeMargin, 0.f, 2.f, "%.2f of view");
-	ImGui::Checkbox("Scenery", &sceneryVisible);
+	tune::SliderFloat("Wake margin", &wakeMargin, 0.f, 2.f, "%.2f of view");
+	tune::Checkbox("Scenery", &sceneryVisible);
 	arena::debugUi();
 }
 
@@ -618,17 +646,19 @@ void debugPanelUi()
 	debugPanel::section("Enemies", enemiesDebugUi);
 	debugPanel::section("Ship bumps", []
 	{
-		ImGui::SliderFloat("Bounce", &shipBounce, 0.f, 1.f, "%.2f of the closing speed");
+		tune::SliderFloat("Bounce", &shipBounce, 0.f, 1.f, "%.2f of the closing speed");
 		ImGui::TextDisabled("Player against enemy: both hurt, the player's shield blocks; never cloaked");
-		ImGui::SliderFloat("Damage to player", &bumpDamage, 0.f, 0.5f, "%.2f of the hull");
-		ImGui::SliderFloat("Damage to enemy", &bumpEnemyDamage, 0.f, 1.f, "%.2f of its life");
-		ImGui::SliderFloat("Hardest touch that is free", &bumpMinSpeed, 0.f, 2000.f, "%.0f u/s");
-		ImGui::SliderFloat("Grace", &bumpGrace, 0.f, 3.f, "%.2f s between hits");
+		tune::SliderFloat("Damage to player", &bumpDamage, 0.f, 0.5f, "%.2f of the hull");
+		tune::SliderFloat("Damage to enemy", &bumpEnemyDamage, 0.f, 1.f, "%.2f of its life");
+		tune::SliderFloat("Hardest touch that is free", &bumpMinSpeed, 0.f, 2000.f, "%.0f u/s");
+		tune::SliderFloat("Grace", &bumpGrace, 0.f, 3.f, "%.2f s between hits");
 		ImGui::TextDisabled("Masses: player 1; enemies under Enemies -> flight");
 	});
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
 	debugPanel::section("Shield", shield::debugUi);
 	debugPanel::section("CRT", crt::debugUi);
+	// Last: saving and loading all of the above, and what has changed.
+	debugPanel::section("Tuning", tuning::debugUi);
 
 	ImGui::End();
 }
@@ -694,6 +724,15 @@ bool initGame()
 		}
 		startedFeatures++;
 	}
+
+	// Saved tuning (platform/tuning.h): the last set chosen, before anything
+	// reads it. Choosing a set later restarts the round, so what is read only
+	// at spawn or when rocks are grown takes effect too.
+	tuning::init(RESOURCES_PATH "tuning/", "lastTuning.cfg", []
+	{
+		gameState::reset();
+		restartGame();
+	});
 
 	recallLevel();
 	loadLevel();

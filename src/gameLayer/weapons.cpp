@@ -1,4 +1,5 @@
 #include <weapons.h>
+#include <tuning.h>
 
 #include <enemy.h>
 #include "imgui.h"
@@ -376,6 +377,20 @@ SlotView slot(const Loadout &l, int index)
 	return view;
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("weapons", {
+	{"laserChargeSeconds", laserChargeSeconds},
+	{"laserIdleBeforeRegen", laserIdleBeforeRegen},
+	{"laserRegenSeconds", laserRegenSeconds},
+	{"launchSeconds", launchSeconds},
+	{"launchPush", launchPush},
+	{"driftFade", driftFade},
+	{"missileAccel", missileAccel},
+	{"turnRateStart", turnRateStart},
+	{"turnRateGrowth", turnRateGrowth},
+});
+
 void debugUi(Loadout &l)
 {
 	for (int i = 0; i < l.count; i++)
@@ -386,12 +401,12 @@ void debugUi(Loadout &l)
 			i == l.selected ? "  (selected)" : "");
 		if (open)
 		{
-			ImGui::SliderFloat("Cooldown", &w.cooldown, 0.1f, 10.f, "%.2f s");
-			ImGui::SliderFloat("Damage", &w.damage, 0.01f, 2.f, "%.2f");
-			if (w.speed > 0.f) { ImGui::SliderFloat("Speed", &w.speed, 500.f, 6000.f, "%.0f"); }
+			tune::SliderFloat("Cooldown", &w.cooldown, 0.1f, 10.f, "%.2f s");
+			tune::SliderFloat("Damage", &w.damage, 0.01f, 2.f, "%.2f");
+			if (w.speed > 0.f) { tune::SliderFloat("Speed", &w.speed, 500.f, 6000.f, "%.0f"); }
 			if (w.burstCount > 1)
 			{
-				ImGui::SliderFloat("Burst gap", &w.burstGap, 0.01f, std::max(0.02f, w.cooldown), "%.2f s");
+				tune::SliderFloat("Burst gap", &w.burstGap, 0.01f, std::max(0.02f, w.cooldown), "%.2f s");
 			}
 			if (w.maxAmmo >= 0)
 			{
@@ -401,20 +416,20 @@ void debugUi(Loadout &l)
 			}
 			if (w.beam)
 			{
-				ImGui::SliderFloat("Charge", &laserChargeSeconds, 0.5f, 15.f, "%.1f s");
-				ImGui::SliderFloat("Regen wait", &laserIdleBeforeRegen, 0.f, 5.f, "%.1f s");
-				ImGui::SliderFloat("Regen full in", &laserRegenSeconds, 0.5f, 30.f, "%.1f s");
+				tune::SliderFloat("Charge", &laserChargeSeconds, 0.5f, 15.f, "%.1f s");
+				tune::SliderFloat("Regen wait", &laserIdleBeforeRegen, 0.f, 5.f, "%.1f s");
+				tune::SliderFloat("Regen full in", &laserRegenSeconds, 0.5f, 30.f, "%.1f s");
 				ImGui::Text("Left %.1f s (idle %.1f s)", l.laserCharge, l.laserIdle);
 			}
 			if (w.motion == BulletMotion::Missile)
 			{
-				ImGui::SliderFloat("Launch", &launchSeconds, 0.f, 1.5f, "%.2f s");
-				ImGui::SliderFloat("Side push", &launchPush, 0.f, 3000.f, "%.0f");
-				ImGui::SliderFloat("Drift fade", &driftFade, 0.f, 20.f, "%.1f /s");
-				ImGui::SliderFloat("Acceleration", &missileAccel, 500.f, 50000.f, "%.0f",
+				tune::SliderFloat("Launch", &launchSeconds, 0.f, 1.5f, "%.2f s");
+				tune::SliderFloat("Side push", &launchPush, 0.f, 3000.f, "%.0f");
+				tune::SliderFloat("Drift fade", &driftFade, 0.f, 20.f, "%.1f /s");
+				tune::SliderFloat("Acceleration", &missileAccel, 500.f, 50000.f, "%.0f",
 					ImGuiSliderFlags_Logarithmic);
-				ImGui::SliderFloat("Turn rate", &turnRateStart, 0.5f, 12.f, "%.1f rad/s");
-				ImGui::SliderFloat("Turn growth", &turnRateGrowth, 0.f, 30.f, "%.1f rad/s per s");
+				tune::SliderFloat("Turn rate", &turnRateStart, 0.5f, 12.f, "%.1f rad/s");
+				tune::SliderFloat("Turn growth", &turnRateGrowth, 0.f, 30.f, "%.1f rad/s per s");
 			}
 			ImGui::TreePop();
 		}

@@ -1,4 +1,5 @@
 #include <gameState.h>
+#include <tuning.h>
 
 #include "imgui.h"
 #include <algorithm>
@@ -173,21 +174,36 @@ void reset()
 	pauseOnNextRound = false;
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("gameState", {
+	{"lingerSeconds", lingerSeconds},
+	{"switchOffSeconds", switchOffSeconds},
+	{"switchOnSeconds", switchOnSeconds},
+	{"warpDuration", warpDuration},
+	{"whiteSeconds", whiteSeconds},
+	{"fromWhiteSeconds", fromWhiteSeconds},
+	{"lookSeconds", lookSeconds},
+	{"warpStartSpeed", warpStartSpeed},
+	{"warpSpeedGain", warpSpeedGain},
+	{"warpStretchGain", warpStretchGain},
+});
+
 void debugUi()
 {
 	static const char *names[] = {"Playing", "Paused", "Dying", "Extracting"};
 	ImGui::Text("State: %s (%.1f s)", names[(int)state], inState);
 
-	ImGui::SliderFloat("Death linger s", &lingerSeconds, 0.f, 5.f);
-	ImGui::SliderFloat("Switch-off s", &switchOffSeconds, 0.05f, 2.f);
-	ImGui::SliderFloat("Switch-on s", &switchOnSeconds, 0.05f, 2.f);
-	ImGui::SliderFloat("Warp s", &warpDuration, 0.1f, 3.f);
-	ImGui::SliderFloat("To white s", &whiteSeconds, 0.05f, 2.f);
-	ImGui::SliderFloat("From white s", &fromWhiteSeconds, 0.05f, 2.f);
-	ImGui::SliderFloat("Pause look s", &lookSeconds, 0.f, 1.f);
-	ImGui::SliderFloat("Warp start speed", &warpStartSpeed, 0.f, 3000.f);
-	ImGui::SliderFloat("Warp speed gain", &warpSpeedGain, 0.f, 60000.f);
-	ImGui::SliderFloat("Warp stretch gain", &warpStretchGain, 0.f, 20.f);
+	tune::SliderFloat("Death linger s", &lingerSeconds, 0.f, 5.f);
+	tune::SliderFloat("Switch-off s", &switchOffSeconds, 0.05f, 2.f);
+	tune::SliderFloat("Switch-on s", &switchOnSeconds, 0.05f, 2.f);
+	tune::SliderFloat("Warp s", &warpDuration, 0.1f, 3.f);
+	tune::SliderFloat("To white s", &whiteSeconds, 0.05f, 2.f);
+	tune::SliderFloat("From white s", &fromWhiteSeconds, 0.05f, 2.f);
+	tune::SliderFloat("Pause look s", &lookSeconds, 0.f, 1.f);
+	tune::SliderFloat("Warp start speed", &warpStartSpeed, 0.f, 3000.f);
+	tune::SliderFloat("Warp speed gain", &warpSpeedGain, 0.f, 60000.f);
+	tune::SliderFloat("Warp stretch gain", &warpStretchGain, 0.f, 20.f);
 }
 
 }

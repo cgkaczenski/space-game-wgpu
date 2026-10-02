@@ -1,4 +1,5 @@
 #include <gameClock.h>
+#include <tuning.h>
 
 #include "imgui.h"
 #include <glm/glm.hpp>
@@ -55,9 +56,15 @@ void reset()
 	stopLeft = 0.f;
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("clock", {
+	{"gameSpeedScale", gameSpeedScale},
+});
+
 void debugUi()
 {
-	ImGui::SliderFloat("Game speed", &gameSpeedScale, 0, 100);
+	tune::SliderFloat("Game speed", &gameSpeedScale, 0, 100);
 	ImGui::SameLine();
 	ImGui::TextDisabled("%.2fx", gameSpeedMultiplier());
 }

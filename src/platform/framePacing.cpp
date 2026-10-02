@@ -1,4 +1,5 @@
 #include <framePacing.h>
+#include <tuning.h>
 
 #include "imgui.h"
 
@@ -74,6 +75,12 @@ float step(float measuredSeconds, float refreshHz)
 
 float lastMeasured() { return measured; }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("framePacing", {
+	{"enabled", enabled},
+});
+
 void debugUi()
 {
 	// Same scale on both, and room above a 60 Hz frame for a doubled one, so a
@@ -84,7 +91,7 @@ void debugUi()
 	ImGui::PlotLines("##stepped", steppedMs, historySize, next, "game step ms",
 		0.f, top, ImVec2(-1.f, 50.f));
 
-	ImGui::Checkbox("Pace to display", &enabled);
+	tune::Checkbox("Pace to display", &enabled);
 	ImGui::SameLine();
 	if (active)
 	{

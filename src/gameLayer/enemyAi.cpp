@@ -1,5 +1,6 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <enemyAi.h>
+#include <tuning.h>
 
 #include <engine/steering.h>
 #include "imgui.h"
@@ -357,6 +358,40 @@ void updateSpawning(std::vector<Enemy> &enemies, float &timerSeconds,
 	}
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("enemies", {
+	{"spawningEnabled", spawningEnabled},
+	{"conesVisible", conesVisible},
+	{"hearingRadius", hearingRadius},
+	{"searchSeconds", searchSeconds},
+	{"scanRate", scanRate},
+	{"wanderSpeedFraction", wanderSpeedFraction},
+	{"stunDrag", stunDrag},
+	{"rusher.mass", rusherFlight.mass},
+	{"rusher.thrust", rusherFlight.thrust},
+	{"rusher.falloff", rusherFlight.drag},
+	{"rusher.topSpeedMin", rusherFlight.speedMin},
+	{"rusher.topSpeedMax", rusherFlight.speedMax},
+	{"rusher.turnMin", rusherFlight.turnMin},
+	{"rusher.turnMax", rusherFlight.turnMax},
+	{"rusher.range", rusherTactics.range},
+	{"rusher.orbitSpeed", rusherTactics.orbitSpeed},
+	{"rusher.lead", rusherTactics.lead},
+	{"sniper.mass", sniperFlight.mass},
+	{"sniper.thrust", sniperFlight.thrust},
+	{"sniper.falloff", sniperFlight.drag},
+	{"sniper.topSpeedMin", sniperFlight.speedMin},
+	{"sniper.topSpeedMax", sniperFlight.speedMax},
+	{"sniper.turnMin", sniperFlight.turnMin},
+	{"sniper.turnMax", sniperFlight.turnMax},
+	{"sniper.range", sniperTactics.range},
+	{"sniper.orbitSpeed", sniperTactics.orbitSpeed},
+	{"sniper.lead", sniperTactics.lead},
+	{"steer.response", steer.responseTime},
+	{"steer.brakeShare", steer.brakeShare},
+});
+
 void classUi(Enemy::Behaviour behaviour)
 {
 	const bool sniper = behaviour == Enemy::Behaviour::KeepDistance;
@@ -367,25 +402,25 @@ void classUi(Enemy::Behaviour behaviour)
 
 	// P1: how it flies. Rolled at spawn.
 	ImGui::SeparatorText("Flight (new spawns; Reset game respawns a level's)");
-	ImGui::SliderFloat("Mass", &f.mass, 0.1f, 5.f, "%.2f (the player is 1)");
-	ImGui::SliderFloat("Thrust", &f.thrust, 500.f, 30000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
-	ImGui::SliderFloat("Falloff", &f.drag, 0.f, 3.f, "%.2f");
-	ImGui::DragFloatRange2("Top speed", &f.speedMin, &f.speedMax, 10.f, 100.f, 6000.f, "%.0f");
-	ImGui::DragFloatRange2("Turn rate", &f.turnMin, &f.turnMax, 0.05f, 0.1f, 15.f, "%.1f rad/s");
+	tune::SliderFloat("Mass", &f.mass, 0.1f, 5.f, "%.2f (the player is 1)");
+	tune::SliderFloat("Thrust", &f.thrust, 500.f, 30000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+	tune::SliderFloat("Falloff", &f.drag, 0.f, 3.f, "%.2f");
+	tune::DragFloatRange2("Top speed", &f.speedMin, &f.speedMax, 10.f, 100.f, 6000.f, "%.0f");
+	tune::DragFloatRange2("Turn rate", &f.turnMin, &f.turnMax, 0.05f, 0.1f, 15.f, "%.1f rad/s");
 
 	// P1 step 2: how it fights with it. Live, for every enemy of the class.
 	ImGui::SeparatorText("Tactics (live)");
-	ImGui::SliderFloat("Range", &t.range, 100.f, 4000.f, "%.0f");
-	ImGui::SliderFloat("Orbit speed", &t.orbitSpeed, 0.f, 2000.f, "%.0f");
-	ImGui::SliderFloat("Lead", &t.lead, 0.f, 3.f, "%.2f s");
+	tune::SliderFloat("Range", &t.range, 100.f, 4000.f, "%.0f");
+	tune::SliderFloat("Orbit speed", &t.orbitSpeed, 0.f, 2000.f, "%.0f");
+	tune::SliderFloat("Lead", &t.lead, 0.f, 3.f, "%.2f s");
 	ImGui::PopID();
 }
 
 void debugUi()
 {
-	ImGui::Checkbox("Spawn waves", &spawningEnabled);
+	tune::Checkbox("Spawn waves", &spawningEnabled);
 	ImGui::SameLine();
-	ImGui::Checkbox("Vision cones", &conesVisible);
+	tune::Checkbox("Vision cones", &conesVisible);
 
 	// Each class's tuning together: the same view as beside a selected enemy
 	// in the editor.
@@ -395,19 +430,19 @@ void debugUi()
 	// C5: what they notice, and what they do with nothing to go on.
 	if (ImGui::TreeNode("Awareness"))
 	{
-		ImGui::SliderFloat("Hearing", &hearingRadius, 0.f, 1500.f, "%.0f");
-		ImGui::SliderFloat("Search time", &searchSeconds, 0.5f, 15.f, "%.1f s");
-		ImGui::SliderFloat("Scan speed", &scanRate, 0.2f, 5.f, "%.1f rad/s");
-		ImGui::SliderFloat("Wander thrust", &wanderSpeedFraction, 0.f, 1.f, "%.2f");
+		tune::SliderFloat("Hearing", &hearingRadius, 0.f, 1500.f, "%.0f");
+		tune::SliderFloat("Search time", &searchSeconds, 0.5f, 15.f, "%.1f s");
+		tune::SliderFloat("Scan speed", &scanRate, 0.2f, 5.f, "%.1f rad/s");
+		tune::SliderFloat("Wander thrust", &wanderSpeedFraction, 0.f, 1.f, "%.2f");
 		ImGui::TreePop();
 	}
 
 	// Every class: the steering controller (P1), and tumbling after a ram.
 	if (ImGui::TreeNode("Steering and stun"))
 	{
-		ImGui::SliderFloat("Response", &steer.responseTime, 0.02f, 2.f, "%.2f s");
-		ImGui::SliderFloat("Brake share", &steer.brakeShare, 0.1f, 1.f, "%.2f of full thrust");
-		ImGui::SliderFloat("Stun drag", &stunDrag, 0.5f, 10.f, "%.1f /s (tumbling after a ram)");
+		tune::SliderFloat("Response", &steer.responseTime, 0.02f, 2.f, "%.2f s");
+		tune::SliderFloat("Brake share", &steer.brakeShare, 0.1f, 1.f, "%.2f of full thrust");
+		tune::SliderFloat("Stun drag", &stunDrag, 0.5f, 10.f, "%.1f /s (tumbling after a ram)");
 		ImGui::TreePop();
 	}
 }

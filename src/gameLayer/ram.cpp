@@ -1,4 +1,5 @@
 #include <ram.h>
+#include <tuning.h>
 
 #include "imgui.h"
 
@@ -106,24 +107,38 @@ float ready()
 	return cooldown > 0.f ? 1.f - cooldownLeft / cooldown : 1.f;
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("ram", {
+	{"windup", windup},
+	{"duration", duration},
+	{"speed", speed},
+	{"cooldown", cooldown},
+	{"damage", damage},
+	{"stun", stun},
+	{"knockback", knockback},
+	{"hitStop", hitStop},
+	{"leanDistance", leanDistance},
+});
+
 void debugUi()
 {
 	ImGui::Text(windingUp() ? "winding up" : active() ? "ramming"
 		: (cooldownLeft > 0.f ? "cooling down" : "ready (Space)"));
-	ImGui::SliderFloat("Wind-up", &windup, 0.f, 0.5f, "%.2f s");
-	ImGui::SliderFloat("Surge time", &duration, 0.1f, 2.f, "%.2f s");
-	ImGui::SliderFloat("Surge speed", &speed, 1000.f, 12000.f, "%.0f");
-	if (ImGui::SliderFloat("Cooldown", &cooldown, 0.f, 20.f, "%.1f s"))
+	tune::SliderFloat("Wind-up", &windup, 0.f, 0.5f, "%.2f s");
+	tune::SliderFloat("Surge time", &duration, 0.1f, 2.f, "%.2f s");
+	tune::SliderFloat("Surge speed", &speed, 1000.f, 12000.f, "%.0f");
+	if (tune::SliderFloat("Cooldown", &cooldown, 0.f, 20.f, "%.1f s"))
 	{
 		// The leftover wait was started from the old value; keep it from
 		// outlasting a shorter setting, and a 0 cooldown is ready now.
 		cooldownLeft = std::min(cooldownLeft, cooldown);
 	}
-	ImGui::SliderFloat("Damage", &damage, 0.f, 2.f, "%.2f");
-	ImGui::SliderFloat("Stun", &stun, 0.f, 6.f, "%.1f s");
-	ImGui::SliderFloat("Knockback", &knockback, 0.f, 8000.f, "%.0f");
-	ImGui::SliderFloat("Hit-stop", &hitStop, 0.f, 0.3f, "%.3f s");
-	ImGui::SliderFloat("Camera lean", &leanDistance, 0.f, 800.f, "%.0f");
+	tune::SliderFloat("Damage", &damage, 0.f, 2.f, "%.2f");
+	tune::SliderFloat("Stun", &stun, 0.f, 6.f, "%.1f s");
+	tune::SliderFloat("Knockback", &knockback, 0.f, 8000.f, "%.0f");
+	tune::SliderFloat("Hit-stop", &hitStop, 0.f, 0.3f, "%.3f s");
+	tune::SliderFloat("Camera lean", &leanDistance, 0.f, 800.f, "%.0f");
 }
 
 }

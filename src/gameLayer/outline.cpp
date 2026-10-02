@@ -1,4 +1,5 @@
 #include <outline.h>
+#include <tuning.h>
 
 #include "imgui.h"
 #include <platformTools.h>
@@ -70,14 +71,25 @@ void end(wgpu2d::Renderer2D &renderer)
 	renderer.clearEffect();
 }
 
+// The tunables this file offers (platform/tuning.h): registered at start-up,
+// after everything above, so each one's default is the value it is declared with.
+const tuning::Group tunables("outline", {
+	{"colour", colour},
+	{"fill", fill},
+	{"fillColour", fillColour},
+	{"widthTexels", widthTexels},
+	{"minWidthPixels", minWidthPixels},
+	{"pulseGain", pulseGain},
+});
+
 void debugUi()
 {
-	ImGui::ColorEdit3("Hidden outline", &colour.x);
-	ImGui::SliderFloat("Silhouette", &fill, 0.f, 1.f, "%.2f");
-	ImGui::ColorEdit3("Silhouette colour", &fillColour.x);
-	ImGui::SliderFloat("Outline width", &widthTexels, 0.5f, 4.f, "%.1f texels");
-	ImGui::SliderFloat("Outline min", &minWidthPixels, 0.5f, 6.f, "%.1f screen px");
-	ImGui::SliderFloat("Outline pulse", &pulseGain, 0.f, 1.f, "%.2f");
+	tune::ColorEdit3("Hidden outline", &colour.x);
+	tune::SliderFloat("Silhouette", &fill, 0.f, 1.f, "%.2f");
+	tune::ColorEdit3("Silhouette colour", &fillColour.x);
+	tune::SliderFloat("Outline width", &widthTexels, 0.5f, 4.f, "%.1f texels");
+	tune::SliderFloat("Outline min", &minWidthPixels, 0.5f, 6.f, "%.1f screen px");
+	tune::SliderFloat("Outline pulse", &pulseGain, 0.f, 1.f, "%.2f");
 }
 
 }
