@@ -7,6 +7,7 @@
 #include <glm/vec2.hpp>
 #include <engine/movement.h>
 #include <shipHitbox.h>
+#include <weapons.h>
 
 constexpr float enemyShipSize = 250.f;
 
@@ -33,12 +34,13 @@ struct Enemy
 	movement::Body body;
 	float plume = 0.f;            // the engine's glow, eased toward its thrust
 
-	// The gun, parked here because there is no Weapon yet. bulletSpeed is the
-	// weapon's -- flight uses Bullet::speed, and this is copied onto it at fire.
-	float firedTime = 1.f;
-	float fireTimeReset = 0.2;
+	// Its weapons: the same kind of loadout as the player's, fired through the
+	// same weapons::update (gameplay roadmap B1) -- one gun, rolled per class
+	// at spawn. enemyAi only decides the trigger. `fireRange` is how lined up
+	// it must be first: the AI's, not the gun's -- |toPlayer + facing|, 2
+	// dead ahead, 2 cos(angle / 2) off it, so 1.5 is about 83 degrees either side.
+	weapons::Loadout loadout;
 	float fireRange = 1.5;
-	float bulletSpeed = 2000;
 
 	float life = 1.f;
 

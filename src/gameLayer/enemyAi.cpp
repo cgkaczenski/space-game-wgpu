@@ -149,28 +149,6 @@ namespace
 		return toPlayer / length;
 	}
 
-	// Shared gun: aligned and the cooldown is cold. Starts the cooldown on
-	// the shot so both policies do not each copy the same four lines.
-	bool tickGun(Enemy &enemy, float gameDeltaTime, bool aligned)
-	{
-		bool shoot = aligned;
-		if (shoot)
-		{
-			if (enemy.firedTime <= 0.f)
-			{
-				enemy.firedTime = enemy.fireTimeReset;
-			}
-			else
-			{
-				shoot = false;
-			}
-		}
-
-		enemy.firedTime -= gameDeltaTime;
-		if (enemy.firedTime < 0.f) { enemy.firedTime = 0.f; }
-		return shoot;
-	}
-
 	bool alignedTo(const Enemy &enemy, glm::vec2 directionToPlayer)
 	{
 		return glm::length(directionToPlayer + enemy.body.facing) >= enemy.fireRange;
@@ -202,7 +180,22 @@ namespace
 		return intent;
 	}
 
-	void rollLoadout(Enemy &e)
+	// One of the four shared weapons, at random and as defined -- burst
+	// laser, heavy laser, missiles (five, homing on the player) or the beam.
+	// Its first shot waits a second after the enemy first engages, as enemy
+	// guns always have. Two or more weapons, and modifiers on a base weapon,
+	// are B2's.
+	// `weapon` is a slot of weapons::shipWeapon -- a level's placement can
+	// name one -- or -1 to roll.
+	void arm(Enemy &e, int weapon)
+	{
+		const int slot = weapon >= 0 && weapon < weapons::slotCount ? weapon : rand() % weapons::slotCount;
+		const weapons::Weapon gun = weapons::shipWeapon(slot);
+		e.loadout = weapons::loadoutOf(&gun, 1);
+		e.loadout.cooldownLeft[0] = 1.f;
+	}
+
+	void rollLoadout(Enemy &e, int weapon)
 	{
 		if (e.behaviour == Enemy::Behaviour::KeepDistance)
 		{
@@ -211,8 +204,7 @@ namespace
 			e.type = (rand() % 2) ? glm::uvec2{2, 0} : glm::uvec2{2, 1};
 			rollFlight(e, sniperFlight);
 			e.fireRange = 1.7f + (rand() % 1000) / 5000.f; // 1.7 .. 1.9
-			e.fireTimeReset = 0.8f + (rand() % 1000) / 1000.f; // 0.8 .. 1.8 s
-			e.bulletSpeed = 2800 + rand() % 1200;          // 2800 .. 4000
+			arm(e, weapon);
 			// Further and narrower than a rusher: it spots the player first,
 			// and keeps its distance while it does.
 			e.sightRange = 3500.f;
@@ -223,8 +215,7 @@ namespace
 		e.type = (rand() % 2) ? glm::uvec2{0, 0} : glm::uvec2{0, 1};
 		rollFlight(e, rusherFlight);
 		e.fireRange = 1.5f + (rand() % 1000) / 2000.f;
-		e.fireTimeReset = 0.1f + (rand() % 1000) / 500.f; // 0.1 .. 2.1 s
-		e.bulletSpeed = 1000 + rand() % 1600;            // 1000 .. 2600
+		arm(e, weapon);
 	}
 }
 
@@ -248,7 +239,7 @@ void alert(Enemy &enemy, glm::vec2 playerPos)
 
 bool showCones() { return conesVisible; }
 
-bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
+Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
 	bool playerHidden, const glm::vec2 *comeBackTo)
 {
 	if (enemy.stunned > 0.f)
@@ -262,7 +253,7 @@ bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 pl
 		enemy.body.thrust = {};
 		movement::integrate(enemy.body.position, enemy.body.velocity, {},
 			movement::momentum(0.f, stunDrag), gameDeltaTime);
-		return false;
+		return {};
 	}
 
 	if (canSee(enemy, playerPos, playerHidden))
@@ -308,11 +299,13 @@ bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 pl
 
 	// Only a fighting enemy fires, once it has turned far enough to be
 	// aligned -- judged on the facing it has after this step's turn.
-	if (!fighting) { return false; }
-	return tickGun(enemy, gameDeltaTime, alignedTo(enemy, towardPlayer(enemy.body.position, playerPos, nullptr)));
+	Orders orders;
+	orders.fighting = fighting;
+	orders.trigger = fighting && alignedTo(enemy, towardPlayer(enemy.body.position, playerPos, nullptr));
+	return orders;
 }
 
-Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour)
+Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon)
 {
 	static unsigned int nextId = 1; // 0 means "no enemy"
 
@@ -321,7 +314,7 @@ Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour)
 	e.behaviour = behaviour;
 	e.body.position = position;
 	e.body.facing = facing;
-	rollLoadout(e);
+	rollLoadout(e, weapon);
 	return e;
 }
 
@@ -364,47 +357,57 @@ void updateSpawning(std::vector<Enemy> &enemies, float &timerSeconds,
 	}
 }
 
+void classUi(Enemy::Behaviour behaviour)
+{
+	const bool sniper = behaviour == Enemy::Behaviour::KeepDistance;
+	Flight &f = sniper ? sniperFlight : rusherFlight;
+	Tactics &t = sniper ? sniperTactics : rusherTactics;
+	ImGui::PushID(sniper ? "sniper" : "rusher");
+	ImGui::TextDisabled(sniper ? "Shared by every sniper" : "Shared by every rusher");
+
+	// P1: how it flies. Rolled at spawn.
+	ImGui::SeparatorText("Flight (new spawns; Reset game respawns a level's)");
+	ImGui::SliderFloat("Mass", &f.mass, 0.1f, 5.f, "%.2f (the player is 1)");
+	ImGui::SliderFloat("Thrust", &f.thrust, 500.f, 30000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+	ImGui::SliderFloat("Falloff", &f.drag, 0.f, 3.f, "%.2f");
+	ImGui::DragFloatRange2("Top speed", &f.speedMin, &f.speedMax, 10.f, 100.f, 6000.f, "%.0f");
+	ImGui::DragFloatRange2("Turn rate", &f.turnMin, &f.turnMax, 0.05f, 0.1f, 15.f, "%.1f rad/s");
+
+	// P1 step 2: how it fights with it. Live, for every enemy of the class.
+	ImGui::SeparatorText("Tactics (live)");
+	ImGui::SliderFloat("Range", &t.range, 100.f, 4000.f, "%.0f");
+	ImGui::SliderFloat("Orbit speed", &t.orbitSpeed, 0.f, 2000.f, "%.0f");
+	ImGui::SliderFloat("Lead", &t.lead, 0.f, 3.f, "%.2f s");
+	ImGui::PopID();
+}
+
 void debugUi()
 {
 	ImGui::Checkbox("Spawn waves", &spawningEnabled);
 	ImGui::SameLine();
 	ImGui::Checkbox("Vision cones", &conesVisible);
-	ImGui::SliderFloat("Hearing", &hearingRadius, 0.f, 1500.f, "%.0f");
-	ImGui::SliderFloat("Search time", &searchSeconds, 0.5f, 15.f, "%.1f s");
-	ImGui::SliderFloat("Scan speed", &scanRate, 0.2f, 5.f, "%.1f rad/s");
-	ImGui::SliderFloat("Wander thrust", &wanderSpeedFraction, 0.f, 1.f, "%.2f");
 
-	// P1: how each class flies. Rolled at spawn.
-	auto flightUi = [](const char *name, Flight &f)
-	{
-		if (!ImGui::TreeNode(name)) { return; }
-		ImGui::TextDisabled("New spawns; Reset game respawns a level's");
-		ImGui::SliderFloat("Mass", &f.mass, 0.1f, 5.f, "%.2f (the player is 1)");
-		ImGui::SliderFloat("Thrust", &f.thrust, 500.f, 30000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
-		ImGui::SliderFloat("Falloff", &f.drag, 0.f, 3.f, "%.2f");
-		ImGui::DragFloatRange2("Top speed", &f.speedMin, &f.speedMax, 10.f, 100.f, 6000.f, "%.0f");
-		ImGui::DragFloatRange2("Turn rate", &f.turnMin, &f.turnMax, 0.05f, 0.1f, 15.f, "%.1f rad/s");
-		ImGui::TreePop();
-	};
-	flightUi("Rusher flight", rusherFlight);
-	flightUi("Sniper flight", sniperFlight);
+	// Each class's tuning together: the same view as beside a selected enemy
+	// in the editor.
+	if (ImGui::TreeNode("Rusher")) { classUi(Enemy::Behaviour::CloseIn); ImGui::TreePop(); }
+	if (ImGui::TreeNode("Sniper")) { classUi(Enemy::Behaviour::KeepDistance); ImGui::TreePop(); }
 
-	// P1 step 2: how they fight with it. Live, for every enemy.
-	auto tacticsUi = [](const char *name, Tactics &t)
+	// C5: what they notice, and what they do with nothing to go on.
+	if (ImGui::TreeNode("Awareness"))
 	{
-		if (!ImGui::TreeNode(name)) { return; }
-		ImGui::SliderFloat("Range", &t.range, 100.f, 4000.f, "%.0f");
-		ImGui::SliderFloat("Orbit speed", &t.orbitSpeed, 0.f, 2000.f, "%.0f");
-		ImGui::SliderFloat("Lead", &t.lead, 0.f, 3.f, "%.2f s");
+		ImGui::SliderFloat("Hearing", &hearingRadius, 0.f, 1500.f, "%.0f");
+		ImGui::SliderFloat("Search time", &searchSeconds, 0.5f, 15.f, "%.1f s");
+		ImGui::SliderFloat("Scan speed", &scanRate, 0.2f, 5.f, "%.1f rad/s");
+		ImGui::SliderFloat("Wander thrust", &wanderSpeedFraction, 0.f, 1.f, "%.2f");
 		ImGui::TreePop();
-	};
-	tacticsUi("Rusher tactics", rusherTactics);
-	tacticsUi("Sniper tactics", sniperTactics);
-	ImGui::SliderFloat("Stun drag", &stunDrag, 0.5f, 10.f, "%.1f /s (tumbling after a ram)");
-	if (ImGui::TreeNode("Steering"))
+	}
+
+	// Every class: the steering controller (P1), and tumbling after a ram.
+	if (ImGui::TreeNode("Steering and stun"))
 	{
 		ImGui::SliderFloat("Response", &steer.responseTime, 0.02f, 2.f, "%.2f s");
 		ImGui::SliderFloat("Brake share", &steer.brakeShare, 0.1f, 1.f, "%.2f of full thrust");
+		ImGui::SliderFloat("Stun drag", &stunDrag, 0.5f, 10.f, "%.1f /s (tumbling after a ram)");
 		ImGui::TreePop();
 	}
 }

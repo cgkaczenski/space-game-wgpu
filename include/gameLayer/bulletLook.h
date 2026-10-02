@@ -70,10 +70,12 @@ namespace bulletLook
 	//            sparks skating off along it both ways -- `surfaceNormal`
 	//            gives the surface -- so it reads as splashing off.
 	enum class BeamImpact { None, Burn, Deflect };
+	// `isEnemy`: an enemy's beam (B1), in the enemies' colour, as their shots
+	// are -- so a beam on the player reads as theirs, not the player's own.
 	void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-		BeamImpact impact, float time, glm::vec2 surfaceNormal = {});
+		BeamImpact impact, float time, glm::vec2 surfaceNormal = {}, bool isEnemy = false);
 	void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-		float time);
+		float time, bool isEnemy = false);
 
 	// One shot of `style`, pointing up and centred in a box `height` tall: a
 	// HUD icon. Sets its own blend modes, glow then sprite, and leaves Alpha

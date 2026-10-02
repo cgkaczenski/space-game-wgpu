@@ -1,6 +1,8 @@
 #include <levelEditor.h>
 
 #include <asteroids.h>
+#include <enemyAi.h>
+#include <weapons.h>
 #include <scenery.h>
 #include <shipSprite.h>
 #include "platformInput.h"
@@ -656,6 +658,27 @@ Request debugUi(level::Level &level, bool unsaved)
 		}
 		if (ImGui::DragFloat2("Position", &e.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
 		if (ImGui::SliderFloat("Facing", &e.facingDegrees, -180.f, 180.f, "%.0f deg")) { edited = true; }
+
+		// Its weapon (gameplay roadmap B1): one of the shared four, or rolled
+		// each round. Kept on the placement, so it is there when the enemy is
+		// selected again, and written with the level on Save.
+		if (ImGui::BeginCombo("Weapon", e.weapon < 0 ? "Random" : weapons::shipWeapon(e.weapon).name))
+		{
+			if (ImGui::Selectable("Random", e.weapon < 0)) { e.weapon = -1; edited = true; }
+			for (int i = 0; i < weapons::slotCount; i++)
+			{
+				if (ImGui::Selectable(weapons::shipWeapon(i).name, e.weapon == i)) { e.weapon = i; edited = true; }
+			}
+			ImGui::EndCombo();
+		}
+
+		// And its class's tuning, here beside it -- shared by every enemy of
+		// the class, and not saved with the level: it is the game's tuning.
+		if (ImGui::TreeNode(kind ? "Sniper tuning" : "Rusher tuning"))
+		{
+			enemyAi::classUi(e.behaviour);
+			ImGui::TreePop();
+		}
 		break;
 	}
 	case Kind::Marker:

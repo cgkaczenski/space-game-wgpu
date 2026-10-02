@@ -18,10 +18,20 @@
 
 namespace enemyAi
 {
-	// Steers, moves, and runs the fire cooldown for one enemy, using
-	// `enemy.behaviour` to pick the policy. True when it fires this frame; the
-	// caller creates the bullet. Every part of it -- turning, moving, the
-	// cooldown -- runs on `gameDeltaTime`, already scaled (see gameClock.h).
+	// What the AI decided this frame about the gun. The gun itself is the
+	// enemy's loadout, fired by the caller through weapons::update -- the same
+	// function as the player's (gameplay roadmap B1). Only a fighting enemy's
+	// gun runs at all, cooldown included, as it always has: an enemy that
+	// engages after a while away from the fight does not have a shot waiting.
+	struct Orders
+	{
+		bool fighting = false;   // engaged: run the gun this frame
+		bool trigger = false;    // and lined up: pull it
+	};
+
+	// Steers and moves one enemy, using `enemy.behaviour` to pick the policy,
+	// and decides the trigger. Every part of it runs on `gameDeltaTime`,
+	// already scaled (see gameClock.h).
 	//
 	// It only fights what it can see (gameplay roadmap C5): the player within
 	// its cone, or within earshot at any angle, and never while `playerHidden`
@@ -37,7 +47,7 @@ namespace enemyAi
 	//
 	// `playerVelocity` is for leading: with momentum, a policy flies to where
 	// the player is going, not where they are (P1, engine/steering).
-	bool update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
+	Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
 		bool playerHidden, const glm::vec2 *comeBackTo = nullptr);
 
 	// Something of the player's hit it: it engages at once, turned toward
@@ -61,7 +71,9 @@ namespace enemyAi
 
 	// A new enemy exactly here, facing `facing` (unit): a level's placement.
 	// Unaware, with the behaviour's loadout rolled like any other.
-	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour);
+	// `weapon` is a slot of weapons::shipWeapon -- a placement's choice -- or
+	// -1 to roll one at random (B1).
+	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon = -1);
 	Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour);
 
 	// Counts `timerSeconds` down by `gameDeltaTime` and spawns a wave when it
@@ -70,6 +82,11 @@ namespace enemyAi
 	// restart means is R10's question, not this one's.
 	void updateSpawning(std::vector<Enemy> &enemies, float &timerSeconds,
 		glm::vec2 playerPos, float gameDeltaTime);
+
+	// One class's tuning, together -- how it flies and how it fights, shared
+	// by every enemy of the class. In the Enemies section, and beside a
+	// selected enemy in the level editor.
+	void classUi(Enemy::Behaviour behaviour);
 
 	void debugUi();
 }

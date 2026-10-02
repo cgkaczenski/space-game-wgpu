@@ -30,7 +30,7 @@ void draw(wgpu2d::Renderer2D &renderer,
 	bool playerHit = false;
 	for (auto &b : bullets)
 	{
-		if (b.isEnemy && collisions.overlaps(b.getHitbox(), playerHitbox))
+		if (b.fromEnemy() && collisions.overlaps(b.getHitbox(), playerHitbox))
 		{
 			playerHit = true;
 			break;
@@ -45,7 +45,7 @@ void draw(wgpu2d::Renderer2D &renderer,
 		bool enemyHit = false;
 		for (auto &b : bullets)
 		{
-			if (!b.isEnemy && collisions.overlaps(b.getHitbox(), enemyHitbox))
+			if (!b.fromEnemy() && collisions.overlaps(b.getHitbox(), enemyHitbox))
 			{
 				enemyHit = true;
 				break;
@@ -59,7 +59,7 @@ void draw(wgpu2d::Renderer2D &renderer,
 	{
 		const auto bulletHitbox = b.getHitbox();
 		bool bulletHit = false;
-		if (b.isEnemy)
+		if (b.fromEnemy())
 		{
 			bulletHit = collisions.overlaps(bulletHitbox, playerHitbox);
 		}

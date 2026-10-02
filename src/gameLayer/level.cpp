@@ -1,5 +1,6 @@
 #include <level.h>
 
+#include <weapons.h>
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
@@ -51,6 +52,13 @@ namespace
 			if (kind == "rusher") { e.behaviour = Enemy::Behaviour::CloseIn; }
 			else if (kind == "sniper") { e.behaviour = Enemy::Behaviour::KeepDistance; }
 			else { return false; }
+			// Optionally its weapon (B1); without one it rolls.
+			std::string weapon;
+			if (in >> weapon)
+			{
+				e.weapon = weapons::shipWeaponSlot(weapon.c_str());
+				if (e.weapon < 0) { return false; }
+			}
 			out.enemies.push_back(e);
 			return true;
 		}
@@ -182,7 +190,9 @@ bool save(const char *path, const Level &level)
 	for (const EnemyPlacement &e : level.enemies)
 	{
 		file << "enemy " << (e.behaviour == Enemy::Behaviour::KeepDistance ? "sniper" : "rusher")
-			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees << "\n";
+			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees;
+		if (e.weapon >= 0) { file << " " << weapons::shipWeaponKey(e.weapon); }
+		file << "\n";
 	}
 	file << "\n";
 	for (const Marker &m : level.markers)

@@ -173,7 +173,7 @@ namespace
 }
 
 void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-	BeamImpact impact, float time, glm::vec2 surfaceNormal)
+	BeamImpact impact, float time, glm::vec2 surfaceNormal, bool isEnemy)
 {
 	if (capsule.id == 0) { return; }
 	const glm::vec2 along = end - start;
@@ -183,7 +183,7 @@ void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
 
 	// As drawGlow: the capsule's long axis is +x, rotated in flipped space.
 	const float rotation = glm::degrees(std::atan2(-direction.y, direction.x));
-	const glm::vec4 color = lookFor(BulletStyle::Laser, false).glow * intensity;
+	const glm::vec4 color = lookFor(BulletStyle::Laser, isEnemy).glow * intensity;
 	const glm::vec2 centre = (start + end) * 0.5f;
 
 	// A little longer than the beam, so its rounded ends do not stop short.
@@ -239,7 +239,7 @@ void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
 	}
 }
 
-void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end, float time)
+void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end, float time, bool isEnemy)
 {
 	if (sheet.id == 0) { return; }
 	const glm::vec2 along = end - start;
@@ -259,8 +259,9 @@ void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end, 
 	for (float d = -offset; d < length; d += tile)
 	{
 		const glm::vec2 centre = start + direction * (d + tile * 0.5f);
+		// The laser's own art either way; an enemy's is tinted to its colour.
 		renderer.renderRectangle({centre - glm::vec2(tile * 0.5f), tile, tile},
-			sheet, Colors_White, {}, angle, textureCoords);
+			sheet, isEnemy ? enemyColor : Colors_White, {}, angle, textureCoords);
 	}
 }
 

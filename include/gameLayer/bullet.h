@@ -10,6 +10,7 @@
 
 #include <glm/vec2.hpp>
 #include <engine/collisionSystem.h>
+#include <shipId.h>
 
 constexpr float bulletHitboxRadius = 20.f;
 // Trail sprites sit ahead of `position`; keep radius and shift the circle to the nose.
@@ -42,13 +43,15 @@ struct Bullet
 
 	BulletMotion motion = BulletMotion::Straight;
 
-	// Missile state. `age` is seconds since launch. `targetId` is the enemy it
-	// homes on, 0 for none -- never had one, or it died. `aimDirection` is
-	// where to head with no target: where the player aimed, or, once a target
-	// is lost, the heading it had then, so it flies on straight.
+	// Missile state. `age` is seconds since launch. `target` is the ship it
+	// homes on -- an enemy, or the player (B1) -- noShip for none: never had
+	// one, or lost it (died, or cloaked). `aimDirection` is where to head with
+	// no target: where its shooter aimed, or, once a target is lost, the
+	// heading it had then, so it flies on straight. `topSpeed` is its motor's.
 	float age = 0.f;
-	unsigned int targetId = 0;
+	ShipId target = noShip;
 	glm::vec2 aimDirection = {};
+	float topSpeed = 0.f;
 
 	// Velocity that is not along `fireDirection`. Player shots carry the
 	// ship's velocity here, so muzzle speed is on top of how the gun is
@@ -57,8 +60,7 @@ struct Bullet
 	// fades once its motor lights.
 	glm::vec2 drift = {};
 
-	// What the weapon that fired it gave it (gameplay roadmap C2). The
-	// defaults are the old single bullet, which is also what enemies fire.
+	// What the weapon that fired it gave it (gameplay roadmap C2).
 	float damage = 0.1f;
 	float size = 1.f;    // scales the sprite, the glow and the hitbox
 	BulletStyle style = BulletStyle::Standard;
@@ -75,6 +77,10 @@ struct Bullet
 			bulletHitboxRadius * size};
 	}
 
-	bool isEnemy = 0;
+	// Who fired it (B1): the player, or an enemy's id. What it can hit follows
+	// from that -- an enemy's shots hit the player, the player's hit enemies.
+	ShipId shooter = playerShip;
+	bool fromEnemy() const { return shooter != playerShip; }
+
 	float speed = 3000;
 };

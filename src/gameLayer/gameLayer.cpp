@@ -102,6 +102,12 @@ wgpu2d::Texture shipSheet;
 wgpu2d::TextureAtlasPadding shipAtlas;
 
 constexpr float shipSize = 250.f;
+
+// The player's weapons (gameplay roadmap B1): a loadout like every enemy's,
+// but not part of the Session -- what is in it is tuned in the debug panel
+// and chosen with 1-4, and both survive a restart. A new round only resets
+// its cooldowns, ammo and charge (weapons::reset).
+weapons::Loadout playerWeapons = weapons::playersLoadout();
 const glm::vec4 enemyPlumeColour = {1.f, 0.45f, 0.18f, 1.f}; // the player's is blue
 
 // Enemies further than this from the player are removed -- in the endless
@@ -200,6 +206,24 @@ void syncSolid()
 bool sceneryVisible = true;
 int awakeEnemies = 0; // last frame's, for the panel
 
+// Enemy beams (gameplay roadmap B1): an enemy that rolled the laser burns with
+// it. Traced in the enemy loop, drawn with the bullets -- this frame's, so
+// rebuilt every frame rather than kept with the round.
+struct EnemyBeam
+{
+	glm::vec2 start = {}, end = {};
+	bulletLook::BeamImpact impact = bulletLook::BeamImpact::None;
+	glm::vec2 surface = {}; // outward, where a deflected beam meets what stops it
+};
+std::vector<EnemyBeam> enemyBeams;
+// How far an enemy's beam reaches: the player's runs to the edge of the
+// player's view, which means nothing for an enemy -- this is about a sniper's
+// sight.
+float enemyBeamRange = 3000.f;
+// A beam burning the hull shakes the HUD this often, not every frame.
+float enemyBeamShakeSeconds = 0.25f;
+float enemyBeamShakeLeft = 0.f;
+
 void loadLevel()
 {
 	levelLoaded = level::load(levelPath.c_str(), currentLevel);
@@ -251,7 +275,7 @@ const Feature features[] = {
 	{"ram",        nullptr,          ram::reset,      nullptr},
 	// After shield and cloak: its reset raises one and lowers the other.
 	{"energy",     nullptr,          energy::reset,   nullptr},
-	{"weapons",    nullptr,          weapons::reset,  nullptr},
+	{"weapons",    nullptr,          [] { weapons::reset(playerWeapons); }, nullptr},
 };
 
 // A setting, so it survives restart.
@@ -292,7 +316,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		for (const level::EnemyPlacement &p : currentLevel.enemies)
 		{
 			session.enemies.push_back(enemyAi::spawnAt(p.position,
-				level::direction(p.facingDegrees), p.behaviour));
+				level::direction(p.facingDegrees), p.behaviour, p.weapon));
 		}
 	}
 	if (startAt) { session.ship.position = *startAt; }
@@ -356,18 +380,6 @@ float distanceToViewEdge(glm::vec2 origin, glm::vec2 direction, glm::vec4 view)
 void sessionDebugUi()
 {
 	ImGui::Text("Bullets count: %d", (int)session.bullets.size());
-	ImGui::Text("Enemies count: %d", (int)session.enemies.size());
-
-	if (ImGui::Button("Spawn rusher"))
-	{
-		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::CloseIn));
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Spawn sniper"))
-	{
-		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::KeepDistance));
-	}
-	ImGui::SameLine();
 	if (ImGui::Button("Reset game"))
 	{
 		gameState::reset(); // straight back, no transition
@@ -383,6 +395,26 @@ void sessionDebugUi()
 	ImGui::SliderFloat("Player Health", &session.health, 0, 1);
 	ImGui::Text("Player at %.0f, %.0f", session.ship.position.x, session.ship.position.y);
 	ImGui::Checkbox("Health regen", &healthRegenEnabled);
+}
+
+// Everything about enemies in one place: how many there are, spawning one to
+// test against, and each class's tuning (enemyAi). Placed enemies -- kind,
+// position, facing, weapon, beside their class's tuning -- are the editor's.
+void enemiesDebugUi()
+{
+	ImGui::Text("%d enemies, %d awake", (int)session.enemies.size(), awakeEnemies);
+	if (ImGui::Button("Spawn rusher"))
+	{
+		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::CloseIn));
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Spawn sniper"))
+	{
+		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::KeepDistance));
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("(random weapon)");
+	enemyAi::debugUi();
 }
 
 // Switches to `file` in the levels folder and starts a round in it. The
@@ -579,11 +611,11 @@ void debugPanelUi()
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);
 	debugPanel::section("Energy", energy::debugUi);
-	debugPanel::section("Weapons", weapons::debugUi);
+	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", ram::debugUi);
 	debugPanel::section("Camera", zoomControl::debugUi);
-	debugPanel::section("Enemies", enemyAi::debugUi);
+	debugPanel::section("Enemies", enemiesDebugUi);
 	debugPanel::section("Ship bumps", []
 	{
 		ImGui::SliderFloat("Bounce", &shipBounce, 0.f, 1.f, "%.2f of the closing speed");
@@ -956,7 +988,7 @@ bool gameLogic(float deltaTime)
 
 
 	// Only while playing: paused, the selection holds like everything else.
-	if (controls) { weapons::handleInput(); }
+	if (controls) { weapons::handleInput(playerWeapons); }
 
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
@@ -973,12 +1005,12 @@ bool gameLogic(float deltaTime)
 	fire.aim = session.aim; // the mouse, not necessarily the hull
 	fire.shipVelocity = session.ship.velocity;
 	fire.shipSize = shipSize;
-	fire.mouseWorld = mouseWorld;
-	fire.enemies = &session.enemies;
+	fire.shooter = playerShip;
+	fire.missileTarget = weapons::nearestEnemy(mouseWorld, session.enemies); // a missile locks onto the enemy nearest the mouse
 	// Paused, not at all: a weapon that is ready fires whatever the clock
 	// says, and the beam should stay on screen as it was, not switch off.
 	const int shots = gameState::paused() ? 0
-		: weapons::update(time.game, trigger, fire, session.bullets);
+		: weapons::update(playerWeapons, time.game, trigger, fire, session.bullets);
 	if (shots > 0)
 	{
 		// Firing is how the player leaves the cloak, and the shot still goes out.
@@ -993,7 +1025,7 @@ bool gameLogic(float deltaTime)
 	static float effectClock = 0.f; // drives the beam's scroll and flicker
 	effectClock += time.game;
 
-	const weapons::Beam beam = weapons::beam();
+	const weapons::Beam beam = weapons::beam(playerWeapons);
 	glm::vec2 beamEnd = {};
 	bulletLook::BeamImpact beamImpact = bulletLook::BeamImpact::None;
 	glm::vec2 beamSurface = {}; // the core's outward normal where a deflected beam meets it
@@ -1056,7 +1088,13 @@ bool gameLogic(float deltaTime)
 
 
 	// Before anything moves: missiles turn and speed up, then fly with the rest.
-	weapons::steerMissiles(session.bullets, session.enemies, time.game);
+	// What a missile can chase: the enemies, and the player unless cloaked or
+	// gone -- so an enemy's missile loses its lock when the player cloaks.
+	weapons::Targets targets;
+	targets.enemies = &session.enemies;
+	targets.player = session.ship.position;
+	targets.playerTargetable = gameState::playerPresent() && !energy::isCloaked();
+	weapons::steerMissiles(session.bullets, targets, time.game);
 
 	for (int i = 0; i < session.bullets.size(); i++)
 	{
@@ -1086,7 +1124,7 @@ bool gameLogic(float deltaTime)
 
 		if (!hitboxDebug::isDamageFrozen())
 		{
-			if (!session.bullets[i].isEnemy)
+			if (!session.bullets[i].fromEnemy())
 			{
 				bool breakBothLoops = false;
 				for (int e = 0; e < session.enemies.size(); e++)
@@ -1142,10 +1180,16 @@ bool gameLogic(float deltaTime)
 						continue;
 					}
 
-					// Relative to the ship, because the shield moves with it and
-					// the ripple has to stay anchored to the bubble.
-					const energy::HitResult hit =
-						energy::onHit(session.bullets[i].position - session.ship.position);
+					// A missile ignores the shield: it passes through and hits the
+					// hull. The bubble does not ripple, break, or lose energy.
+					// Anything else asks the shield, which takes it while up.
+					energy::HitResult hit = energy::HitResult::Damaged;
+					if (session.bullets[i].motion != BulletMotion::Missile)
+					{
+						// Relative to the ship, because the shield moves with it
+						// and the ripple has to stay anchored to the bubble.
+						hit = energy::onHit(session.bullets[i].position - session.ship.position);
+					}
 
 					if (hit == energy::HitResult::Damaged)
 					{
@@ -1193,7 +1237,7 @@ bool gameLogic(float deltaTime)
 		resources::playerDropped(session.ship.position); // the hold spills at the wreck
 		energy::uncloak();
 		ram::reset();
-		weapons::reset(); // no burst's second shot from the wreck
+		weapons::reset(playerWeapons); // no burst's second shot from the wreck
 		gameState::playerDied();
 	}
 	else if (gameState::playerPresent())
@@ -1223,6 +1267,7 @@ bool gameLogic(float deltaTime)
 	wakeRect.z *= 1.f + 2.f * wakeMargin;
 	wakeRect.w *= 1.f + 2.f * wakeMargin;
 	awakeEnemies = 0;
+	enemyBeams.clear();
 
 	// In a field's painted area, no enemy sees the player (A1b).
 	const bool playerInField = asteroids::inField(session.ship.position);
@@ -1308,20 +1353,82 @@ bool gameLogic(float deltaTime)
 		const bool hidden = energy::isCloaked() || !gameState::playerPresent()
 			|| playerInField
 			|| asteroids::blocksSight(session.enemies[i].body.position, session.ship.position);
-		if (enemyAi::update(session.enemies[i], time.game, session.ship.position, session.ship.velocity,
-			hidden, comingBack ? &wayIn : nullptr))
+		Enemy &e = session.enemies[i];
+		const enemyAi::Orders orders = enemyAi::update(e, time.game, session.ship.position,
+			session.ship.velocity, hidden, comingBack ? &wayIn : nullptr);
+
+		// Its gun, through the same weapons::update as the player's (B1). Only
+		// while it fights, as it always was: the AI decides the trigger, the
+		// loadout the cooldown. Its shots do not carry its own velocity as the
+		// player's do -- they never have, and B1 changes no enemy; whether they
+		// should is a question for B2.
+		if (orders.fighting)
 		{
-			Bullet b;
-			b.position = session.enemies[i].body.position;
-			b.fireDirection = session.enemies[i].body.facing;
-			// The gun's, copied onto the shot. Flight reads Bullet::speed.
-			b.speed = session.enemies[i].bulletSpeed;
+			weapons::FireContext gun;
+			gun.origin = e.body.position;
+			gun.aim = e.body.facing;
+			gun.shipSize = enemyShipSize;
+			gun.shooter = e.id;
+			gun.missileTarget = playerShip; // its missiles, if it rolled them, chase the player
+			if (weapons::update(e.loadout, time.game, orders.trigger, gun, session.bullets) > 0) { sfx::enemyShot(); }
 
-			b.isEnemy = true;
-			session.bullets.push_back(b);
+			// Its beam, if it rolled the laser: traced from the nose, stopped by
+			// a rock or by the player, never past enemyBeamRange. It does not
+			// push or mine the rock it stops on -- that is the player's beam's
+			// job. On the player, energy decides (onBeam): a shield holds it
+			// and is not broken, and it splashes off; with the shield down it
+			// burns the hull for the weapon's damage per second; cloaked, it
+			// passes through.
+			const weapons::Beam eb = weapons::beam(e.loadout);
+			if (eb.firing)
+			{
+				if (eb.started) { sfx::enemyShot(); }
+				EnemyBeam drawn;
+				drawn.start = eb.origin;
+				float reach = enemyBeamRange;
+				int rock = -1;
+				const float toRock = asteroids::raycast(eb.origin, eb.direction, reach, &rock);
+				if (toRock >= 0.f)
+				{
+					reach = toRock;
+					glm::vec2 coreCentre;
+					drawn.impact = asteroids::isCore(rock, &coreCentre)
+						? bulletLook::BeamImpact::Deflect : bulletLook::BeamImpact::Burn;
+					drawn.surface = eb.origin + eb.direction * reach - coreCentre;
+				}
 
-			sfx::enemyShot();
-
+				const collision::Circle hull = game::shipHitbox(session.ship.position, shipSize);
+				const float toPlayer = gameState::playerPresent()
+					? collision::rayToCircle(eb.origin, eb.direction, hull) : -1.f;
+				if (toPlayer >= 0.f && toPlayer < reach)
+				{
+					const glm::vec2 at = eb.origin + eb.direction * toPlayer;
+					switch (energy::onBeam(at - session.ship.position, time.game))
+					{
+					case energy::HitResult::Blocked:
+						reach = toPlayer;
+						drawn.impact = bulletLook::BeamImpact::Deflect;
+						drawn.surface = at - session.ship.position;
+						break;
+					case energy::HitResult::Damaged:
+						reach = toPlayer;
+						drawn.impact = bulletLook::BeamImpact::Burn;
+						if (!hitboxDebug::isDamageFrozen()) { session.health -= eb.damagePerSecond * time.game; }
+						resources::interrupt();
+						enemyBeamShakeLeft -= time.game;
+						if (enemyBeamShakeLeft <= 0.f)
+						{
+							hud::onDamage(0.25f);
+							enemyBeamShakeLeft = enemyBeamShakeSeconds;
+						}
+						break;
+					case energy::HitResult::Missed:
+						break; // cloaked: on through
+					}
+				}
+				drawn.end = eb.origin + eb.direction * reach;
+				enemyBeams.push_back(drawn);
+			}
 		}
 	}
 
@@ -1428,10 +1535,10 @@ bool gameLogic(float deltaTime)
 	// A missile's lock on its target: a dashed red box, until impact.
 	for (const auto &b : session.bullets)
 	{
-		if (b.motion != BulletMotion::Missile || b.targetId == 0) { continue; }
+		if (b.motion != BulletMotion::Missile || b.target == noShip) { continue; }
 		for (const auto &e : session.enemies)
 		{
-			if (e.id != b.targetId) { continue; }
+			if (e.id != b.target) { continue; }
 			effects::drawTargetBox(renderer, e.body.position, enemyShipSize * 1.3f, b.age);
 		}
 	}
@@ -1504,11 +1611,15 @@ bool gameLogic(float deltaTime)
 			thruster::drawPlume(renderer, b.position, 130.f * b.size, b.fireDirection,
 				weapons::missileThrottle(b), b.age, glm::vec4(0.30f, 0.85f, 0.35f, 1.f));
 		}
-		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
+		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.fromEnemy(), b.style, b.size);
 	}
 	if (beam.firing)
 	{
 		bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamImpact, effectClock, beamSurface);
+	}
+	for (const EnemyBeam &b : enemyBeams)
+	{
+		bulletLook::drawBeamGlow(renderer, b.start, b.end, b.impact, effectClock, b.surface, true);
 	}
 	effects::drawGlow(renderer);
 	resources::drawGlow(renderer, effectClock);
@@ -1518,9 +1629,10 @@ bool gameLogic(float deltaTime)
 
 	for (auto &b : session.bullets)
 	{
-		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.isEnemy, b.style, b.size);
+		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.fromEnemy(), b.style, b.size);
 	}
 	if (beam.firing) { bulletLook::drawBeamCore(renderer, beam.origin, beamEnd, effectClock); }
+	for (const EnemyBeam &b : enemyBeams) { bulletLook::drawBeamCore(renderer, b.start, b.end, effectClock, true); }
 
 #pragma endregion
 
@@ -1586,7 +1698,7 @@ bool gameLogic(float deltaTime)
 	hud::WeaponSlot slots[weapons::slotCount];
 	for (int s = 0; s < weapons::slotCount; s++)
 	{
-		const weapons::SlotView v = weapons::slot(s);
+		const weapons::SlotView v = weapons::slot(playerWeapons, s);
 		slots[s] = {v.style, v.ready, v.ammo, v.maxAmmo, v.selected, v.usable};
 	}
 

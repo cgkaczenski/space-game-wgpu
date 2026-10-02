@@ -20,6 +20,11 @@ namespace
 	// Seconds from empty to full. A debug slider while it is tuned.
 	float refillSeconds = 8.f;
 
+	// A beam held on the shield ripples it this often, not every frame: the
+	// bubble keeps only a few ripples at once.
+	const float beamRippleSeconds = 0.15f;
+	float beamRippleLeft = 0.f;
+
 	const char *stateName(State s)
 	{
 		switch (s)
@@ -86,6 +91,30 @@ HitResult onHit(glm::vec2 offsetFromShip)
 
 	case State::Breaking:
 		shield::hit(offsetFromShip); // ripples, but the break time stands
+		return HitResult::Blocked;
+
+	case State::Down:
+		amount = 0.f;
+		return HitResult::Damaged;
+
+	case State::Cloaked:
+		return HitResult::Missed;
+	}
+	return HitResult::Damaged;
+}
+
+HitResult onBeam(glm::vec2 offsetFromShip, float gameDeltaTime)
+{
+	switch (state)
+	{
+	case State::Shielded:
+	case State::Breaking:
+		beamRippleLeft -= gameDeltaTime;
+		if (beamRippleLeft <= 0.f)
+		{
+			shield::hit(offsetFromShip, 0.5f);
+			beamRippleLeft = beamRippleSeconds;
+		}
 		return HitResult::Blocked;
 
 	case State::Down:

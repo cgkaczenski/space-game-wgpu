@@ -10,7 +10,10 @@
 //
 //   arena 20000                             radius; the arena is centred on 0,0
 //   start -17000 0 0                        x y facing
-//   enemy rusher 4000 1200 180              kind x y facing: rusher | sniper
+//   enemy rusher 4000 1200 180 missile      kind x y facing [weapon]:
+//                                           rusher | sniper, and optionally
+//                                           burst | heavy | missile | laser
+//                                           (B1); without it, it rolls one
 //   marker gate 15000 -1000                 kind x y: gate
 //   ring 9000 -1500 12000                   x y radius (gameplay roadmap L4)
 //   asteroid 3000 -800 900 1234             x y radius seed (gameplay roadmap A1)
@@ -50,6 +53,9 @@ namespace level
 		Enemy::Behaviour behaviour = Enemy::Behaviour::CloseIn;
 		glm::vec2 position = {};
 		float facingDegrees = 0.f;
+		// Which of the shared weapons it carries (gameplay roadmap B1): a slot
+		// of weapons::shipWeapon, or -1 to roll one each round.
+		int weapon = -1;
 	};
 
 	struct Marker

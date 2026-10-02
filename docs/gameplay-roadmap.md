@@ -34,7 +34,8 @@ second HUD bar (new textures, or the health bar's reused).
   and a red fill tinted blue comes out near black.
 - A hit on the shield is blocked, the bar drops to zero, and the shield breaks
   when that hit's ripple finishes. Hits during the ripple are blocked and ripple
-  too, but do not delay the break.
+  too, but do not delay the break. A missile is not such a hit: it passes
+  through and damages the hull, and the shield is left as it was.
 - With the shield down, energy refills slowly (8 s, a debug slider) and the
   shield returns when it is full. A hit while it is down does damage and empties
   the bar again.
@@ -697,6 +698,73 @@ a ship owns (`Energy`, `Loadout`, `Ram`), with the functions taking the one
 they act on. The player is one instance. Behaviour stays the same for the
 player; this is a refactor you can check by playing. It is worth doing
 **before** any boss, and after P1, so the body and the kit land in one place.
+
+**Decided (first pass)**
+- **Refactor, plus the shared weapons.** The kit becomes per-ship and the
+  player plays exactly as now. No enemy gains a shield, cloak or ram until
+  B2; their weapons change as below.
+- **Weapons are data, and enemies roll the player's.** _(Revised during step
+  1.)_ Every enemy rolls one of the player's four weapons, at random and with
+  the player's attributes: burst laser, heavy laser, missiles or the beam.
+  First, rushers and snipers kept guns of their own matching their old
+  shots; the author preferred the shared weapons. **Saved for B2:** some
+  enemies carrying two or more weapons, and modifiers that extend or change a
+  base weapon.
+- **Every ship has the full kit, with flags.** Energy, loadout and ram on every
+  ship as plain values; a rusher's energy has no shield and no cloak, and its
+  ram is off. One code path, and the flags say what a ship can do.
+- **Missiles can home on the player** and lose lock when the player cloaks.
+  Bullets get an owner and a target can be the player, so the fire function
+  is truly shared. Nothing fires missiles at the player until B2 equips a
+  ship with them.
+
+**Steps (suggestion), each checkable by playing:**
+1. **Weapons:** a per-ship `Loadout`; enemy guns move onto it; bullets carry
+   who fired them, and a missile's target can be the player.
+   - _Built:_ `weapons::Weapon` is public data (with a `beam` flag in place of
+     "slot 3 is the laser"), and a `weapons::Loadout` holds a ship's weapons
+     by value plus everything that changes as it fires -- cooldowns, ammo,
+     burst, laser charge, beam, missile side. Every function takes the
+     loadout it acts on. The player's lives outside the Session, so its
+     tuning and selection survive a restart; restart only resets its state.
+   - **Each placed enemy can name its weapon.** In the editor, a selected
+     enemy shows its kind, position, facing, weapon (Random, or one of the
+     four) and its class's tuning together. The weapon is kept on the
+     placement and saved with the level on Save:
+     `enemy rusher 4000 1200 180 missile`; without the last word it rolls.
+     The Enemies section groups the same way -- the spawn buttons (random
+     weapon), then a Rusher and a Sniper tree with each class's flight and
+     tactics, then awareness, then steering and stun.
+   - Each enemy rolls one of the four shared weapons (`weapons::shipWeapon`, as
+     defined -- not as tuned in the panel, which tunes the player's own),
+     first shot a second after engaging. `enemyAi::update` now returns
+     `Orders` -- fighting, and trigger -- and the game fires the gun through
+     the same `weapons::update` as the player's. Their shots still do not
+     inherit their velocity, and still look like enemy shots, whatever the
+     weapon (bigger for the heavy laser and missiles).
+   - **Enemy missiles** home on the player and lose the lock when the player
+     cloaks. Five each, then the enemy has nothing left to fire. They pass
+     through the shield and hit the hull; the shield does not ripple or break.
+   - **The enemy beam** is traced from the nose up to 3000, stopped by rocks
+     (not pushed or mined) and by the player. On the player, energy decides
+     (`energy::onBeam`): a raised shield holds it without breaking, as the
+     player's beam is held by shields (C3b), and it splashes off; with the
+     shield down it burns the hull for 0.4 a second and keeps the bar empty;
+     cloaked, it passes through. Drawn in the enemies' blue.
+   - `shipId.h`: `ShipId`, with `noShip` and `playerShip`. A bullet has a
+     `shooter` (`fromEnemy()` replaces `isEnemy`) and a missile a `target` and
+     its own `topSpeed`. `steerMissiles` takes `Targets` -- the enemies, and
+     the player unless cloaked or gone.
+   - Checked: the player's missiles lock the enemy nearest the mouse and
+     hit; enemy missiles home on the player and lose the lock once the player
+     cannot be targeted. 400 rolls came out 95 / 95 / 120 / 90 across the
+     four. Two beam enemies on a shielded ship splashed off for 4 s with the
+     hull and the bar untouched; with the shield broken they burned 0.8 a
+     second between them, then ran dry and cooled down as the player's
+     laser does.
+2. **Energy and the shield's look**, per ship (the bubble gains a colour).
+3. **The ram and the cloak's look**, per ship. The cloak's world-bend stays
+   one centre until a second cloaked ship exists (B2).
 
 ### B2. Bosses
 

@@ -36,6 +36,14 @@ namespace energy
 	// An enemy shot reached the ship. `offsetFromShip` places the ripple.
 	HitResult onHit(glm::vec2 offsetFromShip);
 
+	// An enemy's beam is on the ship this frame (B1). A beam is blocked by a
+	// shield and cannot break one -- the rule the player's beam already plays
+	// by against shields (C3b) -- so a raised shield holds for as long as the
+	// beam lasts, rippling where it burns. With the shield down it reaches
+	// the hull, and keeps the bar empty while it does. Cloaked, it passes
+	// through.
+	HitResult onBeam(glm::vec2 offsetFromShip, float gameDeltaTime);
+
 	// E. Does nothing unless energy is full and the shield is up.
 	void cloak();
 
