@@ -61,7 +61,8 @@ namespace
 	const Enemy *findEnemy(ShipId id, const std::vector<Enemy> &enemies)
 	{
 		if (id == noShip || id == playerShip) { return nullptr; }
-		for (const Enemy &e : enemies) { if (e.id == id) { return &e; } }
+		// A cloaked enemy cannot be found: the lock is lost, as on the player.
+		for (const Enemy &e : enemies) { if (e.id == id) { return energy::isCloaked(e.energy) ? nullptr : &e; } }
 		return nullptr;
 	}
 
@@ -296,6 +297,7 @@ ShipId nearestEnemy(glm::vec2 point, const std::vector<Enemy> &enemies)
 	float bestDistance = 0.f;
 	for (const Enemy &e : enemies)
 	{
+		if (energy::isCloaked(e.energy)) { continue; } // nothing to lock onto
 		const float d = glm::distance(point, e.body.position);
 		if (best == noShip || d < bestDistance) { best = e.id; bestDistance = d; }
 	}

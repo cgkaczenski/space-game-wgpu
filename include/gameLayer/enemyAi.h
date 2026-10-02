@@ -47,8 +47,13 @@ namespace enemyAi
 	//
 	// `playerVelocity` is for leading: with momentum, a policy flies to where
 	// the player is going, not where they are (P1, engine/steering).
+	//
+	// It also rams and cloaks, if it can (B1 step 3): a ram under way moves
+	// it in place of steering; it starts one engaged, close and lined up. It
+	// cloaks when hurt with a full bar, drifts, and its gun runs only to
+	// ambush from behind -- `playerFacing` is how it knows where behind is.
 	Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
-		bool playerHidden, const glm::vec2 *comeBackTo = nullptr);
+		glm::vec2 playerFacing, bool playerHidden, const glm::vec2 *comeBackTo = nullptr);
 
 	// Something of the player's hit it: it engages at once, turned toward
 	// where the player is, whatever it could see.
@@ -72,11 +77,11 @@ namespace enemyAi
 	// A new enemy exactly here, facing `facing` (unit): a level's placement.
 	// Unaware, with the behaviour's loadout rolled like any other.
 	// `weapon` is a slot of weapons::shipWeapon -- a placement's choice -- or
-	// -1 to roll one at random (B1). `shield` is the placement's choice too;
-	// Random rolls it at the Shield chance. The cloak and the ram are always
-	// rolled, for now.
+	// -1 to roll one at random (B1). `shield`, `cloak` and `ram` are the
+	// placement's choices too; Random rolls each at its chance.
 	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon = -1,
-		AbilityChoice shield = AbilityChoice::Random);
+		AbilityChoice shield = AbilityChoice::Random, AbilityChoice cloak = AbilityChoice::Random,
+		AbilityChoice ram = AbilityChoice::Random);
 	Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour);
 
 	// Counts `timerSeconds` down by `gameDeltaTime` and spawns a wave when it

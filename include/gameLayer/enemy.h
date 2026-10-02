@@ -9,6 +9,7 @@
 #include <shipHitbox.h>
 #include <weapons.h>
 #include <energy.h>
+#include <ram.h>
 
 constexpr float enemyShipSize = 250.f;
 
@@ -48,12 +49,14 @@ struct Enemy
 	float fireRange = 1.5;
 
 	// Its energy (B1): the same rules as the player's. Every enemy has a bar;
-	// whether a full one raises a shield, or can be spent on a cloak, is
-	// rolled at spawn, and so is whether it can ram. A shield works now --
-	// shots break it, beams are held by it. The cloak and the ram are B1 step
-	// 3's: rolled, but nothing uses them yet.
+	// whether a full one raises a shield, or can be spent on a cloak, is a
+	// placement's choice or rolled at spawn, and so is whether it can ram.
 	energy::Energy energy;
 	bool canRam = false;
+	ram::Ram ram;                 // the same ram as the player's, when it can
+	float cloakLevel = 0.f;       // its cloak, eased: how faint the hull, how strong the bending
+	float cloakedFor = 0.f;       // seconds cloaked: it ambushes, or gives up, in time
+	float ramMemory = 0.f;        // seconds it still knows where the player is, after a ram
 
 	float life = 1.f;
 

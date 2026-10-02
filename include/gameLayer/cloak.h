@@ -41,6 +41,19 @@ namespace cloak
 	// background bending around it.
 	float shipAlpha();
 
+	// The same for any ship (B1): `level` is how far its cloak is engaged,
+	// eased by `ease` -- each cloaking enemy keeps its own. The player's is
+	// this module's, above.
+	float ease(float level, bool active, float dt);
+	float shipAlpha(float level);
+
+	// A cloaked enemy, for the next flush only (B1): the world bends round it
+	// as it does round the player. Set each frame, like the swirl. Each is
+	// drawn as a quad over its own patch of the screen, sampling the world
+	// through the same shader -- a full-screen pass costs the same however
+	// small the ship, and these are small. Up to eight; past that, none.
+	void addField(glm::vec2 worldPos, float shipWorldSize, float level);
+
 	// A second field in the same pass: the world turning round a point, the
 	// extraction gate's swirl (gameplay roadmap L5). Set it each frame before
 	// flushWorld; it lasts one flush. The swirl rotates what is behind it

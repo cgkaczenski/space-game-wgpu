@@ -791,6 +791,48 @@ player; this is a refactor you can check by playing. It is worth doing
      held by a shielded enemy and burned a plain one at 0.4 a second.
 3. **The ram and the cloak's look**, per ship. The cloak's world-bend stays
    one centre until a second cloaked ship exists (B2).
+   - _Decided:_ an enemy's ram on the player hits (through the player's
+     energy), knocks aside and briefly stuns; enemies ram when engaged, in
+     range and lined up; they cloak to escape when hurt, then ambush from
+     behind; a cloaked enemy looks like the player's cloak, the world bending
+     round it.
+   - _Built:_ `ram::Ram` is a ship's wind-up, surge, cooldown, heading and
+     struck list; the player's is in the session and every enemy has one.
+     The numbers stay shared, plus a **player stun** of 0.5 s. An enemy's
+     ram runs on its body in place of steering; it starts one engaged, within
+     1500 and lined up within 12 degrees, and keeps track of the player for
+     1.5 s after so the surge does not lose it. Its prow strikes the player
+     once per ram: hit-stop and shake, the ram's damage through the player's
+     energy, and the player knocked aside and stunned -- tumbling under drag
+     4, no flying, firing, ramming or cloaking. The player's own prow, out
+     and facing the rammer, takes it instead, as it takes a core.
+   - An enemy cloaks with a full bar when its life is below 0.5; drifts,
+     turning to face the player; and fires -- which uncloaks it, as it does
+     the player -- when within 900, behind the player and lined up, or after
+     6 s regardless. Cloaked, it is not solid, and the player's shots, beam,
+     missiles and ram pass it; it shows no sight cone or awareness mark.
+   - **The cloak's look per enemy:** `cloak::ease` and `shipAlpha(level)` for
+     any ship, and `cloak::addField`: each cloaked enemy is a quad over its
+     own field, sampling the world target through the same shader with its
+     texture coordinates set to that patch's place on the screen -- which is
+     all the shader reads its pixel from. No full-screen pass per enemy, and
+     nothing at all while none is cloaked. Up to 8.
+   - Placed enemies get **Cloak** and **Ram** pickers like Shield (No by
+     default, Yes, Random), saved as `cloak:yes|random`, `ram:yes|random`.
+     The rules are tunable under **Enemies -> Abilities**.
+   - Checked: a ramming rusher struck at once (the shield took it, the player
+     knocked away at ~4800 and stunned 0.5 s), came back to its ring and
+     rammed again each cooldown -- the second through the hull for 0.4. A
+     hurt enemy cloaked, stopped being solid, drifted, and after 6 s fired
+     and uncloaked; the player's shots passed through it while cloaked. With
+     the field's strength raised 6x for the test, the bending sat on the
+     enemy with no seam at the quad. Not yet seen: the ambush from behind.
+   - **Enemy rams shove asteroids** as the player's does. Each ram gets a
+     serial number when it starts, across every ship (`ram::Ram::serial`), and
+     a rock remembers the serial that struck it -- where before one counter
+     belonged to the player's ram. Checked: a rock at the start of an enemy's
+     ram was shoved several hundred units in under a second, nothing else
+     touching it.
 
 ### B2. Bosses
 

@@ -52,14 +52,25 @@ namespace
 			if (kind == "rusher") { e.behaviour = Enemy::Behaviour::CloseIn; }
 			else if (kind == "sniper") { e.behaviour = Enemy::Behaviour::KeepDistance; }
 			else { return false; }
-			// Then, in any order: a weapon (B1; without one it rolls), and
-			// shield:yes or shield:random (without it, no shield).
+			// Then, in any order: a weapon (B1; without one it rolls), and an
+			// ability:choice for each of shield, cloak and ram -- yes or random
+			// (without one, no).
 			std::string word;
 			while (in >> word)
 			{
-				if (word == "shield:yes") { e.shield = AbilityChoice::Yes; continue; }
-				if (word == "shield:random") { e.shield = AbilityChoice::Random; continue; }
-				if (word == "shield:no") { e.shield = AbilityChoice::No; continue; }
+				const size_t colon = word.find(':');
+				if (colon != std::string::npos)
+				{
+					const std::string ability = word.substr(0, colon), choice = word.substr(colon + 1);
+					AbilityChoice *slot = ability == "shield" ? &e.shield : ability == "cloak" ? &e.cloak
+						: ability == "ram" ? &e.ram : nullptr;
+					if (!slot) { return false; }
+					if (choice == "yes") { *slot = AbilityChoice::Yes; }
+					else if (choice == "random") { *slot = AbilityChoice::Random; }
+					else if (choice == "no") { *slot = AbilityChoice::No; }
+					else { return false; }
+					continue;
+				}
 				e.weapon = weapons::shipWeaponSlot(word.c_str());
 				if (e.weapon < 0) { return false; }
 			}
@@ -196,8 +207,14 @@ bool save(const char *path, const Level &level)
 		file << "enemy " << (e.behaviour == Enemy::Behaviour::KeepDistance ? "sniper" : "rusher")
 			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees;
 		if (e.weapon >= 0) { file << " " << weapons::shipWeaponKey(e.weapon); }
-		if (e.shield == AbilityChoice::Yes) { file << " shield:yes"; }
-		if (e.shield == AbilityChoice::Random) { file << " shield:random"; }
+		auto ability = [&](const char *name, AbilityChoice c)
+		{
+			if (c == AbilityChoice::Yes) { file << " " << name << ":yes"; }
+			if (c == AbilityChoice::Random) { file << " " << name << ":random"; }
+		};
+		ability("shield", e.shield);
+		ability("cloak", e.cloak);
+		ability("ram", e.ram);
 		file << "\n";
 	}
 	file << "\n";

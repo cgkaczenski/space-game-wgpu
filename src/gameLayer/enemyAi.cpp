@@ -66,6 +66,25 @@ namespace
 
 	bool roll(float chance) { return rand() / (float)RAND_MAX < chance; }
 
+	// When an enemy uses them (B1 step 3).
+	// The ram: engaged, off cooldown, lined up within this cone, and within
+	// about a surge's reach. Rushers close to 550, so they ram often; snipers
+	// rarely come this close.
+	float ramReach = 1500.f;
+	float ramConeDegrees = 12.f;
+	// A ram carries it past and points it away; it knows where the player is
+	// for this long after, and turns back to fight rather than losing sight
+	// and searching an empty spot.
+	float ramMemorySeconds = 1.5f;
+	// The cloak: to escape, then ambush -- the player's own play, turned on
+	// them. It cloaks when hurt, with a full bar; drifts unseen, turning to
+	// face the player; and fires, which uncloaks it, once it is close and
+	// behind the player and lined up -- or, after a while with no chance,
+	// fires anyway to come back.
+	float cloakBelowLife = 0.5f;
+	float ambushRange = 900.f;
+	float maxCloakSeconds = 6.f;
+
 	// Stunned, a ship tumbles: no thrust, no cap -- the blow is far past any
 	// top speed -- and this drag, the old knockback's fade, so the blow is
 	// mostly spent in half a second.
@@ -207,11 +226,16 @@ namespace
 
 	// Its abilities, at their chances. An enemy's bubble is in the enemies'
 	// colours, so it is never read as the player's.
-	void rollAbilities(Enemy &e, AbilityChoice shield)
+	bool decide(AbilityChoice choice, float chance)
 	{
-		e.energy.hasShield = shield == AbilityChoice::Random ? roll(shieldChance) : shield == AbilityChoice::Yes;
-		e.energy.canCloak = roll(cloakChance);
-		e.canRam = roll(ramChance);
+		return choice == AbilityChoice::Random ? roll(chance) : choice == AbilityChoice::Yes;
+	}
+
+	void rollAbilities(Enemy &e, AbilityChoice shield, AbilityChoice cloak, AbilityChoice ram)
+	{
+		e.energy.hasShield = decide(shield, shieldChance);
+		e.energy.canCloak = decide(cloak, cloakChance);
+		e.canRam = decide(ram, ramChance);
 		e.energy.bubble.palette = shield::enemyPalette();
 		energy::reset(e.energy);
 	}
@@ -243,6 +267,7 @@ namespace
 void stun(Enemy &enemy, glm::vec2 impulse, float seconds)
 {
 	enemy.stunned = seconds;
+	ram::stop(enemy.ram); // a ram struck mid-lunge ends there
 	movement::push(enemy.body, impulse);
 	// A fast tumble either way, so two rammed ships do not turn in step.
 	const float turns = 6.f + (rand() % 1000) / 200.f; // 6 .. 11 rad/s
@@ -261,7 +286,7 @@ void alert(Enemy &enemy, glm::vec2 playerPos)
 bool showCones() { return conesVisible; }
 
 Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
-	bool playerHidden, const glm::vec2 *comeBackTo)
+	glm::vec2 playerFacing, bool playerHidden, const glm::vec2 *comeBackTo)
 {
 	if (enemy.stunned > 0.f)
 	{
@@ -277,7 +302,27 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 		return {};
 	}
 
-	if (canSee(enemy, playerPos, playerHidden))
+	// A ram under way runs on its body in place of steering, as the player's
+	// does: a moment's dip back, the heading still tracking the player, then
+	// the surge straight along it. When it ends the speed cap brings it back.
+	const glm::vec2 toPlayerNow = towardPlayer(enemy.body.position, playerPos, nullptr);
+	ram::update(enemy.ram, gameDeltaTime, toPlayerNow);
+	if (ram::windingUp(enemy.ram) || ram::active(enemy.ram))
+	{
+		enemy.ramMemory = ramMemorySeconds;
+		enemy.awareness = Enemy::Awareness::Engaged;
+		enemy.lastKnown = playerPos;
+		const glm::vec2 heading = ram::direction(enemy.ram);
+		const bool surging = ram::active(enemy.ram);
+		enemy.body.velocity = surging ? heading * ram::surgeSpeed() : -heading * ram::windupBackSpeed();
+		enemy.body.position += enemy.body.velocity * gameDeltaTime;
+		enemy.body.facing = heading;
+		enemy.body.thrust = surging ? heading : glm::vec2(0.f);
+		return {};
+	}
+
+	enemy.ramMemory = std::max(0.f, enemy.ramMemory - gameDeltaTime);
+	if (canSee(enemy, playerPos, playerHidden) || (enemy.ramMemory > 0.f && !playerHidden))
 	{
 		enemy.awareness = Enemy::Awareness::Engaged;
 		enemy.lastKnown = playerPos;
@@ -288,6 +333,28 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 		// where the player was.
 		enemy.awareness = Enemy::Awareness::Searching;
 		enemy.searchLeft = searchSeconds;
+	}
+
+	// Cloaked: drifting on the velocity it had -- a cloaked ship cannot
+	// thrust, as the player's cannot -- and turning to face the player. Its
+	// gun runs only to ambush: close, behind the player and lined up, or
+	// after long enough cloaked that it gives up waiting. Firing uncloaks it
+	// (the game does that, as it does for the player).
+	if (energy::isCloaked(enemy.energy))
+	{
+		enemy.cloakedFor += gameDeltaTime;
+		enemy.body.facing = movement::turnToward(enemy.body.facing, toPlayerNow, enemy.body.turnRate * gameDeltaTime);
+		enemy.body.thrust = {};
+		movement::integrate(enemy.body.position, enemy.body.velocity, {}, movement::momentum(0.f, 0.f), gameDeltaTime);
+
+		float distance = 0.f;
+		towardPlayer(enemy.body.position, playerPos, &distance);
+		const bool behind = glm::dot(playerFacing, enemy.body.position - playerPos) < 0.f;
+		Orders orders;
+		orders.fighting = true;
+		orders.trigger = (distance < ambushRange && behind && alignedTo(enemy, toPlayerNow))
+			|| enemy.cloakedFor > maxCloakSeconds;
+		return orders;
 	}
 
 	movement::Intent intent;
@@ -318,6 +385,28 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 	// One step for every ship, the player's included.
 	movement::step(enemy.body, intent, gameDeltaTime);
 
+	if (fighting)
+	{
+		const glm::vec2 toPlayer = towardPlayer(enemy.body.position, playerPos, nullptr);
+		float distance = 0.f;
+		towardPlayer(enemy.body.position, playerPos, &distance);
+
+		// Hurt, with a full bar: cloak, and slip away to come back unseen.
+		if (enemy.energy.canCloak && enemy.energy.state == energy::State::Full && enemy.life < cloakBelowLife)
+		{
+			energy::cloak(enemy.energy);
+			enemy.cloakedFor = 0.f;
+			return {};
+		}
+
+		// Close and lined up: ram.
+		const float cone = std::cos(glm::radians(ramConeDegrees));
+		if (enemy.canRam && distance < ramReach && glm::dot(enemy.body.facing, toPlayer) > cone)
+		{
+			ram::tryStart(enemy.ram, enemy.body.facing);
+		}
+	}
+
 	// Only a fighting enemy fires, once it has turned far enough to be
 	// aligned -- judged on the facing it has after this step's turn.
 	Orders orders;
@@ -327,7 +416,7 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 }
 
 Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon,
-	AbilityChoice shield)
+	AbilityChoice shield, AbilityChoice cloak, AbilityChoice ram)
 {
 	static unsigned int nextId = 1; // 0 means "no enemy"
 
@@ -337,7 +426,7 @@ Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, 
 	e.body.position = position;
 	e.body.facing = facing;
 	rollLoadout(e, weapon);
-	rollAbilities(e, shield);
+	rollAbilities(e, shield, cloak, ram);
 	return e;
 }
 
@@ -386,6 +475,12 @@ const tuning::Group tunables("enemies", {
 	{"chance.shield", shieldChance},
 	{"chance.cloak", cloakChance},
 	{"chance.ram", ramChance},
+	{"ram.reach", ramReach},
+	{"ram.coneDegrees", ramConeDegrees},
+	{"ram.memory", ramMemorySeconds},
+	{"cloak.belowLife", cloakBelowLife},
+	{"cloak.ambushRange", ambushRange},
+	{"cloak.longest", maxCloakSeconds},
 	{"spawningEnabled", spawningEnabled},
 	{"conesVisible", conesVisible},
 	{"hearingRadius", hearingRadius},
@@ -458,7 +553,14 @@ void debugUi()
 		tune::SliderFloat("Shield chance", &shieldChance, 0.f, 1.f, "%.2f");
 		tune::SliderFloat("Cloak chance", &cloakChance, 0.f, 1.f, "%.2f");
 		tune::SliderFloat("Ram chance", &ramChance, 0.f, 1.f, "%.2f");
-		ImGui::TextDisabled("Spawned enemies, and placed ones set to Random. Cloak and ram: not used yet");
+		ImGui::SeparatorText("When they use them");
+		tune::SliderFloat("Ram reach", &ramReach, 200.f, 4000.f, "%.0f");
+		tune::SliderFloat("Ram cone", &ramConeDegrees, 1.f, 45.f, "%.0f deg either side");
+		tune::SliderFloat("Ram memory", &ramMemorySeconds, 0.f, 5.f, "%.1f s it keeps track after a ram");
+		tune::SliderFloat("Cloak below life", &cloakBelowLife, 0.f, 1.f, "%.2f");
+		tune::SliderFloat("Ambush range", &ambushRange, 200.f, 3000.f, "%.0f");
+		tune::SliderFloat("Longest cloak", &maxCloakSeconds, 1.f, 30.f, "%.1f s, then it fires anyway");
+		ImGui::TextDisabled("Chances: spawned enemies, and placed ones set to Random");
 		ImGui::TreePop();
 	}
 

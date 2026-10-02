@@ -43,7 +43,7 @@ namespace
 		float collideRadius = 0.f;      // a circle of the same area: rock against rock
 		glm::vec2 home = {};            // where a field rock springs back to
 		bool awake = false;             // moving, so stepped and collided
-		int ramHitOn = -1;              // the ram that last struck it: once per ram
+		unsigned ramHitOn = 0;          // the ram that last struck it, by its serial: once per ram
 		float sinceStruck = 0.f;        // seconds since last pushed or bumped: the spring waits
 
 		int field = -1;                 // which field it belongs to; -1 a single rock
@@ -254,7 +254,6 @@ namespace
 	float springDelay = 3.f;
 	float springEase = 1.f;
 	float returnSpeed = 500.f;
-	int currentRam = 0;            // counts rams, so each strikes a rock once
 
 	// ---- Breaking (A4) ----
 	// Health grows with area to the three-quarters: a pebble pops in a shot or
@@ -1082,12 +1081,11 @@ void blast(glm::vec2 at, float strength)
 	processBreaks();
 }
 
-void ram(glm::vec2 centre, float radius, glm::vec2 direction, bool newRam)
+void ram(glm::vec2 centre, float radius, glm::vec2 direction, unsigned ramSerial)
 {
-	if (newRam) { currentRam++; }
 	for (Rock &r : rocks)
 	{
-		if (r.core || r.ramHitOn == currentRam) { continue; } // a core is the ship's problem, not the core's
+		if (r.core || r.ramHitOn == ramSerial) { continue; } // a core is the ship's problem, not the core's
 		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
 		const glm::vec2 local = polygon::toLocal(r.placement, centre);
 		if (!polygon::overlapsCircle(r.outline, local, radius)) { continue; }
@@ -1102,7 +1100,7 @@ void ram(glm::vec2 centre, float radius, glm::vec2 direction, bool newRam)
 		rigid::applyImpulse(r.body, point, push * ramPush);
 		clampMotion(r);
 		wake(r);
-		r.ramHitOn = currentRam;
+		r.ramHitOn = ramSerial;
 		hurt(r, ramDamage); // (A4) broken below, after the loop
 	}
 	processBreaks();

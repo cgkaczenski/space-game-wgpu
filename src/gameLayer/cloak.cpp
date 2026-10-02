@@ -49,6 +49,17 @@ namespace
 	// something to carry, and an absent ship reads as a bug.
 	const float hiddenAlpha = 0.12f;
 
+	// Cloaked enemies' fields, for the next flush only.
+	struct Field
+	{
+		glm::vec2 at;
+		float shipSize;
+		float level;
+	};
+	constexpr int maxFields = 8;
+	Field fields[maxFields];
+	int fieldCount = 0;
+
 	bool readFile(const char *path, std::string &out)
 	{
 		std::ifstream file(path, std::ios::binary);
@@ -96,17 +107,50 @@ bool isActive() { return active; }
 
 float shipAlpha()
 {
+	return shipAlpha(level);
+}
+
+float ease(float level, bool on, float dt)
+{
+	const float target = on ? 1.f : 0.f;
+	const float rate = on ? engagePerSecond : disengagePerSecond;
+	level += (target - level) * std::min(1.f, rate * std::max(0.f, dt));
+	return level < 0.004f ? 0.f : level; // settle exactly
+}
+
+float shipAlpha(float level)
+{
 	return 1.f - (1.f - hiddenAlpha) * level;
+}
+
+void addField(glm::vec2 worldPos, float shipWorldSize, float level)
+{
+	if (level <= 0.f || fieldCount >= maxFields) { return; }
+	fields[fieldCount++] = {worldPos, shipWorldSize, level};
 }
 
 void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	float shipWorldSize, int width, int height, float dt)
 {
-	const float target = active ? 1.f : 0.f;
-	const float rate = active ? engagePerSecond : disengagePerSecond;
-	level += (target - level) * std::min(1.f, rate * std::max(0.f, dt));
+	level = ease(level, active, dt);
 	shimmerClock = std::fmod(shimmerClock + std::max(0.f, dt), shimmerWrap);
-	if (level < 0.004f) { level = 0.f; } // settle exactly, so down is free
+
+	// The enemies' fields, taken for this flush, and only those reaching the
+	// view: off screen they would bend nothing.
+	const glm::vec4 viewRect = renderer.getViewRect();
+	Field shown[maxFields];
+	int shownCount = 0;
+	for (int i = 0; i < fieldCount; i++)
+	{
+		const Field &f = fields[i];
+		const float reach = f.shipSize * 0.5f * radiusPerShipRadius;
+		if (f.at.x + reach > viewRect.x && f.at.x - reach < viewRect.x + viewRect.z
+			&& f.at.y + reach > viewRect.y && f.at.y - reach < viewRect.y + viewRect.w)
+		{
+			shown[shownCount++] = f;
+		}
+	}
+	fieldCount = 0;
 
 	// The swirl is taken for this flush and cleared, so a gate that stops
 	// asking stops swirling. Only if its field reaches the view: off screen it
@@ -122,7 +166,7 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	// The round trip is skipped entirely rather than run with strength 0,
 	// because a full-screen copy is not free and an idle feature should not
 	// charge for itself.
-	if ((level <= 0.f && !swirlShows) || effect.id == 0 || width <= 0 || height <= 0)
+	if ((level <= 0.f && !swirlShows && shownCount == 0) || effect.id == 0 || width <= 0 || height <= 0)
 	{
 		renderer.flush();
 		return;
@@ -166,6 +210,39 @@ void flushWorld(wgpu2d::Renderer2D &renderer, glm::vec2 shipWorldPos,
 	}
 
 	renderer.drawFullscreenEffect(worldTarget.texture, effect, params);
+
+	// Each cloaked enemy: a quad over its own field, drawn in the world where
+	// the field is, whose texture coordinates are that patch's place on the
+	// screen -- which is all the shader reads its pixel from. So the same
+	// shader bends just that patch, round that ship. It is drawn over the
+	// full-screen result, so where it overlaps the player's field it shows
+	// only its own bending: the two are rarely that close.
+	if (view.z == 0.f || view.w == 0.f) { return; }
+	for (int i = 0; i < shownCount; i++)
+	{
+		const Field &f = shown[i];
+		const float reach = f.shipSize * 0.5f * radiusPerShipRadius;
+		wgpu2d::EffectParams fieldParams;
+		fieldParams.a = {(f.at.x - view.x) / view.z * (float)width, (f.at.y - view.y) / view.w * (float)height,
+			reach * screenPerWorld, f.level * maxStrength};
+		fieldParams.b = {shimmerClock, 0.f, 0.f, 0.f};
+
+		const glm::vec2 lo = f.at - glm::vec2(reach), hi = f.at + glm::vec2(reach);
+		auto screenUv = [&](glm::vec2 p) { return glm::vec2((p.x - view.x) / view.z, (p.y - view.y) / view.w); };
+		const glm::vec2 corners[4] = {lo, {hi.x, lo.y}, hi, {lo.x, hi.y}};
+		const int order[6] = {0, 1, 2, 0, 2, 3};
+		glm::vec2 positions[6], uvs[6];
+		glm::vec4 colours[6];
+		for (int k = 0; k < 6; k++)
+		{
+			positions[k] = corners[order[k]];
+			uvs[k] = screenUv(corners[order[k]]);
+			colours[k] = {1.f, 1.f, 1.f, 1.f};
+		}
+		renderer.setEffect(effect, fieldParams);
+		renderer.renderTriangles(positions, uvs, colours, 6, worldTarget.texture);
+		renderer.clearEffect();
+	}
 }
 
 }

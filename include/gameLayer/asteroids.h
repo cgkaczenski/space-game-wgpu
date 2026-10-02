@@ -87,9 +87,10 @@ namespace asteroids
 	// An explosion at `at`: rocks near it are shoved outward, less further off.
 	void blast(glm::vec2 at, float strength = 1.f);
 
-	// The ram's prow, a circle, moving along `direction`: each rock it
-	// touches is struck once per ram. `newRam` on its first frame.
-	void ram(glm::vec2 centre, float radius, glm::vec2 direction, bool newRam);
+	// A ram's prow, a circle, moving along `direction`: each rock it touches
+	// is struck once per ram. `ramSerial` is that ram's number
+	// (ram::Ram::serial), which tells one ram from the next -- any ship's.
+	void ram(glm::vec2 centre, float radius, glm::vec2 direction, unsigned ramSerial);
 
 	// ---- Cores ----
 	//

@@ -672,15 +672,21 @@ Request debugUi(level::Level &level, bool unsaved)
 			ImGui::EndCombo();
 		}
 
-		// Its shield (B1): no by default, yes, or rolled each round at the
-		// Shield chance. On the placement and saved with the level, as the
+		// Its abilities (B1): each no by default, yes, or rolled each round at
+		// its chance. On the placement and saved with the level, as the
 		// weapon is.
-		int shieldChoice = (int)e.shield;
-		if (ImGui::Combo("Shield", &shieldChoice, "No\0Yes\0Random\0"))
+		auto abilityChoice = [&](const char *label, AbilityChoice &choice)
 		{
-			e.shield = (AbilityChoice)shieldChoice;
-			edited = true;
-		}
+			int c = (int)choice;
+			if (ImGui::Combo(label, &c, "No\0Yes\0Random\0"))
+			{
+				choice = (AbilityChoice)c;
+				edited = true;
+			}
+		};
+		abilityChoice("Shield", e.shield);
+		abilityChoice("Cloak", e.cloak);
+		abilityChoice("Ram", e.ram);
 
 		// And its class's tuning, here beside it -- shared by every enemy of
 		// the class, and not saved with the level: it is the game's tuning.

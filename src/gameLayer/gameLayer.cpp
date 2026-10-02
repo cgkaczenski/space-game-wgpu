@@ -81,6 +81,14 @@ struct Session
 	// B1: every ship's is its own). A new round starts it full, shield up.
 	energy::Energy energy;
 
+	// The player's ram, as every ship that rams has one (B1).
+	ram::Ram ram;
+
+	// Struck by an enemy's ram (B1 step 3): out of control this long more,
+	// tumbling at this rate.
+	float stunned = 0.f;
+	float stunSpin = 0.f;
+
 	std::vector<Bullet> bullets;
 
 	std::vector<Enemy> enemies;
@@ -192,6 +200,10 @@ float bumpEnemyDamage = 0.05f;   // to the enemy's life (1 at full)
 float bumpMinSpeed = 200.f;      // units per second of closing speed
 float bumpGrace = 0.5f;          // seconds
 
+// The player's tumble after an enemy's ram (B1 step 3): the drag on the blow,
+// as a rammed enemy's (Enemies -> Steering and stun).
+float playerStunDrag = 4.f;
+
 // ---- Bumps and intangibility: the convention --------------------------------
 //
 // A ship either bumps into things or passes through them, and one flag says
@@ -295,7 +307,6 @@ const Feature features[] = {
 	{"resources",  resources::init,  nullptr,         resources::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
 	{"effects",    effects::init,    effects::reset,  effects::cleanup},
-	{"ram",        nullptr,          ram::reset,      nullptr},
 	// After shield and cloak: its reset raises one and lowers the other.
 	{"weapons",    nullptr,          [] { weapons::reset(playerWeapons); }, nullptr},
 };
@@ -310,6 +321,7 @@ const tuning::Group tunedGame("game", {
 	{"bump.bounce", shipBounce}, {"bump.damageToPlayer", bumpDamage}, {"bump.damageToEnemy", bumpEnemyDamage},
 	{"bump.minSpeed", bumpMinSpeed}, {"bump.grace", bumpGrace},
 	{"enemyBeam.range", enemyBeamRange},
+	{"playerStunDrag", playerStunDrag},
 });
 
 // Where the camera is before the world shake. Follow chases from here, and the
@@ -348,7 +360,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		for (const level::EnemyPlacement &p : currentLevel.enemies)
 		{
 			session.enemies.push_back(enemyAi::spawnAt(p.position,
-				level::direction(p.facingDegrees), p.behaviour, p.weapon, p.shield));
+				level::direction(p.facingDegrees), p.behaviour, p.weapon, p.shield, p.cloak, p.ram));
 		}
 	}
 	if (startAt) { session.ship.position = *startAt; }
@@ -645,7 +657,7 @@ void debugPanelUi()
 	debugPanel::section("Energy", [] { energy::debugUi(session.energy); });
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
-	debugPanel::section("Ram", ram::debugUi);
+	debugPanel::section("Ram", [] { ram::debugUi(session.ram); });
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemiesDebugUi);
 	debugPanel::section("Ship bumps", []
@@ -816,7 +828,10 @@ bool gameLogic(float deltaTime)
 	// Before movement, because a cloaked ship drifts instead of flying.
 	// Not during a ram: the ram uncloaks on start, and E would otherwise
 	// cloak again while the prow is out -- invulnerable and still striking.
-	if (controls && platform::isButtonPressedOn(platform::Button::E) && !ram::barrierUp())
+	// Rammed by an enemy (B1 step 3), the ship is out of control for a moment:
+	// no flying, firing, ramming or cloaking until the stun runs out.
+	const bool stunnedNow = session.stunned > 0.f;
+	if (controls && !stunnedNow && platform::isButtonPressedOn(platform::Button::E) && !ram::barrierUp(session.ram))
 	{
 		energy::cloak(session.energy);
 	}
@@ -835,14 +850,14 @@ bool gameLogic(float deltaTime)
 	// uncloaks, as firing does (gameplay roadmap C4b).
 	// Out of control -- paused, dying, leaving -- a wind-up keeps the heading
 	// it had rather than following the mouse.
-	ram::update(time.game, controls ? mouseDirection : ram::direction());
-	if (controls && !ImGui::GetIO().WantCaptureKeyboard
+	ram::update(session.ram, time.game, controls ? mouseDirection : ram::direction(session.ram));
+	if (controls && !stunnedNow && !ImGui::GetIO().WantCaptureKeyboard
 		&& platform::isButtonPressedOn(platform::Button::Space)
-		&& ram::tryStart(mouseDirection))
+		&& ram::tryStart(session.ram, mouseDirection))
 	{
 		energy::uncloak(session.energy);
 	}
-	shield::setRam(session.energy.bubble, ram::barrierLevel(), ram::direction());
+	shield::setRam(session.energy.bubble, ram::barrierLevel(session.ram), ram::direction(session.ram));
 
 	// The ship's body is moved by playerMove -- or, in the states below that
 	// take the controls away, set directly: the warp and the ram are not
@@ -864,28 +879,41 @@ bool gameLogic(float deltaTime)
 		// Paused, the hull holds still -- playerMove would snap it to the
 		// mouse even with no time passing. Dying, it is not drawn.
 	}
-	else if (ram::windingUp())
+	else if (session.stunned > 0.f)
+	{
+		// Rammed (B1 step 3): tumbling on the blow, as a rammed enemy does --
+		// no thrust, no speed cap, and the tumble's quick drag.
+		session.stunned -= time.game;
+		const float turn = session.stunSpin * time.game;
+		const glm::vec2 f = session.ship.facing;
+		session.ship.facing = glm::normalize(glm::vec2(f.x * std::cos(turn) - f.y * std::sin(turn),
+			f.x * std::sin(turn) + f.y * std::cos(turn)));
+		session.ship.thrust = {};
+		movement::integrate(session.ship.position, session.ship.velocity, {},
+			movement::momentum(0.f, playerStunDrag), time.game);
+	}
+	else if (ram::windingUp(session.ram))
 	{
 		// The wind-up: a moment's dip back, facing the ram, while the prow
 		// brightens. The anticipation is what makes the lunge read as heavy.
-		session.ship.velocity = -ram::direction() * ram::windupBackSpeed();
+		session.ship.velocity = -ram::direction(session.ram) * ram::windupBackSpeed();
 		session.ship.position += session.ship.velocity * time.game;
-		session.ship.facing = ram::direction();
+		session.ship.facing = ram::direction(session.ram);
 		session.ship.thrust = {};
 		session.aim = mouseDirection;
 	}
-	else if (ram::active())
+	else if (ram::active(session.ram))
 	{
 		// The surge overrides flying: straight along the ram, past the normal
 		// top speed. When it ends the ship still has this velocity, and the
 		// momentum settings take it from there -- the speed cap brings it back.
-		session.ship.velocity = ram::direction() * ram::surgeSpeed();
+		session.ship.velocity = ram::direction(session.ram) * ram::surgeSpeed();
 		session.ship.position += session.ship.velocity * time.game;
-		session.ship.facing = ram::direction();
-		session.ship.thrust = ram::direction();
+		session.ship.facing = ram::direction(session.ram);
+		session.ship.thrust = ram::direction(session.ram);
 		session.aim = mouseDirection;
 
-		effects::ramTrail(session.ship.position, ram::direction(), shipSize,
+		effects::ramTrail(session.ship.position, ram::direction(session.ram), shipSize,
 			shipAtlas.get(3, 0), time.game);
 	}
 	else
@@ -920,7 +948,7 @@ bool gameLogic(float deltaTime)
 			if (coreGrace <= 0.f)
 			{
 				coreGrace = rules.grace;
-				const bool prowTakesIt = ram::barrierUp() && glm::dot(-contact.outward, ram::direction()) > 0.f;
+				const bool prowTakesIt = ram::barrierUp(session.ram) && glm::dot(-contact.outward, ram::direction(session.ram)) > 0.f;
 				if (prowTakesIt)
 				{
 					shield::ramImpact(session.energy.bubble);
@@ -948,22 +976,22 @@ bool gameLogic(float deltaTime)
 
 	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
 	// enemy once per ram; the player takes nothing.
-	static bool rammingLastFrame = false;
-	const bool newRam = ram::active() && !rammingLastFrame;
-	rammingLastFrame = ram::active();
-	if (ram::active())
+	if (ram::active(session.ram))
 	{
-		const collision::Circle front = {session.ship.position + ram::direction() * (shipSize * 0.3f),
+		const collision::Circle front = {session.ship.position + ram::direction(session.ram) * (shipSize * 0.3f),
 			shipSize * 0.65f};
 
 		// Rocks too (gameplay roadmap A2): each struck once per ram, shoved
 		// along it and spun if struck off-centre. The ship goes on through.
-		asteroids::ram(front.center, front.radius, ram::direction(), newRam);
+		asteroids::ram(front.center, front.radius, ram::direction(session.ram), session.ram.serial);
 
 		for (int e = 0; e < (int)session.enemies.size(); e++)
 		{
 			Enemy &enemy = session.enemies[e];
-			if (!collisionSystem.overlaps(front, enemy.getHitbox()) || !ram::firstHit(enemy.id)) { continue; }
+			// A cloaked enemy is not solid (the convention, at syncSolid): the prow
+			// passes it.
+			if (!enemy.body.solid || !collisionSystem.overlaps(front, enemy.getHitbox())
+				|| !ram::firstHit(session.ram, enemy.id)) { continue; }
 
 			// The instant of contact: the game stops dead for a moment, the prow
 			// flares, the world shakes -- then the enemy goes.
@@ -987,9 +1015,9 @@ bool gameLogic(float deltaTime)
 			// side of the ship it was on, faster than the ram itself. Straight
 			// ahead, the ship -- still surging -- caught the enemy it had just
 			// struck and ran through it; aside, the ship passes it.
-			const glm::vec2 side = {-ram::direction().y, ram::direction().x};
+			const glm::vec2 side = {-ram::direction(session.ram).y, ram::direction(session.ram).x};
 			const float which = glm::dot(enemy.body.position - session.ship.position, side) >= 0.f ? 1.f : -1.f;
-			const glm::vec2 away = glm::normalize(ram::direction() + side * which);
+			const glm::vec2 away = glm::normalize(ram::direction(session.ram) + side * which);
 			// Engaged first -- which turns it to face the player -- then the
 			// spin takes over until the stun runs out.
 			enemyAi::alert(enemy, session.ship.position);
@@ -1019,7 +1047,7 @@ bool gameLogic(float deltaTime)
 	// The world shake rides on top: the whole world moves, background and all,
 	// and the HUD, drawn with its own screen camera, stays still.
 	renderer.currentCamera.position = cameraBase + effects::shakeOffset(time.real)
-		+ ram::cameraLean(); // and leans ahead while ramming
+		+ ram::cameraLean(session.ram); // and leans ahead while ramming
 
 #pragma endregion
 
@@ -1044,7 +1072,7 @@ bool gameLogic(float deltaTime)
 
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
-	const bool trigger = controls && platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
+	const bool trigger = controls && !stunnedNow && platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
 	// The mouse in the world, for a missile's target. The view rect is the
 	// world area on screen, so the pointer's fraction of the window is its
 	// fraction of that.
@@ -1091,6 +1119,9 @@ bool gameLogic(float deltaTime)
 		int target = -1;
 		for (int e = 0; e < (int)session.enemies.size(); e++)
 		{
+			// Cloaked, it is not there to the beam (energy::onBeam would say
+			// Missed): the beam runs on past it.
+			if (energy::isCloaked(session.enemies[e].energy)) { continue; }
 			const float t = collision::rayToCircle(beam.origin, beam.direction,
 				session.enemies[e].getHitbox());
 			if (t >= 0.f && t < reach) { reach = t; target = e; }
@@ -1200,8 +1231,11 @@ bool gameLogic(float deltaTime)
 						// Through its energy (B1): a shield takes the shot and
 						// starts to break; without one up, the hull.
 						Enemy &struck = session.enemies[e];
-						if (energy::onHit(struck.energy, session.bullets[i].position - struck.body.position)
-							== energy::HitResult::Damaged)
+						const energy::HitResult result =
+							energy::onHit(struck.energy, session.bullets[i].position - struck.body.position);
+						// Cloaked, it passes through: the shot flies on.
+						if (result == energy::HitResult::Missed) { continue; }
+						if (result == energy::HitResult::Damaged)
 						{
 							struck.life -= session.bullets[i].damage;
 						}
@@ -1243,8 +1277,8 @@ bool gameLogic(float deltaTime)
 					gate::playerShot();
 
 					// The ram's prow takes shots from the front while it is out.
-					if (ram::barrierUp() && glm::dot(session.bullets[i].position - session.ship.position,
-						ram::direction()) > 0.f)
+					if (ram::barrierUp(session.ram) && glm::dot(session.bullets[i].position - session.ship.position,
+						ram::direction(session.ram)) > 0.f)
 					{
 						session.bullets.erase(session.bullets.begin() + i);
 						i--;
@@ -1307,7 +1341,7 @@ bool gameLogic(float deltaTime)
 		session.ship.velocity = {};
 		resources::playerDropped(session.ship.position); // the hold spills at the wreck
 		energy::uncloak(session.energy);
-		ram::reset();
+		session.ram = {};
 		weapons::reset(playerWeapons); // no burst's second shot from the wreck
 		gameState::playerDied();
 	}
@@ -1433,7 +1467,7 @@ bool gameLogic(float deltaTime)
 			|| asteroids::blocksSight(session.enemies[i].body.position, session.ship.position);
 		Enemy &e = session.enemies[i];
 		const enemyAi::Orders orders = enemyAi::update(e, time.game, session.ship.position,
-			session.ship.velocity, hidden, comingBack ? &wayIn : nullptr);
+			session.ship.velocity, session.ship.facing, hidden, comingBack ? &wayIn : nullptr);
 
 		// Its gun, through the same weapons::update as the player's (B1). Only
 		// while it fights, as it always was: the AI decides the trigger, the
@@ -1448,7 +1482,14 @@ bool gameLogic(float deltaTime)
 			gun.shipSize = enemyShipSize;
 			gun.shooter = e.id;
 			gun.missileTarget = playerShip; // its missiles, if it rolled them, chase the player
-			if (weapons::update(e.loadout, time.game, orders.trigger, gun, session.bullets) > 0) { sfx::enemyShot(); }
+			const int fired = weapons::update(e.loadout, time.game, orders.trigger, gun, session.bullets);
+			if (fired > 0) { sfx::enemyShot(); }
+			// Firing uncloaks it, as it does the player -- and the shot still
+			// goes out: the ambush (B1 step 3).
+			if ((fired > 0 || weapons::beam(e.loadout).firing) && energy::isCloaked(e.energy))
+			{
+				energy::uncloak(e.energy);
+			}
 
 			// Its beam, if it rolled the laser: traced from the nose, stopped by
 			// a rock or by the player, never past enemyBeamRange. It does not
@@ -1508,6 +1549,68 @@ bool gameLogic(float deltaTime)
 				enemyBeams.push_back(drawn);
 			}
 		}
+
+		// Its cloak decides whether it is solid (the convention, at
+		// syncSolid), and a ram leaves the player's afterimages behind it.
+		e.body.solid = !energy::isCloaked(e.energy);
+		if (ram::active(e.ram))
+		{
+			effects::ramTrail(e.body.position, ram::direction(e.ram), enemyShipSize,
+				shipAtlas.get(e.type.x, e.type.y), time.game);
+			// And its prow shoves the rocks it meets, as the player's does.
+			const glm::vec2 heading = ram::direction(e.ram);
+			asteroids::ram(e.body.position + heading * (enemyShipSize * 0.3f), enemyShipSize * 0.65f,
+				heading, e.ram.serial);
+		}
+	}
+
+	// An enemy's ram (B1 step 3): its prow strikes the player once per ram.
+	// The game stops for an instant and shakes, as for the player's own; the
+	// hit goes through the player's energy (the shield takes it and breaks);
+	// and the player is knocked aside, as a rammed enemy is, and stunned
+	// briefly. A cloaked player is not solid and is passed. The player's own
+	// prow, out and facing the rammer, takes the hit instead -- no damage and
+	// no stun, only the blow -- as it takes a core.
+	syncSolid();
+	if (gameState::playerPresent() && session.ship.solid)
+	{
+		const collision::Circle playerHull = game::shipHitbox(session.ship.position, shipSize);
+		for (Enemy &e : session.enemies)
+		{
+			if (!ram::active(e.ram)) { continue; }
+			const glm::vec2 heading = ram::direction(e.ram);
+			const collision::Circle prow = {e.body.position + heading * (enemyShipSize * 0.3f), enemyShipSize * 0.65f};
+			if (!collisionSystem.overlaps(prow, playerHull) || !ram::firstHit(e.ram, playerShip)) { continue; }
+
+			gameClock::hitStop(ram::hitStopSeconds());
+			shield::ramImpact(e.energy.bubble);
+			effects::shake(1.f);
+			const glm::vec2 toRammer = e.body.position - session.ship.position;
+			const bool prowTakesIt = ram::barrierUp(session.ram) && glm::dot(toRammer, ram::direction(session.ram)) > 0.f;
+			if (prowTakesIt)
+			{
+				shield::ramImpact(session.energy.bubble);
+			}
+			else
+			{
+				if (energy::onHit(session.energy, toRammer) == energy::HitResult::Damaged)
+				{
+					if (!hitboxDebug::isDamageFrozen()) { session.health -= ram::hitDamage(); }
+					hud::onDamage();
+					resources::interrupt();
+				}
+				session.stunned = ram::playerStunSeconds();
+				const float turns = 6.f + (rand() % 1000) / 200.f; // 6 .. 11 rad/s, as a rammed enemy
+				session.stunSpin = (rand() % 2) ? turns : -turns;
+				ram::stop(session.ram); // a ram of its own, struck, ends there
+			}
+
+			// Aside, 45 degrees off the ram's line toward the player's side, as
+			// the player's ram throws enemies.
+			const glm::vec2 side = {-heading.y, heading.x};
+			const float which = glm::dot(session.ship.position - e.body.position, side) >= 0.f ? 1.f : -1.f;
+			movement::push(session.ship, glm::normalize(heading + side * which) * (ram::surgeSpeed() + ram::knockbackSpeed()));
+		}
 	}
 
 	// Ships bump (gameplay roadmap P1): every pair of enemies, and the player
@@ -1530,7 +1633,7 @@ bool gameLogic(float deltaTime)
 					session.enemies[b].body, enemyRadius, shipBounce);
 			}
 		}
-		if (gameState::playerPresent() && !ram::active() && !ram::windingUp())
+		if (gameState::playerPresent() && !ram::active(session.ram) && !ram::windingUp(session.ram))
 		{
 			const float playerRadius = game::shipHitboxRadius(shipSize);
 			for (int i = 0; i < (int)session.enemies.size(); i++)
@@ -1578,10 +1681,20 @@ bool gameLogic(float deltaTime)
 
 	// What each enemy can see, under the ships (gameplay roadmap C5). A debug
 	// toggle, on by default.
+	// Each enemy's cloak, eased (B1 step 3): how faint its hull is, and how
+	// hard the world bends round it -- its own field in the cloak's pass.
+	// Mostly cloaked, it gives nothing away: no cone, no awareness mark.
+	for (auto &e : session.enemies)
+	{
+		e.cloakLevel = cloak::ease(e.cloakLevel, energy::isCloaked(e.energy), time.game);
+		cloak::addField(e.body.position, enemyShipSize, e.cloakLevel);
+	}
+	auto hidden = [](const Enemy &e) { return e.cloakLevel > 0.5f; };
+
 	if (enemyAi::showCones())
 	{
 		renderer.setBlendMode(wgpu2d::BlendMode::Additive);
-		for (const auto &e : session.enemies) { effects::drawSight(renderer, e); }
+		for (const auto &e : session.enemies) { if (!hidden(e)) { effects::drawSight(renderer, e); } }
 		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 	}
 
@@ -1604,21 +1717,24 @@ bool gameLogic(float deltaTime)
 		// Darkened where a field rock's shadow falls on it (A3).
 		const float lit = 1.f - asteroids::shadowOn(e.body.position, e.getHitbox().radius);
 		renderSpaceShip(renderer, e.body.position, enemyShipSize,
-			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing, {lit, lit, lit, 1.f});
+			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing,
+			{lit, lit, lit, cloak::shipAlpha(e.cloakLevel)});
 	}
 
 	// Their shields, over the hulls as the player's is (B1) -- only on an
-	// enemy that has one, in the enemies' colours.
+	// enemy that has one, in the enemies' colours -- and their rams' prows,
+	// which the bubble draws in its place (B1 step 3).
 	for (auto &e : session.enemies)
 	{
-		if (e.energy.hasShield)
+		shield::setRam(e.energy.bubble, ram::barrierLevel(e.ram), ram::direction(e.ram));
+		if (e.energy.hasShield || ram::barrierUp(e.ram))
 		{
 			shield::draw(renderer, e.energy.bubble, e.body.position, enemyShipSize, time.game);
 		}
 	}
 
 	// What each knows: red engaged, amber searching.
-	for (const auto &e : session.enemies) { effects::drawAwareness(renderer, e, effectClock); }
+	for (const auto &e : session.enemies) { if (!hidden(e)) { effects::drawAwareness(renderer, e, effectClock); } }
 
 	// Wrecks sit where ships sit: after them, under everything else.
 	effects::drawDebris(renderer);
@@ -1796,7 +1912,7 @@ bool gameLogic(float deltaTime)
 
 	// Flushes the world, then the HUD.
 	hud::draw(renderer, session.health, energy::level(session.energy), slots, weapons::slotCount,
-		ram::ready(), w, h);
+		ram::ready(session.ram), w, h);
 
 #pragma endregion
 
