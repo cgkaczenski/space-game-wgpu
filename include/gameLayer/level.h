@@ -10,10 +10,13 @@
 //
 //   arena 20000                             radius; the arena is centred on 0,0
 //   start -17000 0 0                        x y facing
-//   enemy rusher 4000 1200 180 missile      kind x y facing [weapon]:
-//                                           rusher | sniper, and optionally
-//                                           burst | heavy | missile | laser
-//                                           (B1); without it, it rolls one
+//   enemy rusher 4000 1200 180 missile shield:yes
+//                                           kind x y facing, then optionally
+//                                           a weapon -- burst | heavy |
+//                                           missile | laser; without one it
+//                                           rolls -- and shield:yes |
+//                                           shield:random; without it, no
+//                                           shield (B1)
 //   marker gate 15000 -1000                 kind x y: gate
 //   ring 9000 -1500 12000                   x y radius (gameplay roadmap L4)
 //   asteroid 3000 -800 900 1234             x y radius seed (gameplay roadmap A1)
@@ -56,6 +59,9 @@ namespace level
 		// Which of the shared weapons it carries (gameplay roadmap B1): a slot
 		// of weapons::shipWeapon, or -1 to roll one each round.
 		int weapon = -1;
+		// Whether it has a shield: no unless the level says, and Random rolls
+		// it each round at the Shield chance.
+		AbilityChoice shield = AbilityChoice::No;
 	};
 
 	struct Marker

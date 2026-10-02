@@ -8,8 +8,13 @@
 #include <engine/movement.h>
 #include <shipHitbox.h>
 #include <weapons.h>
+#include <energy.h>
 
 constexpr float enemyShipSize = 250.f;
+
+// Whether an enemy has an ability (B1): a level's placement can say yes or no,
+// or leave it to the ability's chance.
+enum class AbilityChoice { No, Yes, Random };
 
 struct Enemy
 {
@@ -41,6 +46,14 @@ struct Enemy
 	// dead ahead, 2 cos(angle / 2) off it, so 1.5 is about 83 degrees either side.
 	weapons::Loadout loadout;
 	float fireRange = 1.5;
+
+	// Its energy (B1): the same rules as the player's. Every enemy has a bar;
+	// whether a full one raises a shield, or can be spent on a cloak, is
+	// rolled at spawn, and so is whether it can ram. A shield works now --
+	// shots break it, beams are held by it. The cloak and the ram are B1 step
+	// 3's: rolled, but nothing uses them yet.
+	energy::Energy energy;
+	bool canRam = false;
 
 	float life = 1.f;
 

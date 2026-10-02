@@ -700,9 +700,11 @@ player; this is a refactor you can check by playing. It is worth doing
 **before** any boss, and after P1, so the body and the kit land in one place.
 
 **Decided (first pass)**
-- **Refactor, plus the shared weapons.** The kit becomes per-ship and the
-  player plays exactly as now. No enemy gains a shield, cloak or ram until
-  B2; their weapons change as below.
+- **Refactor, plus the shared weapons and rolled abilities.** The kit becomes
+  per-ship and the player plays exactly as now. Enemies carry the shared
+  weapons (below), and _(revised in step 2)_ every enemy has energy and rolls,
+  each on its own, a shield, a cloak and a ram -- 20% each by default, the
+  chances tunable and saved with tuning. Some have energy and no shield.
 - **Weapons are data, and enemies roll the player's.** _(Revised during step
   1.)_ Every enemy rolls one of the player's four weapons, at random and with
   the player's attributes: burst laser, heavy laser, missiles or the beam.
@@ -763,6 +765,30 @@ player; this is a refactor you can check by playing. It is worth doing
      second between them, then ran dry and cooled down as the player's
      laser does.
 2. **Energy and the shield's look**, per ship (the bubble gains a colour).
+   - _Built:_ `energy::Energy` is a ship's bar, state and break timer, with
+     `hasShield` and `canCloak`, and the `shield::Bubble` it raises and
+     breaks (`shieldBubble.h`: a bubble's look state and its `Palette`, kept
+     apart from the drawing so `Enemy` does not take the renderer). The
+     player's is in the session; every enemy has one. The ripple's colour now
+     comes from the bubble, so an enemy's bubble is red-orange.
+   - A ship with energy and no shield fills and empties by the same rules;
+     a hit with the bar full does damage and empties it. The cloak's
+     world-bend now follows the player's energy each frame, rather than
+     energy switching it.
+   - **A placed enemy's shield is the level's choice:** No (the default),
+     Yes, or Random, in the editor's enemy panel below the weapon, saved on
+     its line as `shield:yes` / `shield:random`. Spawned enemies -- the
+     buttons, waves -- and placed ones set to Random roll it.
+   - Enemies roll their other abilities at spawn (**Enemies -> Abilities**,
+     20% each). Every way an enemy is hurt -- the player's shots and beam, the
+     ram, cores and bumps -- goes through its energy: a shield takes shots
+     and the ram and breaks, and holds the beam unbroken, which splashes off.
+     Burning outside the circle is not a hit. Cloak and ram are rolled but
+     unused until step 3.
+   - Checked: the player's shield breaks after the ripple, refills in 8 s and
+     blocks again; 1000 rolls gave 196 / 193 / 176; a shielded enemy blocked
+     the first burst, lost its shield, then took 0.2 a burst; the beam was
+     held by a shielded enemy and burned a plain one at 0.4 a second.
 3. **The ram and the cloak's look**, per ship. The cloak's world-bend stays
    one centre until a second cloaked ship exists (B2).
 

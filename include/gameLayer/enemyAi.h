@@ -72,8 +72,11 @@ namespace enemyAi
 	// A new enemy exactly here, facing `facing` (unit): a level's placement.
 	// Unaware, with the behaviour's loadout rolled like any other.
 	// `weapon` is a slot of weapons::shipWeapon -- a placement's choice -- or
-	// -1 to roll one at random (B1).
-	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon = -1);
+	// -1 to roll one at random (B1). `shield` is the placement's choice too;
+	// Random rolls it at the Shield chance. The cloak and the ram are always
+	// rolled, for now.
+	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon = -1,
+		AbilityChoice shield = AbilityChoice::Random);
 	Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour);
 
 	// Counts `timerSeconds` down by `gameDeltaTime` and spawns a wave when it

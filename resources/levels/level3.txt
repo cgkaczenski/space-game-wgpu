@@ -1,8 +1,7 @@
 arena 20000
 start 0 0 0
 
-enemy sniper -1353.54 -1232.73 0 missile
-enemy rusher -2013.6 -845 0 burst
+enemy sniper -1203.54 -1217.73 169 missile shield:yes
 
 
 

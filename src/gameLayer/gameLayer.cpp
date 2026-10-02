@@ -77,6 +77,10 @@ struct Session
 	// kept from the last frame flown, for frames that are not.
 	glm::vec2 aim = {1, 0};
 
+	// The player's energy, and with it the shield it raises (gameplay roadmap
+	// B1: every ship's is its own). A new round starts it full, shield up.
+	energy::Energy energy;
+
 	std::vector<Bullet> bullets;
 
 	std::vector<Enemy> enemies;
@@ -220,7 +224,7 @@ float bumpGrace = 0.5f;          // seconds
 // uncloaks.
 void syncSolid()
 {
-	session.ship.solid = !energy::isCloaked();
+	session.ship.solid = !energy::isCloaked(session.energy);
 }
 bool sceneryVisible = true;
 int awakeEnemies = 0; // last frame's, for the panel
@@ -275,7 +279,7 @@ struct Feature
 const Feature features[] = {
 	{"hud",        hud::init,        hud::reset,      hud::cleanup},
 	{"thruster",   thruster::init,   thruster::reset, thruster::cleanup},
-	{"shield",     shield::init,     shield::reset,   shield::cleanup},
+	{"shield",     shield::init,     nullptr,         shield::cleanup},
 	{"bulletLook", bulletLook::init, nullptr,         bulletLook::cleanup},
 	{"cloak",      cloak::init,      nullptr,         cloak::cleanup},
 	{"worldGrade", worldGrade::init, nullptr,         worldGrade::cleanup},
@@ -293,7 +297,6 @@ const Feature features[] = {
 	{"effects",    effects::init,    effects::reset,  effects::cleanup},
 	{"ram",        nullptr,          ram::reset,      nullptr},
 	// After shield and cloak: its reset raises one and lowers the other.
-	{"energy",     nullptr,          energy::reset,   nullptr},
 	{"weapons",    nullptr,          [] { weapons::reset(playerWeapons); }, nullptr},
 };
 
@@ -333,6 +336,7 @@ void startExtraction()
 void restartGame(const glm::vec2 *startAt = nullptr)
 {
 	session = {};
+	cloak::setActive(false); // a new round is not cloaked
 
 	// The edge, and the closing circle starting over (gameplay roadmap L4).
 	if (levelLoaded) { arena::start(currentLevel.arenaRadius, currentLevel.rings); }
@@ -344,7 +348,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		for (const level::EnemyPlacement &p : currentLevel.enemies)
 		{
 			session.enemies.push_back(enemyAi::spawnAt(p.position,
-				level::direction(p.facingDegrees), p.behaviour, p.weapon));
+				level::direction(p.facingDegrees), p.behaviour, p.weapon, p.shield));
 		}
 	}
 	if (startAt) { session.ship.position = *startAt; }
@@ -638,7 +642,7 @@ void debugPanelUi()
 	debugPanel::section("Sound", sfx::debugUi);
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);
-	debugPanel::section("Energy", energy::debugUi);
+	debugPanel::section("Energy", [] { energy::debugUi(session.energy); });
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", ram::debugUi);
@@ -655,7 +659,7 @@ void debugPanelUi()
 		ImGui::TextDisabled("Masses: player 1; enemies under Enemies -> flight");
 	});
 	debugPanel::section("Hitboxes", hitboxDebug::debugUi);
-	debugPanel::section("Shield", shield::debugUi);
+	debugPanel::section("Shield", [] { shield::debugUi(session.energy.bubble); });
 	debugPanel::section("CRT", crt::debugUi);
 	// Last: saving and loading all of the above, and what has changed.
 	debugPanel::section("Tuning", tuning::debugUi);
@@ -814,9 +818,12 @@ bool gameLogic(float deltaTime)
 	// cloak again while the prow is out -- invulnerable and still striking.
 	if (controls && platform::isButtonPressedOn(platform::Button::E) && !ram::barrierUp())
 	{
-		energy::cloak();
+		energy::cloak(session.energy);
 	}
-	energy::update(time.game);
+	energy::update(session.energy, time.game);
+	// The world bending round the cloaked ship follows the player's energy:
+	// the look is the cloak module's, whether to show it is energy's.
+	cloak::setActive(energy::isCloaked(session.energy));
 
 #pragma endregion
 
@@ -833,9 +840,9 @@ bool gameLogic(float deltaTime)
 		&& platform::isButtonPressedOn(platform::Button::Space)
 		&& ram::tryStart(mouseDirection))
 	{
-		energy::uncloak();
+		energy::uncloak(session.energy);
 	}
-	shield::setRam(ram::barrierLevel(), ram::direction());
+	shield::setRam(session.energy.bubble, ram::barrierLevel(), ram::direction());
 
 	// The ship's body is moved by playerMove -- or, in the states below that
 	// take the controls away, set directly: the warp and the ram are not
@@ -883,7 +890,7 @@ bool gameLogic(float deltaTime)
 	}
 	else
 	{
-		session.aim = playerMove::update(session.ship, mouseDirection, time.game, energy::isCloaked());
+		session.aim = playerMove::update(session.ship, mouseDirection, time.game, energy::isCloaked(session.energy));
 	}
 
 	// An asteroid field's core is solid (gameplay roadmap A2): the ship is put
@@ -916,10 +923,10 @@ bool gameLogic(float deltaTime)
 				const bool prowTakesIt = ram::barrierUp() && glm::dot(-contact.outward, ram::direction()) > 0.f;
 				if (prowTakesIt)
 				{
-					shield::ramImpact();
+					shield::ramImpact(session.energy.bubble);
 					effects::shake(0.6f);
 				}
-				else if (energy::onHit(-contact.outward * hull.radius) == energy::HitResult::Damaged)
+				else if (energy::onHit(session.energy, -contact.outward * hull.radius) == energy::HitResult::Damaged)
 				{
 					if (!hitboxDebug::isDamageFrozen()) { session.health -= rules.damage; }
 					hud::onDamage();
@@ -934,7 +941,7 @@ bool gameLogic(float deltaTime)
 	// once when every enemy is dead, and flying into it ready and uncloaked
 	// is what the debug Extract button did.
 	if (gate::update(time.game, !arena::closes() || arena::onFinalRing(), session.enemies.empty(),
-		session.ship.position, controls && !energy::isCloaked()))
+		session.ship.position, controls && !energy::isCloaked(session.energy)))
 	{
 		startExtraction();
 	}
@@ -961,9 +968,15 @@ bool gameLogic(float deltaTime)
 			// The instant of contact: the game stops dead for a moment, the prow
 			// flares, the world shakes -- then the enemy goes.
 			gameClock::hitStop(ram::hitStopSeconds());
-			shield::ramImpact();
+			shield::ramImpact(session.energy.bubble);
 			effects::shake(1.f);
-			if (!hitboxDebug::isDamageFrozen()) { enemy.life -= ram::hitDamage(); }
+			// Through its energy (B1): a shield takes the strike as it takes a
+			// shot, and breaks; without one, the hull. The blow lands either way.
+			if (energy::onHit(enemy.energy, session.ship.position - enemy.body.position) == energy::HitResult::Damaged
+				&& !hitboxDebug::isDamageFrozen())
+			{
+				enemy.life -= ram::hitDamage();
+			}
 			if (enemy.life <= 0.f)
 			{
 				killEnemy(e);
@@ -1053,14 +1066,15 @@ bool gameLogic(float deltaTime)
 	if (shots > 0)
 	{
 		// Firing is how the player leaves the cloak, and the shot still goes out.
-		energy::uncloak();
+		energy::uncloak(session.energy);
 		for (int s = 0; s < shots; s++) { sfx::playerShot(); }
 	}
 
 	// The laser: traced, not flown. It reaches the edge of the view unless an
 	// enemy is in the way, and burns the first one it touches for as long as
-	// it touches it (gameplay roadmap C3b). Enemies have no shields yet; when
-	// they do, a shielded enemy is where the beam stops without its damage.
+	// it touches it (gameplay roadmap C3b). A shielded enemy is where it
+	// stops without its damage: the shield holds it, unbroken, and it
+	// splashes off (B1).
 	static float effectClock = 0.f; // drives the beam's scroll and flicker
 	effectClock += time.game;
 
@@ -1070,7 +1084,7 @@ bool gameLogic(float deltaTime)
 	glm::vec2 beamSurface = {}; // the core's outward normal where a deflected beam meets it
 	if (beam.firing)
 	{
-		energy::uncloak();
+		energy::uncloak(session.energy);
 		if (beam.started && !gameState::paused()) { sfx::playerShot(); }
 
 		float reach = distanceToViewEdge(beam.origin, beam.direction, view);
@@ -1111,7 +1125,18 @@ bool gameLogic(float deltaTime)
 			asteroids::beam(rockHit, beamEnd, beam.direction, beam.damagePerSecond, time.game);
 		}
 
-		if (target >= 0 && !hitboxDebug::isDamageFrozen())
+		energy::HitResult onEnemy = energy::HitResult::Missed;
+		if (target >= 0)
+		{
+			Enemy &struck = session.enemies[target];
+			onEnemy = energy::onBeam(struck.energy, beamEnd - struck.body.position, time.game);
+			if (onEnemy == energy::HitResult::Blocked)
+			{
+				beamImpact = bulletLook::BeamImpact::Deflect;
+				beamSurface = beamEnd - struck.body.position;
+			}
+		}
+		if (onEnemy == energy::HitResult::Damaged && !hitboxDebug::isDamageFrozen())
 		{
 			session.enemies[target].life -= beam.damagePerSecond * time.game;
 			if (session.enemies[target].life <= 0.f)
@@ -1132,7 +1157,7 @@ bool gameLogic(float deltaTime)
 	weapons::Targets targets;
 	targets.enemies = &session.enemies;
 	targets.player = session.ship.position;
-	targets.playerTargetable = gameState::playerPresent() && !energy::isCloaked();
+	targets.playerTargetable = gameState::playerPresent() && !energy::isCloaked(session.energy);
 	weapons::steerMissiles(session.bullets, targets, time.game);
 
 	for (int i = 0; i < session.bullets.size(); i++)
@@ -1172,7 +1197,14 @@ bool gameLogic(float deltaTime)
 					if (collisionSystem.overlaps(session.bullets[i].getHitbox(),
 						session.enemies[e].getHitbox()))
 					{
-						session.enemies[e].life -= session.bullets[i].damage;
+						// Through its energy (B1): a shield takes the shot and
+						// starts to break; without one up, the hull.
+						Enemy &struck = session.enemies[e];
+						if (energy::onHit(struck.energy, session.bullets[i].position - struck.body.position)
+							== energy::HitResult::Damaged)
+						{
+							struck.life -= session.bullets[i].damage;
+						}
 
 						if (session.enemies[e].life <= 0)
 						{
@@ -1202,7 +1234,7 @@ bool gameLogic(float deltaTime)
 				// A cloaked ship cannot be hit: the shot passes through and
 				// carries on, rather than vanishing on something that isn't there.
 				// Not once it is wreckage or leaving: those shots fly on.
-				if (gameState::playerPresent() && !energy::isCloaked() &&
+				if (gameState::playerPresent() && !energy::isCloaked(session.energy) &&
 					collisionSystem.overlaps(session.bullets[i].getHitbox(),
 					game::shipHitbox(session.ship.position, shipSize)))
 				{
@@ -1227,7 +1259,7 @@ bool gameLogic(float deltaTime)
 					{
 						// Relative to the ship, because the shield moves with it
 						// and the ripple has to stay anchored to the bubble.
-						hit = energy::onHit(session.bullets[i].position - session.ship.position);
+						hit = energy::onHit(session.energy, session.bullets[i].position - session.ship.position);
 					}
 
 					if (hit == energy::HitResult::Damaged)
@@ -1274,7 +1306,7 @@ bool gameLogic(float deltaTime)
 		effects::shake(1.f);
 		session.ship.velocity = {};
 		resources::playerDropped(session.ship.position); // the hold spills at the wreck
-		energy::uncloak();
+		energy::uncloak(session.energy);
 		ram::reset();
 		weapons::reset(playerWeapons); // no burst's second shot from the wreck
 		gameState::playerDied();
@@ -1339,6 +1371,9 @@ bool gameLogic(float deltaTime)
 
 		// Outside the closing circle enemies burn as the player does, fighting
 		// or not, and a burn that finishes one is a kill like any other.
+		// Its energy refills and its shield breaks on time, as the player's
+		// (B1). Burning outside the circle is not a hit: no shield stops it.
+		energy::update(session.enemies[i].energy, time.game);
 		session.enemies[i].life -= arena::burnEnemy(session.enemies[i], time.game);
 		if (session.enemies[i].life <= 0.f)
 		{
@@ -1369,7 +1404,11 @@ bool gameLogic(float deltaTime)
 				{
 					e.coreGrace = rules.grace;
 					enemyAi::stun(e, contact.outward * rules.enemyKnock, rules.enemyStun);
-					if (!hitboxDebug::isDamageFrozen()) { e.life -= rules.damage; }
+					if (energy::onHit(e.energy, -contact.outward * hull.radius) == energy::HitResult::Damaged
+						&& !hitboxDebug::isDamageFrozen())
+					{
+						e.life -= rules.damage;
+					}
 					if (e.life <= 0.f)
 					{
 						killEnemy(i);
@@ -1389,7 +1428,7 @@ bool gameLogic(float deltaTime)
 		// field's painted area the player is hidden outright, gaps and all,
 		// like tall grass (A1b). Shooting out does not end it; a hit enemy is
 		// alerted as ever, turns, finds nothing, and comes to search.
-		const bool hidden = energy::isCloaked() || !gameState::playerPresent()
+		const bool hidden = energy::isCloaked(session.energy) || !gameState::playerPresent()
 			|| playerInField
 			|| asteroids::blocksSight(session.enemies[i].body.position, session.ship.position);
 		Enemy &e = session.enemies[i];
@@ -1442,7 +1481,7 @@ bool gameLogic(float deltaTime)
 				if (toPlayer >= 0.f && toPlayer < reach)
 				{
 					const glm::vec2 at = eb.origin + eb.direction * toPlayer;
-					switch (energy::onBeam(at - session.ship.position, time.game))
+					switch (energy::onBeam(session.energy, at - session.ship.position, time.game))
 					{
 					case energy::HitResult::Blocked:
 						reach = toPlayer;
@@ -1507,15 +1546,19 @@ bool gameLogic(float deltaTime)
 				const glm::vec2 toward = e.body.position - session.ship.position;
 				const float distance = glm::length(toward);
 				const glm::vec2 side = distance > 1e-3f ? toward / distance : glm::vec2(1.f, 0.f);
-				if (energy::onHit(side * playerRadius) == energy::HitResult::Damaged)
+				if (energy::onHit(session.energy, side * playerRadius) == energy::HitResult::Damaged)
 				{
 					if (!hitboxDebug::isDamageFrozen()) { session.health -= bumpDamage; }
 					hud::onDamage();
 					resources::interrupt();
 				}
 
-				// The enemy, which has no shield yet.
-				if (!hitboxDebug::isDamageFrozen()) { e.life -= bumpEnemyDamage; }
+				// The enemy, through its energy as the player is: a shield takes it.
+				if (energy::onHit(e.energy, -side * enemyRadius) == energy::HitResult::Damaged
+					&& !hitboxDebug::isDamageFrozen())
+				{
+					e.life -= bumpEnemyDamage;
+				}
 				if (e.life <= 0.f)
 				{
 					killEnemy(i);
@@ -1562,6 +1605,16 @@ bool gameLogic(float deltaTime)
 		const float lit = 1.f - asteroids::shadowOn(e.body.position, e.getHitbox().radius);
 		renderSpaceShip(renderer, e.body.position, enemyShipSize,
 			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing, {lit, lit, lit, 1.f});
+	}
+
+	// Their shields, over the hulls as the player's is (B1) -- only on an
+	// enemy that has one, in the enemies' colours.
+	for (auto &e : session.enemies)
+	{
+		if (e.energy.hasShield)
+		{
+			shield::draw(renderer, e.energy.bubble, e.body.position, enemyShipSize, time.game);
+		}
 	}
 
 	// What each knows: red engaged, amber searching.
@@ -1613,7 +1666,7 @@ bool gameLogic(float deltaTime)
 		// warping: the bubble does not stretch with the hull.
 		if (gameState::playerPresent())
 		{
-			shield::draw(renderer, session.ship.position, shipSize, time.game);
+			shield::draw(renderer, session.energy.bubble, session.ship.position, shipSize, time.game);
 		}
 	}
 
@@ -1742,7 +1795,7 @@ bool gameLogic(float deltaTime)
 	}
 
 	// Flushes the world, then the HUD.
-	hud::draw(renderer, session.health, energy::level(), slots, weapons::slotCount,
+	hud::draw(renderer, session.health, energy::level(session.energy), slots, weapons::slotCount,
 		ram::ready(), w, h);
 
 #pragma endregion

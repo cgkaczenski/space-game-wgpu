@@ -51,6 +51,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let nz = sqrt(max(0.0, 1.0 - r * r));
     let surface = 0.35 + 0.65 * (1.0 - nz);
 
+    // The wave's colour comes in on the vertices: each ship's bubble has its
+    // own (B1) -- the player's is a pale blue, (0.70, 0.88, 1.0).
     let value = ring * ring * intensity * surface;
-    return vec4f(vec3f(0.70, 0.88, 1.0) * value, 1.0);
+    return vec4f(in.color.rgb * value, 1.0);
 }

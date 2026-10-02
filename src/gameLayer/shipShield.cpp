@@ -33,8 +33,6 @@ namespace
 	// The break. Lowering the shield from full runs a dissolve instead of the
 	// plain fade: the bubble holds its brightness and burns away in patches.
 	// Raising it again cancels one in progress.
-	bool dissolving = false;
-	float dissolveProgress = 0.f;
 	const float dissolveSeconds = 0.6f;
 	const float dissolveEdgeWidth = 0.08f;
 	const float dissolveNoiseScale = 7.f;
@@ -64,15 +62,6 @@ namespace
 	// before it reached the place the player watched the bullet strike. A shell
 	// is a surface: every hit is on it, and the direction is the whole of what
 	// distinguishes one hit from another.
-	struct Impact
-	{
-		glm::vec2 direction = {0.f, -1.f}; // unit, from the ship's centre
-		float elapsed = 0.f;
-		float intensity = 0.f;
-	};
-	const int maxImpacts = 4;
-	Impact impacts[maxImpacts];
-	int nextImpact = 0;
 
 	// How the wave behaves, in the quad's own uv units so it is independent of
 	// the shield's size on screen. The quad is 1 uv across, which puts the
@@ -82,10 +71,6 @@ namespace
 	const float waveLifetime = 0.5f;    // seconds; past this it has left the shell
 	const float impactRadiusUv = 0.47f; // on the shell, just inside the silhouette
 
-	bool active = false;
-	float level = 0.f;   // eased `active`, 0..1
-	float flare = 0.f;   // spikes on a hit, decays
-	float phase = 0.f;
 
 	// How it behaves.
 	const float raisePerSecond = 9.f;
@@ -268,41 +253,45 @@ void cleanup()
 	band.cleanup();
 }
 
-void reset()
+Palette playerPalette()
 {
-	for (Impact &impact : impacts) { impact = Impact{}; }
-	nextImpact = 0;
-	flare = 0.f;
-	dissolving = false;
-	dissolveProgress = 0.f;
+	return {shieldColor, flareColor, tintColor, dissolveEdgeColor, {0.70f, 0.88f, 1.0f, 1.f}};
 }
 
-void setActive(bool a)
+Palette enemyPalette()
 {
-	if (a == active) { return; }
-	active = a;
+	// The player's, turned hostile: the same brightness, red-orange where it
+	// was blue, so an enemy's bubble is never read as the player's own.
+	return {{1.0f, 0.42f, 0.22f, 1.f}, {1.0f, 0.75f, 0.55f, 1.f}, {0.50f, 0.12f, 0.06f, 1.f},
+		{1.0f, 0.88f, 0.72f, 1.f}, {1.0f, 0.80f, 0.62f, 1.f}};
+}
 
-	if (!active && level > 0.004f && dissolveEffect.id != 0)
+void setActive(Bubble &b, bool a)
+{
+	if (a == b.active) { return; }
+	b.active = a;
+
+	if (!b.active && b.level > 0.004f && dissolveEffect.id != 0)
 	{
-		dissolving = true;
-		dissolveProgress = 0.f;
+		b.dissolving = true;
+		b.dissolveProgress = 0.f;
 	}
-	else if (active)
+	else if (b.active)
 	{
-		dissolving = false;
-		dissolveProgress = 0.f;
+		b.dissolving = false;
+		b.dissolveProgress = 0.f;
 	}
 }
-bool isActive() { return active; }
+bool isActive(const Bubble &b) { return b.active; }
 
-void hit(glm::vec2 offsetFromShip, float strength)
+void hit(Bubble &b, glm::vec2 offsetFromShip, float strength)
 {
-	if (strength <= 0.f || !active) { return; }
-	flare += strength;
-	if (flare > 1.f) { flare = 1.f; }
+	if (strength <= 0.f || !b.active) { return; }
+	b.flare += strength;
+	if (b.flare > 1.f) { b.flare = 1.f; }
 
-	Impact &slot = impacts[nextImpact];
-	nextImpact = (nextImpact + 1) % maxImpacts;
+	Bubble::Impact &slot = b.impacts[b.nextImpact];
+	b.nextImpact = (b.nextImpact + 1) % maxImpacts;
 	// Only the direction survives; see Impact. The zero guard is the one
 	// camera::follow and the cloak shader both need, for the same reason.
 	const float distance = glm::length(offsetFromShip);
@@ -317,10 +306,6 @@ float rippleSeconds() { return waveLifetime; }
 
 namespace
 {
-	float ramLevel = 0.f;
-	glm::vec2 ramDirection = {1.f, 0.f};
-	float ramFlash = 0.f; // spikes on a strike, decays
-
 	// The prow: two thick bars of shield swept back from a point ahead of the
 	// nose, like a ship's bow. A bar is a glowing capsule -- a bright core line
 	// with a soft glow round it and rounded ends -- in its own texture, because
@@ -362,12 +347,13 @@ namespace
 		return band.id != 0;
 	}
 
-	void drawArc(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt)
+	void drawArc(wgpu2d::Renderer2D &renderer, Bubble &b, glm::vec2 shipPos, float shipSize, float dt)
 	{
 		if (band.id == 0) { return; }
-		ramFlash *= std::exp(-10.f * std::max(0.f, dt));
+		b.ramFlash *= std::exp(-10.f * std::max(0.f, dt));
+		const float ramFlash = b.ramFlash;
 
-		const glm::vec2 forward = ramDirection;
+		const glm::vec2 forward = b.ramDirection;
 		const glm::vec2 side = {-forward.y, forward.x};
 		const glm::vec2 tip = shipPos + forward * (shipSize * prowTip);
 
@@ -377,7 +363,7 @@ namespace
 
 		// White-hot like a struck shield, not the shield blue; brighter on a
 		// strike. Only its glow keeps a trace of blue.
-		glm::vec4 color = flareColor * (prowBrightness * ramLevel * (1.f + 1.5f * ramFlash));
+		glm::vec4 color = b.palette.flare * (prowBrightness * b.ramLevel * (1.f + 1.5f * ramFlash));
 		color.a = 1.f;
 
 		const float sweep = glm::radians(prowSweep);
@@ -397,15 +383,15 @@ namespace
 	}
 }
 
-void setRam(float level, glm::vec2 direction)
+void setRam(Bubble &b, float level, glm::vec2 direction)
 {
-	ramLevel = level;
-	ramDirection = direction;
+	b.ramLevel = level;
+	b.ramDirection = direction;
 }
 
-void ramImpact()
+void ramImpact(Bubble &b)
 {
-	ramFlash = 1.f;
+	b.ramFlash = 1.f;
 }
 
 void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size)
@@ -418,17 +404,26 @@ void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size)
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 }
 
-void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt)
+void draw(wgpu2d::Renderer2D &renderer, Bubble &b, glm::vec2 shipPos, float shipSize, float dt)
 {
 	if (rim.id == 0 || tint.id == 0) { return; }
 
 	// Ramming: the prow instead of the bubble. The bubble's own state -- how far
 	// up, any break in progress -- waits and carries on after.
-	if (ramLevel > 0.f)
+	if (b.ramLevel > 0.f)
 	{
-		drawArc(renderer, shipPos, shipSize, dt);
+		drawArc(renderer, b, shipPos, shipSize, dt);
 		return;
 	}
+
+	// This bubble's state, by the names the drawing below has always used.
+	bool &active = b.active;
+	float &level = b.level;
+	float &flare = b.flare;
+	float &phase = b.phase;
+	bool &dissolving = b.dissolving;
+	float &dissolveProgress = b.dissolveProgress;
+	const Palette &colours = b.palette;
 
 
 	if (dissolving)
@@ -467,8 +462,8 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 
 	// The flare rides on top of the steady rim rather than replacing it, so a
 	// hit brightens and slightly widens the bubble instead of recolouring it.
-	const glm::vec4 base = shieldColor * intensity;
-	const glm::vec4 extra = flareColor * (flare * level);
+	const glm::vec4 base = colours.rim * intensity;
+	const glm::vec4 extra = colours.flare * (flare * level);
 
 	// While breaking, the glass and both rings go through the dissolve. The
 	// glass gets no glowing edge -- it is the dark half of the bubble, and a
@@ -478,7 +473,7 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 		if (!dissolving) { return; }
 		wgpu2d::EffectParams params;
 		params.a = {dissolveProgress, dissolveEdgeWidth, dissolveNoiseScale, edgeStrength};
-		params.b = dissolveEdgeColor;
+		params.b = colours.edge;
 		renderer.setEffect(dissolveEffect, params);
 	};
 	auto endDissolve = [&]()
@@ -499,7 +494,7 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 		// The glass is the same sphere as the shell, so it is the same size:
 		// both textures put their silhouette at r = 1.
 		const float glassScale = shellScale;
-		glm::vec4 color = tintColor;
+		glm::vec4 color = colours.glass;
 		color.a = glass;
 		beginDissolve(0.f);
 		drawDisc(renderer, tint, shipPos, shipSize, glassScale, color);
@@ -527,7 +522,7 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 		// One quad per live impact, each carrying its own point and age. They
 		// are still additive, so overlapping waves brighten where they cross,
 		// which is what a wave on a shell should do.
-		for (Impact &impact : impacts)
+		for (Bubble::Impact &impact : b.impacts)
 		{
 			if (impact.intensity <= 0.f) { continue; }
 			impact.elapsed += dt;
@@ -549,14 +544,15 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float
 			params.b = {waveSpeed, waveBand, 0.f, 0.f};
 
 			renderer.setEffect(rippleEffect, params);
-			drawDisc(renderer, rim, shipPos, shipSize, shellScale, {1, 1, 1, 1});
+			// The wave's colour rides on the vertices (shieldRipple.wgsl).
+			drawDisc(renderer, rim, shipPos, shipSize, shellScale, {colours.ripple.r, colours.ripple.g, colours.ripple.b, 1.f});
 			renderer.clearEffect();
 		}
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 }
 
-void debugUi()
+void debugUi(Bubble &b)
 {
 	// No on/off here any more: energy decides whether the shield is up, and a
 	// second switch would fight it. This only exercises the visual.
@@ -564,7 +560,7 @@ void debugUi()
 	// A hit somewhere off-centre, so the debug button exercises the ripple
 	// rather than only the flare. The offset is in world units and the ship is
 	// 250 across, so this lands on the upper-left of the bubble.
-	if (ImGui::SmallButton("Flare")) { hit({-70.f, -70.f}); }
+	if (ImGui::SmallButton("Flare")) { hit(b, {-70.f, -70.f}); }
 }
 
 }

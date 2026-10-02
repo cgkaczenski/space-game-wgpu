@@ -57,6 +57,15 @@ namespace
 	// turn at 3.5 .. 4.5.
 	Flight sniperFlight = {1.4f, 3600.f, 0.6f, 1200.f, 1600.f, 1.8f, 2.4f};
 
+	// What each enemy can do besides fly and shoot (B1), each rolled on its
+	// own at spawn. Every enemy has energy; these are what a full bar can
+	// raise or spend, and the ram.
+	float shieldChance = 0.2f;
+	float cloakChance = 0.2f;
+	float ramChance = 0.2f;
+
+	bool roll(float chance) { return rand() / (float)RAND_MAX < chance; }
+
 	// Stunned, a ship tumbles: no thrust, no cap -- the blow is far past any
 	// top speed -- and this drag, the old knockback's fade, so the blow is
 	// mostly spent in half a second.
@@ -196,6 +205,17 @@ namespace
 		e.loadout.cooldownLeft[0] = 1.f;
 	}
 
+	// Its abilities, at their chances. An enemy's bubble is in the enemies'
+	// colours, so it is never read as the player's.
+	void rollAbilities(Enemy &e, AbilityChoice shield)
+	{
+		e.energy.hasShield = shield == AbilityChoice::Random ? roll(shieldChance) : shield == AbilityChoice::Yes;
+		e.energy.canCloak = roll(cloakChance);
+		e.canRam = roll(ramChance);
+		e.energy.bubble.palette = shield::enemyPalette();
+		energy::reset(e.energy);
+	}
+
 	void rollLoadout(Enemy &e, int weapon)
 	{
 		if (e.behaviour == Enemy::Behaviour::KeepDistance)
@@ -306,7 +326,8 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 	return orders;
 }
 
-Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon)
+Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon,
+	AbilityChoice shield)
 {
 	static unsigned int nextId = 1; // 0 means "no enemy"
 
@@ -316,6 +337,7 @@ Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, 
 	e.body.position = position;
 	e.body.facing = facing;
 	rollLoadout(e, weapon);
+	rollAbilities(e, shield);
 	return e;
 }
 
@@ -361,6 +383,9 @@ void updateSpawning(std::vector<Enemy> &enemies, float &timerSeconds,
 // The tunables this file offers (platform/tuning.h): registered at start-up,
 // after everything above, so each one's default is the value it is declared with.
 const tuning::Group tunables("enemies", {
+	{"chance.shield", shieldChance},
+	{"chance.cloak", cloakChance},
+	{"chance.ram", ramChance},
 	{"spawningEnabled", spawningEnabled},
 	{"conesVisible", conesVisible},
 	{"hearingRadius", hearingRadius},
@@ -426,6 +451,16 @@ void debugUi()
 	// in the editor.
 	if (ImGui::TreeNode("Rusher")) { classUi(Enemy::Behaviour::CloseIn); ImGui::TreePop(); }
 	if (ImGui::TreeNode("Sniper")) { classUi(Enemy::Behaviour::KeepDistance); ImGui::TreePop(); }
+
+	// B1: what each new enemy can do, rolled on its own. Saved with tuning.
+	if (ImGui::TreeNode("Abilities"))
+	{
+		tune::SliderFloat("Shield chance", &shieldChance, 0.f, 1.f, "%.2f");
+		tune::SliderFloat("Cloak chance", &cloakChance, 0.f, 1.f, "%.2f");
+		tune::SliderFloat("Ram chance", &ramChance, 0.f, 1.f, "%.2f");
+		ImGui::TextDisabled("Spawned enemies, and placed ones set to Random. Cloak and ram: not used yet");
+		ImGui::TreePop();
+	}
 
 	// C5: what they notice, and what they do with nothing to go on.
 	if (ImGui::TreeNode("Awareness"))

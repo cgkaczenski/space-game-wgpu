@@ -52,11 +52,15 @@ namespace
 			if (kind == "rusher") { e.behaviour = Enemy::Behaviour::CloseIn; }
 			else if (kind == "sniper") { e.behaviour = Enemy::Behaviour::KeepDistance; }
 			else { return false; }
-			// Optionally its weapon (B1); without one it rolls.
-			std::string weapon;
-			if (in >> weapon)
+			// Then, in any order: a weapon (B1; without one it rolls), and
+			// shield:yes or shield:random (without it, no shield).
+			std::string word;
+			while (in >> word)
 			{
-				e.weapon = weapons::shipWeaponSlot(weapon.c_str());
+				if (word == "shield:yes") { e.shield = AbilityChoice::Yes; continue; }
+				if (word == "shield:random") { e.shield = AbilityChoice::Random; continue; }
+				if (word == "shield:no") { e.shield = AbilityChoice::No; continue; }
+				e.weapon = weapons::shipWeaponSlot(word.c_str());
 				if (e.weapon < 0) { return false; }
 			}
 			out.enemies.push_back(e);
@@ -192,6 +196,8 @@ bool save(const char *path, const Level &level)
 		file << "enemy " << (e.behaviour == Enemy::Behaviour::KeepDistance ? "sniper" : "rusher")
 			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees;
 		if (e.weapon >= 0) { file << " " << weapons::shipWeaponKey(e.weapon); }
+		if (e.shield == AbilityChoice::Yes) { file << " shield:yes"; }
+		if (e.shield == AbilityChoice::Random) { file << " shield:random"; }
 		file << "\n";
 	}
 	file << "\n";

@@ -1,6 +1,6 @@
 #pragma once
 
-// A shield bubble around the player ship: a bright rim with a faint fill,
+// A shield bubble around a ship: a bright rim with a faint fill,
 // drawn additively so it glows over whatever is behind it.
 //
 // It is two draws in two blend modes, and that split is the whole point.
@@ -26,6 +26,7 @@
 // down, so a lowered bubble takes its glass with it.
 
 #include <render/wgpu2d.h>
+#include <shieldBubble.h>
 
 namespace shield
 {
@@ -34,16 +35,12 @@ namespace shield
 	bool init();
 	void cleanup();
 
-	// A new round: ripples and the flare stop. Whether the shield is up is a
-	// setting, not something that happened, so it survives.
-	void reset();
-
 	// Whether the shield is up. Raising it eases in. Lowering a visible shield
 	// breaks it: the bubble dissolves in patches over about 0.6 s, with a
 	// bright burning edge, rather than fading. Raising it again cancels that.
 	// In play, energy decides this (gameplay roadmap C1).
-	void setActive(bool active);
-	bool isActive();
+	void setActive(Bubble &bubble, bool active);
+	bool isActive(const Bubble &bubble);
 
 	// Something struck the shield: flare, and start a ripple travelling out
 	// from where it landed.
@@ -58,7 +55,7 @@ namespace shield
 	// Several hits ripple at once, up to a small limit. Each is its own quad
 	// with its own parameters, which is what the per-quad channel made cheap:
 	// no array in a uniform, no upper bound baked into a shader.
-	void hit(glm::vec2 offsetFromShip, float strength = 1.f);
+	void hit(Bubble &bubble, glm::vec2 offsetFromShip, float strength = 1.f);
 
 	// How long one hit's ripple runs, in game seconds. Energy waits this long
 	// before breaking the shield, so the break follows the wave rather than
@@ -69,20 +66,21 @@ namespace shield
 	// the bubble with a prow -- two thick bright bars meeting in a point ahead
 	// of the nose -- facing `direction`, lit by `level`, whatever the energy bar
 	// says: the ram spends no energy. Call every frame.
-	void setRam(float level, glm::vec2 direction);
+	void setRam(Bubble &bubble, float level, glm::vec2 direction);
 
 	// The prow struck something: it flares brighter and thicker for a moment.
-	void ramImpact();
+	void ramImpact(Bubble &bubble);
 
 	// The shield's rim as a small icon, for the HUD's ram slot. Sets its own
 	// blend mode and leaves Alpha set.
 	void drawIcon(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size);
 
-	// Draws the bubble. Call *after* the ship, so the rim reads as being in
-	// front of the hull. `dt` is game time, like the plume's.
-	void draw(wgpu2d::Renderer2D &renderer, glm::vec2 shipPos, float shipSize, float dt);
+	// Draws a bubble. Call *after* the ship, so the rim reads as being in
+	// front of the hull. `dt` is game time, like the plume's: it also eases
+	// the bubble, so draw each one once a frame.
+	void draw(wgpu2d::Renderer2D &renderer, Bubble &bubble, glm::vec2 shipPos, float shipSize, float dt);
 
-	// This feature's own debug controls (roadmap R11): the panel calls this
-	// rather than growing a block per feature.
-	void debugUi();
+	// This feature's own debug controls (roadmap R11), on one bubble -- the
+	// player's.
+	void debugUi(Bubble &bubble);
 }
