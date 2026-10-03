@@ -123,7 +123,7 @@ constexpr float shipSize = 250.f;
 // The player's weapons (gameplay roadmap B1): a loadout like every enemy's,
 // but not part of the Session -- what is in it is tuned in the debug panel
 // and chosen with 1-4, and both survive a restart. A new round only resets
-// its cooldowns, ammo and charge (weapons::reset).
+// its cooldowns, ammo, charge and a lockdown (weapons::reset).
 weapons::Loadout playerWeapons = weapons::playersLoadout();
 
 // Its weapons' tuning (platform/tuning.h), by each weapon's file key -- the
@@ -1301,11 +1301,22 @@ bool gameLogic(float deltaTime)
 						session.enemies[e].getHitbox()))
 					{
 						// Through its energy (B1): a shield takes the shot and
-						// starts to break; without one up, the hull.
+						// starts to break; without one up, the hull. A missile
+						// ignores the shield, as one does against the player:
+						// through to the hull, and the bubble does not ripple,
+						// break, or lose energy. Cloaked, either way, it passes
+						// through and the shot flies on.
 						Enemy &struck = session.enemies[e];
-						const energy::HitResult result =
-							energy::onHit(struck.energy, session.bullets[i].position - struck.body.position);
-						// Cloaked, it passes through: the shot flies on.
+						energy::HitResult result = energy::HitResult::Damaged;
+						if (session.bullets[i].motion != BulletMotion::Missile)
+						{
+							result = energy::onHit(struck.energy,
+								session.bullets[i].position - struck.body.position);
+						}
+						else if (energy::isCloaked(struck.energy))
+						{
+							result = energy::HitResult::Missed;
+						}
 						if (result == energy::HitResult::Missed) { continue; }
 						if (result == energy::HitResult::Damaged)
 						{
@@ -1358,9 +1369,10 @@ bool gameLogic(float deltaTime)
 						continue;
 					}
 
-					// A missile ignores the shield: it passes through and hits the
-					// hull. The bubble does not ripple, break, or lose energy.
-					// Anything else asks the shield, which takes it while up.
+					// A missile ignores the shield, as the player's do against an
+					// enemy: it passes through and hits the hull. The bubble
+					// does not ripple, break, or lose energy. Anything else
+					// asks the shield, which takes it while up.
 					energy::HitResult hit = energy::HitResult::Damaged;
 					if (session.bullets[i].motion != BulletMotion::Missile)
 					{

@@ -262,6 +262,7 @@ void reset(Loadout &l)
 	l.laserIdle = 0.f;
 	l.laserWasFiring = false;
 	l.beam = {};
+	l.lockedFor = 0.f; // a lockdown belongs to the round that took it
 }
 
 void handleInput(Loadout &l)

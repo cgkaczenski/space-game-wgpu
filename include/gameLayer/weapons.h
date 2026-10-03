@@ -145,9 +145,9 @@ namespace weapons
 	// A loadout of these weapons, refilled and ready.
 	Loadout loadoutOf(const Weapon *weapons, int count);
 
-	// A new round: ammo refilled, cooldowns cleared, the laser full. The
-	// weapons themselves, and which is selected, are kept: tuning and a
-	// choice, not something that happened.
+	// A new round: ammo refilled, cooldowns cleared, the laser full, a
+	// lockdown lifted. The weapons themselves, and which is selected, are
+	// kept: tuning and a choice, not something that happened.
 	void reset(Loadout &loadout);
 
 	// The player's keys 1-4 and the wheel. The wheel only switches without
