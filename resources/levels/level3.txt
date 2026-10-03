@@ -1,7 +1,7 @@
 arena 20000
-start 0 0 0
+start -815 185 0
 
-enemy sniper -1203.54 -1217.73 169 missile shield:yes
+enemy boss -692.027 -2466.24 0 gun:heavy:spread=yes
 
 
 

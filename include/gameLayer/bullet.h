@@ -82,5 +82,10 @@ struct Bullet
 	ShipId shooter = playerShip;
 	bool fromEnemy() const { return shooter != playerShip; }
 
+	// Its weapon's modifiers (B2): what a hit that reaches the hull does
+	// besides the damage.
+	bool stun = false;
+	bool lockdown = false;
+
 	float speed = 3000;
 };

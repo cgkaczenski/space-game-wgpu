@@ -27,6 +27,7 @@ namespace enemyAi
 	{
 		bool fighting = false;   // engaged: run the gun this frame
 		bool trigger = false;    // and lined up: pull it
+		bool phaseChanged = false; // a boss entered its next phase this frame (B2)
 	};
 
 	// Steers and moves one enemy, using `enemy.behaviour` to pick the policy,
@@ -52,8 +53,19 @@ namespace enemyAi
 	// it in place of steering; it starts one engaged, close and lined up. It
 	// cloaks when hurt with a full bar, drifts, and its gun runs only to
 	// ambush from behind -- `playerFacing` is how it knows where behind is.
-	Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
-		glm::vec2 playerFacing, bool playerHidden, const glm::vec2 *comeBackTo = nullptr);
+	//
+	// With several weapons it chooses the one that suits the moment (B2):
+	// `shielded` -- the player's shield is up -- favours lasers, which break
+	// one, over the beam, which a shield holds.
+	struct Player
+	{
+		glm::vec2 position = {};
+		glm::vec2 velocity = {};
+		glm::vec2 facing = {1.f, 0.f};
+		bool hidden = false;     // cloaked, gone, in a field, or behind a rock
+		bool shielded = false;
+	};
+	Orders update(Enemy &enemy, float gameDeltaTime, const Player &player, const glm::vec2 *comeBackTo = nullptr);
 
 	// Something of the player's hit it: it engages at once, turned toward
 	// where the player is, whatever it could see.
@@ -76,10 +88,12 @@ namespace enemyAi
 
 	// A new enemy exactly here, facing `facing` (unit): a level's placement.
 	// Unaware, with the behaviour's loadout rolled like any other.
-	// `weapon` is a slot of weapons::shipWeapon -- a placement's choice -- or
-	// -1 to roll one at random (B1). `shield`, `cloak` and `ram` are the
-	// placement's choices too; Random rolls each at its chance.
-	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon = -1,
+	// `guns` are a placement's chosen slots (B2) -- each a kind or rolled,
+	// each modifier yes, no or rolled; empty, they are rolled. `shield`,
+	// `cloak` and `ram` are the placement's choices too; Random rolls each at
+	// its chance. A boss has every ability whatever they say.
+	Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour,
+		const std::vector<GunChoice> &guns = {},
 		AbilityChoice shield = AbilityChoice::Random, AbilityChoice cloak = AbilityChoice::Random,
 		AbilityChoice ram = AbilityChoice::Random);
 	Enemy spawnNear(glm::vec2 playerPos, Enemy::Behaviour behaviour);
@@ -95,6 +109,9 @@ namespace enemyAi
 	// by every enemy of the class. In the Enemies section, and beside a
 	// selected enemy in the level editor.
 	void classUi(Enemy::Behaviour behaviour);
+
+	// How big an enemy of this kind is drawn and hit (B2): a boss is larger.
+	float sizeOf(Enemy::Behaviour behaviour);
 
 	void debugUi();
 }

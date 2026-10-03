@@ -51,6 +51,7 @@ namespace
 			if (!(in >> kind >> e.position.x >> e.position.y >> e.facingDegrees)) { return false; }
 			if (kind == "rusher") { e.behaviour = Enemy::Behaviour::CloseIn; }
 			else if (kind == "sniper") { e.behaviour = Enemy::Behaviour::KeepDistance; }
+			else if (kind == "boss") { e.behaviour = Enemy::Behaviour::Boss; }
 			else { return false; }
 			// Then, in any order: a weapon (B1; without one it rolls), and an
 			// ability:choice for each of shield, cloak and ram -- yes or random
@@ -58,6 +59,37 @@ namespace
 			std::string word;
 			while (in >> word)
 			{
+				// A weapon slot (B2): gun:kind[:stun=..][:lockdown=..][:spread=..]
+				if (word.rfind("gun:", 0) == 0)
+				{
+					GunChoice g;
+					std::istringstream parts(word.substr(4));
+					std::string part;
+					bool first = true;
+					while (std::getline(parts, part, ':'))
+					{
+						if (first)
+						{
+							first = false;
+							if (part == "random") { g.weapon = -1; continue; }
+							g.weapon = weapons::shipWeaponSlot(part.c_str());
+							if (g.weapon < 0) { return false; }
+							continue;
+						}
+						const size_t eq = part.find('=');
+						if (eq == std::string::npos) { return false; }
+						const std::string name = part.substr(0, eq), choice = part.substr(eq + 1);
+						AbilityChoice *slot = name == "stun" ? &g.stun : name == "lockdown" ? &g.lockdown
+							: name == "spread" ? &g.spread : nullptr;
+						if (!slot) { return false; }
+						if (choice == "yes") { *slot = AbilityChoice::Yes; }
+						else if (choice == "random") { *slot = AbilityChoice::Random; }
+						else if (choice == "no") { *slot = AbilityChoice::No; }
+						else { return false; }
+					}
+					e.guns.push_back(g);
+					continue;
+				}
 				const size_t colon = word.find(':');
 				if (colon != std::string::npos)
 				{
@@ -71,8 +103,12 @@ namespace
 					else { return false; }
 					continue;
 				}
-				e.weapon = weapons::shipWeaponSlot(word.c_str());
-				if (e.weapon < 0) { return false; }
+				// A bare kind, from before B2: one gun, its modifiers rolled.
+				GunChoice g;
+				g.weapon = weapons::shipWeaponSlot(word.c_str());
+				if (g.weapon < 0) { return false; }
+				g.stun = g.lockdown = g.spread = AbilityChoice::Random;
+				e.guns.push_back(g);
 			}
 			out.enemies.push_back(e);
 			return true;
@@ -204,9 +240,21 @@ bool save(const char *path, const Level &level)
 
 	for (const EnemyPlacement &e : level.enemies)
 	{
-		file << "enemy " << (e.behaviour == Enemy::Behaviour::KeepDistance ? "sniper" : "rusher")
+		file << "enemy " << (e.behaviour == Enemy::Behaviour::KeepDistance ? "sniper"
+			: e.behaviour == Enemy::Behaviour::Boss ? "boss" : "rusher")
 			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees;
-		if (e.weapon >= 0) { file << " " << weapons::shipWeaponKey(e.weapon); }
+		for (const GunChoice &g : e.guns)
+		{
+			file << " gun:" << (g.weapon >= 0 ? weapons::shipWeaponKey(g.weapon) : "random");
+			auto modifier = [&](const char *name, AbilityChoice c)
+			{
+				if (c == AbilityChoice::Yes) { file << ":" << name << "=yes"; }
+				if (c == AbilityChoice::Random) { file << ":" << name << "=random"; }
+			};
+			modifier("stun", g.stun);
+			modifier("lockdown", g.lockdown);
+			modifier("spread", g.spread);
+		}
 		auto ability = [&](const char *name, AbilityChoice c)
 		{
 			if (c == AbilityChoice::Yes) { file << " " << name << ":yes"; }

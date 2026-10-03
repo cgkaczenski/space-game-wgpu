@@ -29,7 +29,7 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery };
+	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss };
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
@@ -174,7 +174,8 @@ namespace
 		consider(Kind::Start, -1, level.start, shipSize * 0.5f);
 		for (int i = 0; i < (int)level.enemies.size(); i++)
 		{
-			consider(Kind::Enemy, i, level.enemies[i].position, enemySize * 0.5f);
+			consider(Kind::Enemy, i, level.enemies[i].position,
+				enemySize / enemyShipSize * enemyAi::sizeOf(level.enemies[i].behaviour) * 0.5f);
 		}
 		for (int i = 0; i < (int)level.markers.size(); i++)
 		{
@@ -236,9 +237,11 @@ namespace
 		{
 		case Tool::Rusher:
 		case Tool::Sniper:
+		case Tool::Boss:
 		{
 			level::EnemyPlacement e;
-			e.behaviour = tool == Tool::Sniper ? Enemy::Behaviour::KeepDistance : Enemy::Behaviour::CloseIn;
+			e.behaviour = tool == Tool::Sniper ? Enemy::Behaviour::KeepDistance
+				: tool == Tool::Boss ? Enemy::Behaviour::Boss : Enemy::Behaviour::CloseIn;
 			e.position = at;
 			level.enemies.push_back(e);
 			return {Kind::Enemy, (int)level.enemies.size() - 1};
@@ -555,8 +558,10 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 	for (const level::EnemyPlacement &e : level.enemies)
 	{
 		const bool sniper = e.behaviour == Enemy::Behaviour::KeepDistance;
-		renderSpaceShip(renderer, e.position, look.enemySize, look.shipSheet,
-			sniper ? look.sniperCell : look.rusherCell, level::direction(e.facingDegrees));
+		const bool boss = e.behaviour == Enemy::Behaviour::Boss;
+		renderSpaceShip(renderer, e.position, look.enemySize / enemyShipSize * enemyAi::sizeOf(e.behaviour),
+			look.shipSheet, boss ? look.bossCell : sniper ? look.sniperCell : look.rusherCell,
+			level::direction(e.facingDegrees));
 	}
 
 	renderSpaceShip(renderer, level.start, look.shipSize, look.shipSheet, look.playerCell,
@@ -604,7 +609,8 @@ Request debugUi(level::Level &level, bool unsaved)
 	int t = (int)tool;
 	ImGui::RadioButton("Select", &t, (int)Tool::Select); ImGui::SameLine();
 	ImGui::RadioButton("Rusher", &t, (int)Tool::Rusher); ImGui::SameLine();
-	ImGui::RadioButton("Sniper", &t, (int)Tool::Sniper);
+	ImGui::RadioButton("Sniper", &t, (int)Tool::Sniper); ImGui::SameLine();
+	ImGui::RadioButton("Boss", &t, (int)Tool::Boss);
 	ImGui::RadioButton("Gate", &t, (int)Tool::Gate); ImGui::SameLine();
 	ImGui::RadioButton("Ring", &t, (int)Tool::Ring); ImGui::SameLine();
 	ImGui::RadioButton("Asteroid", &t, (int)Tool::Asteroid); ImGui::SameLine();
@@ -650,32 +656,17 @@ Request debugUi(level::Level &level, bool unsaved)
 	case Kind::Enemy:
 	{
 		level::EnemyPlacement &e = level.enemies[selected.index];
-		int kind = e.behaviour == Enemy::Behaviour::KeepDistance ? 1 : 0;
-		if (ImGui::Combo("Kind", &kind, "Rusher\0Sniper\0"))
+		int kind = (int)e.behaviour; // CloseIn, KeepDistance, Boss
+		if (ImGui::Combo("Kind", &kind, "Rusher\0Sniper\0Boss\0"))
 		{
-			e.behaviour = kind ? Enemy::Behaviour::KeepDistance : Enemy::Behaviour::CloseIn;
+			e.behaviour = (Enemy::Behaviour)kind;
 			edited = true;
 		}
 		if (ImGui::DragFloat2("Position", &e.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
 		if (ImGui::SliderFloat("Facing", &e.facingDegrees, -180.f, 180.f, "%.0f deg")) { edited = true; }
 
-		// Its weapon (gameplay roadmap B1): one of the shared four, or rolled
-		// each round. Kept on the placement, so it is there when the enemy is
-		// selected again, and written with the level on Save.
-		if (ImGui::BeginCombo("Weapon", e.weapon < 0 ? "Random" : weapons::shipWeapon(e.weapon).name))
-		{
-			if (ImGui::Selectable("Random", e.weapon < 0)) { e.weapon = -1; edited = true; }
-			for (int i = 0; i < weapons::slotCount; i++)
-			{
-				if (ImGui::Selectable(weapons::shipWeapon(i).name, e.weapon == i)) { e.weapon = i; edited = true; }
-			}
-			ImGui::EndCombo();
-		}
-
-		// Its abilities (B1): each no by default, yes, or rolled each round at
-		// its chance. On the placement and saved with the level, as the
-		// weapon is.
-		auto abilityChoice = [&](const char *label, AbilityChoice &choice)
+		// A choice of no, yes, or rolled each round at its chance.
+		auto choiceCombo = [&](const char *label, AbilityChoice &choice)
 		{
 			int c = (int)choice;
 			if (ImGui::Combo(label, &c, "No\0Yes\0Random\0"))
@@ -684,13 +675,61 @@ Request debugUi(level::Level &level, bool unsaved)
 				edited = true;
 			}
 		};
-		abilityChoice("Shield", e.shield);
-		abilityChoice("Cloak", e.cloak);
-		abilityChoice("Ram", e.ram);
+
+		// Its weapons (B2), slot by slot: each one of the shared four or
+		// rolled, each modifier no, yes or rolled. Kept on the placement, so
+		// they are there when the enemy is selected again, and written with
+		// the level on Save. With none, they are rolled -- one weapon for an
+		// ordinary enemy, sometimes two; two to four for a boss.
+		ImGui::SeparatorText("Weapons");
+		if (e.guns.empty()) { ImGui::TextDisabled("Rolled. Add one to choose them."); }
+		int removeAt = -1;
+		for (int g = 0; g < (int)e.guns.size(); g++)
+		{
+			GunChoice &gun = e.guns[g];
+			ImGui::PushID(g);
+			ImGui::SetNextItemWidth(150.f);
+			if (ImGui::BeginCombo("##kind", gun.weapon < 0 ? "Random" : weapons::shipWeapon(gun.weapon).name))
+			{
+				if (ImGui::Selectable("Random", gun.weapon < 0)) { gun.weapon = -1; edited = true; }
+				for (int i = 0; i < weapons::slotCount; i++)
+				{
+					if (ImGui::Selectable(weapons::shipWeapon(i).name, gun.weapon == i)) { gun.weapon = i; edited = true; }
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("remove")) { removeAt = g; }
+			ImGui::Indent();
+			choiceCombo("Stun", gun.stun);
+			choiceCombo("Lockdown", gun.lockdown);
+			choiceCombo("Spread", gun.spread);
+			ImGui::Unindent();
+			ImGui::PopID();
+		}
+		if (removeAt >= 0) { e.guns.erase(e.guns.begin() + removeAt); edited = true; }
+		ImGui::BeginDisabled((int)e.guns.size() >= weapons::slotCount);
+		if (ImGui::SmallButton("Add weapon")) { e.guns.push_back({}); edited = true; }
+		ImGui::EndDisabled();
+
+		// Its abilities (B1): on the placement and saved with the level, as
+		// the weapons are. A boss has them all; its phases decide when.
+		ImGui::SeparatorText("Abilities");
+		if (e.behaviour == Enemy::Behaviour::Boss)
+		{
+			ImGui::TextDisabled("A boss has the shield, cloak and ram; it rams and cloaks from phase 2");
+		}
+		else
+		{
+			choiceCombo("Shield", e.shield);
+			choiceCombo("Cloak", e.cloak);
+			choiceCombo("Ram", e.ram);
+		}
 
 		// And its class's tuning, here beside it -- shared by every enemy of
 		// the class, and not saved with the level: it is the game's tuning.
-		if (ImGui::TreeNode(kind ? "Sniper tuning" : "Rusher tuning"))
+		if (ImGui::TreeNode(e.behaviour == Enemy::Behaviour::Boss ? "Boss tuning"
+			: e.behaviour == Enemy::Behaviour::KeepDistance ? "Sniper tuning" : "Rusher tuning"))
 		{
 			enemyAi::classUi(e.behaviour);
 			ImGui::TreePop();

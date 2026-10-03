@@ -56,6 +56,9 @@ namespace
 	// Heavy: 0.6 times the player's thrust, and slow to turn -- it used to
 	// turn at 3.5 .. 4.5.
 	Flight sniperFlight = {1.4f, 3600.f, 0.6f, 1200.f, 1600.f, 1.8f, 2.4f};
+	// The boss (B2): the player's own flight -- 6000 thrust, a light 0.3
+	// falloff, top speed 2000 -- heavier, and turning briskly.
+	Flight bossFlight = {3.f, 6000.f, 0.3f, 2000.f, 2000.f, 3.5f, 3.5f};
 
 	// What each enemy can do besides fly and shoot (B1), each rolled on its
 	// own at spawn. Every enemy has energy; these are what a full bar can
@@ -63,6 +66,14 @@ namespace
 	float shieldChance = 0.2f;
 	float cloakChance = 0.2f;
 	float ramChance = 0.2f;
+
+	// An ordinary enemy's weapons (B2): sometimes a second, and each weapon's
+	// modifiers, each at its own chance. Low, so most enemies are as they were.
+	float secondWeaponChance = 0.1f;
+	float stunChance = 0.1f;
+	float lockdownChance = 0.1f;
+	float spreadChance = 0.1f;
+	int spreadShots = 2;               // a spread weapon's extra shots
 
 	bool roll(float chance) { return rand() / (float)RAND_MAX < chance; }
 
@@ -102,6 +113,18 @@ namespace
 	};
 	Tactics rusherTactics = {550.f, 700.f, 1.f};
 	Tactics sniperTactics = {1900.f, 350.f, 1.f};
+	Tactics bossTactics = {1200.f, 600.f, 1.f};   // a middle range: every weapon has its moment
+
+	// The boss's own numbers (B2).
+	float bossLife = 10.f;            // an ordinary enemy's is 1
+	float bossSize = 1.6f;            // of an ordinary enemy's
+	float phase2At = 2.f / 3.f;       // of its life: below, it rams and cloaks too
+	float phase3At = 1.f / 3.f;       // below, enraged
+	float enragedSpeed = 1.3f;        // thrust and top speed, enraged
+	float enragedCooldown = 0.6f;     // its weapons' cooldowns, enraged
+	int bossWeaponsMin = 2;
+	int bossWeaponsMax = 4;
+	float bossModifierChance = 0.3f;  // each modifier on each rolled weapon
 	steering::Params steer;          // the controller's response and braking share
 
 	void rollFlight(Enemy &e, const Flight &f)
@@ -200,6 +223,11 @@ namespace
 	// too close, close in when too far, round in between -- all one orbit,
 	// braking onto the ring instead of swinging through it. Which way round is
 	// the sheet row's, as before (type.y).
+	// The boss: circle at a middle range, facing the player, so each of its
+	// weapons has its moment -- missiles as it closes, lasers and the beam
+	// on the ring. Which way round is its id's.
+	movement::Intent bossFight(const Enemy &enemy, glm::vec2 playerPos, glm::vec2 playerVelocity);
+
 	movement::Intent keepDistance(const Enemy &enemy, glm::vec2 playerPos, glm::vec2 playerVelocity)
 	{
 		movement::Intent intent;
@@ -216,12 +244,77 @@ namespace
 	// are B2's.
 	// `weapon` is a slot of weapons::shipWeapon -- a level's placement can
 	// name one -- or -1 to roll.
-	void arm(Enemy &e, int weapon)
+	movement::Intent bossFight(const Enemy &enemy, glm::vec2 playerPos, glm::vec2 playerVelocity)
 	{
-		const int slot = weapon >= 0 && weapon < weapons::slotCount ? weapon : rand() % weapons::slotCount;
-		const weapons::Weapon gun = weapons::shipWeapon(slot);
-		e.loadout = weapons::loadoutOf(&gun, 1);
-		e.loadout.cooldownLeft[0] = 1.f;
+		movement::Intent intent;
+		intent.face = towardPlayer(enemy.body.position, playerPos, nullptr);
+		intent.thrust = steering::orbit(enemy.body, playerPos, playerVelocity,
+			bossTactics.range, bossTactics.orbitSpeed, enemy.id % 2u == 0u, bossTactics.lead, steer);
+		return intent;
+	}
+
+	// Its weapons' modifiers, each rolled at its chance (B2). Spread is not
+	// for a beam: a beam is one line.
+	void rollModifiers(weapons::Weapon &w)
+	{
+		w.stun = roll(stunChance);
+		w.lockdown = roll(lockdownChance);
+		w.spread = (!w.beam && roll(spreadChance)) ? spreadShots : 0;
+	}
+
+	bool decide(AbilityChoice choice, float chance);
+
+	// Its weapons. A placement can choose them, slot by slot (B2): each a kind
+	// or rolled, each modifier yes, no or rolled. Without a choice, an
+	// ordinary enemy rolls one weapon and sometimes a second of another kind;
+	// a boss rolls two to four different ones, its modifiers more often.
+	void arm(Enemy &e, const std::vector<GunChoice> &chosen)
+	{
+		weapons::Weapon guns[weapons::slotCount];
+		int count = 0;
+		const bool boss = e.behaviour == Enemy::Behaviour::Boss;
+		const float stunAt = boss ? bossModifierChance : stunChance;
+		const float lockAt = boss ? bossModifierChance : lockdownChance;
+		const float spreadAt = boss ? bossModifierChance : spreadChance;
+
+		if (!chosen.empty())
+		{
+			for (const GunChoice &c : chosen)
+			{
+				if (count >= weapons::slotCount) { break; }
+				weapons::Weapon w = weapons::shipWeapon(c.weapon >= 0 && c.weapon < weapons::slotCount
+					? c.weapon : rand() % weapons::slotCount);
+				w.stun = decide(c.stun, stunAt);
+				w.lockdown = decide(c.lockdown, lockAt);
+				w.spread = (!w.beam && decide(c.spread, spreadAt)) ? spreadShots : 0;
+				guns[count++] = w;
+			}
+		}
+		else
+		{
+			// Different kinds, in a shuffled order.
+			int kinds[weapons::slotCount];
+			for (int i = 0; i < weapons::slotCount; i++) { kinds[i] = i; }
+			for (int i = weapons::slotCount - 1; i > 0; i--) { std::swap(kinds[i], kinds[rand() % (i + 1)]); }
+			int wanted = 1;
+			if (boss)
+			{
+				const int lo = std::clamp(bossWeaponsMin, 1, weapons::slotCount);
+				const int hi = std::clamp(bossWeaponsMax, lo, weapons::slotCount);
+				wanted = lo + rand() % (hi - lo + 1);
+			}
+			else if (roll(secondWeaponChance)) { wanted = 2; }
+			for (int i = 0; i < wanted; i++)
+			{
+				weapons::Weapon w = weapons::shipWeapon(kinds[i]);
+				w.stun = roll(stunAt);
+				w.lockdown = roll(lockAt);
+				w.spread = (!w.beam && roll(spreadAt)) ? spreadShots : 0;
+				guns[count++] = w;
+			}
+		}
+		e.loadout = weapons::loadoutOf(guns, count);
+		for (int i = 0; i < count; i++) { e.loadout.cooldownLeft[i] = 1.f; }
 	}
 
 	// Its abilities, at their chances. An enemy's bubble is in the enemies'
@@ -233,15 +326,31 @@ namespace
 
 	void rollAbilities(Enemy &e, AbilityChoice shield, AbilityChoice cloak, AbilityChoice ram)
 	{
-		e.energy.hasShield = decide(shield, shieldChance);
-		e.energy.canCloak = decide(cloak, cloakChance);
-		e.canRam = decide(ram, ramChance);
+		// A boss has every ability; its phases decide when it uses them.
+		const bool boss = e.behaviour == Enemy::Behaviour::Boss;
+		e.energy.hasShield = boss || decide(shield, shieldChance);
+		e.energy.canCloak = boss || decide(cloak, cloakChance);
+		e.canRam = boss || decide(ram, ramChance);
 		e.energy.bubble.palette = shield::enemyPalette();
 		energy::reset(e.energy);
 	}
 
-	void rollLoadout(Enemy &e, int weapon)
+	void rollLoadout(Enemy &e, const std::vector<GunChoice> &weapon)
 	{
+		if (e.behaviour == Enemy::Behaviour::Boss)
+		{
+			// Column 1 of the sheet, an enemy hull of its own, drawn larger.
+			e.type = {1, 0};
+			rollFlight(e, bossFlight);
+			e.size = sizeOf(Enemy::Behaviour::Boss);
+			e.life = e.lifeFull = bossLife;
+			e.fireRange = 1.8f;
+			arm(e, weapon);
+			e.sightRange = 3500.f;
+			e.sightHalfAngle = 0.785f;                    // 45 degrees either side
+			return;
+		}
+
 		if (e.behaviour == Enemy::Behaviour::KeepDistance)
 		{
 			// Column 2 of the sheet, so they read as a different ship. Two rows
@@ -285,9 +394,33 @@ void alert(Enemy &enemy, glm::vec2 playerPos)
 
 bool showCones() { return conesVisible; }
 
-Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 playerVelocity,
-	glm::vec2 playerFacing, bool playerHidden, const glm::vec2 *comeBackTo)
+Orders update(Enemy &enemy, float gameDeltaTime, const Player &player, const glm::vec2 *comeBackTo)
 {
+	const glm::vec2 playerPos = player.position;
+	const glm::vec2 playerVelocity = player.velocity;
+	const glm::vec2 playerFacing = player.facing;
+	const bool playerHidden = player.hidden;
+
+	// A boss's phase follows its life (B2). Entering the third, it is
+	// enraged: faster, and its weapons cool down sooner -- for good.
+	bool phaseChanged = false;
+	if (enemy.behaviour == Enemy::Behaviour::Boss)
+	{
+		const float share = enemy.lifeFull > 0.f ? enemy.life / enemy.lifeFull : 1.f;
+		const int phase = share < phase3At ? 3 : share < phase2At ? 2 : 1;
+		if (phase > enemy.phase)
+		{
+			if (phase == 3)
+			{
+				enemy.body.move.acceleration *= enragedSpeed;
+				enemy.body.move.maxSpeed *= enragedSpeed;
+				for (int i = 0; i < enemy.loadout.count; i++) { enemy.loadout.slots[i].cooldown *= enragedCooldown; }
+			}
+			enemy.phase = phase;
+			phaseChanged = true;
+		}
+	}
+
 	if (enemy.stunned > 0.f)
 	{
 		// Disabled: tumbling on the blow -- no thrust, no cap, the tumble's
@@ -299,7 +432,7 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 		enemy.body.thrust = {};
 		movement::integrate(enemy.body.position, enemy.body.velocity, {},
 			movement::momentum(0.f, stunDrag), gameDeltaTime);
-		return {};
+		{ Orders none; none.phaseChanged = phaseChanged; return none; }
 	}
 
 	// A ram under way runs on its body in place of steering, as the player's
@@ -318,7 +451,7 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 		enemy.body.position += enemy.body.velocity * gameDeltaTime;
 		enemy.body.facing = heading;
 		enemy.body.thrust = surging ? heading : glm::vec2(0.f);
-		return {};
+		{ Orders none; none.phaseChanged = phaseChanged; return none; }
 	}
 
 	enemy.ramMemory = std::max(0.f, enemy.ramMemory - gameDeltaTime);
@@ -350,7 +483,9 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 		float distance = 0.f;
 		towardPlayer(enemy.body.position, playerPos, &distance);
 		const bool behind = glm::dot(playerFacing, enemy.body.position - playerPos) < 0.f;
+		enemy.loadout.selected = weapons::choose(enemy.loadout, distance, player.shielded);
 		Orders orders;
+	orders.phaseChanged = phaseChanged;
 		orders.fighting = true;
 		orders.trigger = (distance < ambushRange && behind && alignedTo(enemy, toPlayerNow))
 			|| enemy.cloakedFor > maxCloakSeconds;
@@ -375,8 +510,8 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 		case Enemy::Awareness::Unaware: intent = wander(enemy, gameDeltaTime); break;
 		case Enemy::Awareness::Engaged:
 			fighting = true;
-			intent = enemy.behaviour == Enemy::Behaviour::KeepDistance
-				? keepDistance(enemy, playerPos, playerVelocity)
+			intent = enemy.behaviour == Enemy::Behaviour::KeepDistance ? keepDistance(enemy, playerPos, playerVelocity)
+				: enemy.behaviour == Enemy::Behaviour::Boss ? bossFight(enemy, playerPos, playerVelocity)
 				: closeIn(enemy, playerPos, playerVelocity);
 			break;
 		}
@@ -391,17 +526,23 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 		float distance = 0.f;
 		towardPlayer(enemy.body.position, playerPos, &distance);
 
+		// A boss rams and cloaks only from its second phase (B2), and cloaks
+		// whenever its bar is full then -- it is hurt by definition.
+		const bool boss = enemy.behaviour == Enemy::Behaviour::Boss;
+		const bool mayRam = enemy.canRam && (!boss || enemy.phase >= 2);
+		const bool hurt = boss ? enemy.phase >= 2 : enemy.life < cloakBelowLife;
+
 		// Hurt, with a full bar: cloak, and slip away to come back unseen.
-		if (enemy.energy.canCloak && enemy.energy.state == energy::State::Full && enemy.life < cloakBelowLife)
+		if (enemy.energy.canCloak && enemy.energy.state == energy::State::Full && hurt)
 		{
 			energy::cloak(enemy.energy);
 			enemy.cloakedFor = 0.f;
-			return {};
+			{ Orders none; none.phaseChanged = phaseChanged; return none; }
 		}
 
 		// Close and lined up: ram.
 		const float cone = std::cos(glm::radians(ramConeDegrees));
-		if (enemy.canRam && distance < ramReach && glm::dot(enemy.body.facing, toPlayer) > cone)
+		if (mayRam && distance < ramReach && glm::dot(enemy.body.facing, toPlayer) > cone)
 		{
 			ram::tryStart(enemy.ram, enemy.body.facing);
 		}
@@ -409,13 +550,21 @@ Orders update(Enemy &enemy, float gameDeltaTime, glm::vec2 playerPos, glm::vec2 
 
 	// Only a fighting enemy fires, once it has turned far enough to be
 	// aligned -- judged on the facing it has after this step's turn.
+	// The weapon that suits the moment (B2), then the trigger once lined up.
+	if (fighting)
+	{
+		float distance = 0.f;
+		towardPlayer(enemy.body.position, playerPos, &distance);
+		enemy.loadout.selected = weapons::choose(enemy.loadout, distance, player.shielded);
+	}
 	Orders orders;
+	orders.phaseChanged = phaseChanged;
 	orders.fighting = fighting;
 	orders.trigger = fighting && alignedTo(enemy, towardPlayer(enemy.body.position, playerPos, nullptr));
 	return orders;
 }
 
-Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, int weapon,
+Enemy spawnAt(glm::vec2 position, glm::vec2 facing, Enemy::Behaviour behaviour, const std::vector<GunChoice> &weapon,
 	AbilityChoice shield, AbilityChoice cloak, AbilityChoice ram)
 {
 	static unsigned int nextId = 1; // 0 means "no enemy"
@@ -472,9 +621,21 @@ void updateSpawning(std::vector<Enemy> &enemies, float &timerSeconds,
 // The tunables this file offers (platform/tuning.h): registered at start-up,
 // after everything above, so each one's default is the value it is declared with.
 const tuning::Group tunables("enemies", {
+	{"boss.mass", bossFlight.mass}, {"boss.thrust", bossFlight.thrust}, {"boss.falloff", bossFlight.drag},
+	{"boss.topSpeedMin", bossFlight.speedMin}, {"boss.topSpeedMax", bossFlight.speedMax},
+	{"boss.turnMin", bossFlight.turnMin}, {"boss.turnMax", bossFlight.turnMax},
+	{"boss.range", bossTactics.range}, {"boss.orbitSpeed", bossTactics.orbitSpeed}, {"boss.lead", bossTactics.lead},
+	{"boss.life", bossLife}, {"boss.size", bossSize}, {"boss.phase2At", phase2At}, {"boss.phase3At", phase3At},
+	{"boss.enragedSpeed", enragedSpeed}, {"boss.enragedCooldown", enragedCooldown},
+	{"boss.weaponsMin", bossWeaponsMin}, {"boss.weaponsMax", bossWeaponsMax}, {"boss.modifierChance", bossModifierChance},
 	{"chance.shield", shieldChance},
 	{"chance.cloak", cloakChance},
 	{"chance.ram", ramChance},
+	{"chance.secondWeapon", secondWeaponChance},
+	{"chance.stun", stunChance},
+	{"chance.lockdown", lockdownChance},
+	{"chance.spread", spreadChance},
+	{"spreadShots", spreadShots},
 	{"ram.reach", ramReach},
 	{"ram.coneDegrees", ramConeDegrees},
 	{"ram.memory", ramMemorySeconds},
@@ -512,13 +673,34 @@ const tuning::Group tunables("enemies", {
 	{"steer.brakeShare", steer.brakeShare},
 });
 
+float sizeOf(Enemy::Behaviour behaviour)
+{
+	return behaviour == Enemy::Behaviour::Boss ? enemyShipSize * bossSize : enemyShipSize;
+}
+
 void classUi(Enemy::Behaviour behaviour)
 {
 	const bool sniper = behaviour == Enemy::Behaviour::KeepDistance;
-	Flight &f = sniper ? sniperFlight : rusherFlight;
-	Tactics &t = sniper ? sniperTactics : rusherTactics;
-	ImGui::PushID(sniper ? "sniper" : "rusher");
-	ImGui::TextDisabled(sniper ? "Shared by every sniper" : "Shared by every rusher");
+	const bool boss = behaviour == Enemy::Behaviour::Boss;
+	Flight &f = boss ? bossFlight : sniper ? sniperFlight : rusherFlight;
+	Tactics &t = boss ? bossTactics : sniper ? sniperTactics : rusherTactics;
+	ImGui::PushID(boss ? "boss" : sniper ? "sniper" : "rusher");
+	ImGui::TextDisabled(boss ? "Shared by every boss" : sniper ? "Shared by every sniper" : "Shared by every rusher");
+
+	// B2: what makes a boss.
+	if (boss)
+	{
+		ImGui::SeparatorText("Boss (new spawns)");
+		tune::SliderFloat("Life", &bossLife, 1.f, 50.f, "%.1f (an enemy's is 1)");
+		tune::SliderFloat("Size", &bossSize, 1.f, 3.f, "x%.2f");
+		tune::SliderFloat("Phase 2 below", &phase2At, 0.f, 1.f, "%.2f of its life: rams and cloaks");
+		tune::SliderFloat("Phase 3 below", &phase3At, 0.f, 1.f, "%.2f of its life: enraged");
+		tune::SliderFloat("Enraged speed", &enragedSpeed, 1.f, 3.f, "x%.2f");
+		tune::SliderFloat("Enraged cooldowns", &enragedCooldown, 0.1f, 1.f, "x%.2f");
+		tune::SliderInt("Weapons, fewest", &bossWeaponsMin, 1, weapons::slotCount);
+		tune::SliderInt("Weapons, most", &bossWeaponsMax, 1, weapons::slotCount);
+		tune::SliderFloat("Modifier chance", &bossModifierChance, 0.f, 1.f, "%.2f each, on rolled weapons");
+	}
 
 	// P1: how it flies. Rolled at spawn.
 	ImGui::SeparatorText("Flight (new spawns; Reset game respawns a level's)");
@@ -546,6 +728,7 @@ void debugUi()
 	// in the editor.
 	if (ImGui::TreeNode("Rusher")) { classUi(Enemy::Behaviour::CloseIn); ImGui::TreePop(); }
 	if (ImGui::TreeNode("Sniper")) { classUi(Enemy::Behaviour::KeepDistance); ImGui::TreePop(); }
+	if (ImGui::TreeNode("Boss")) { classUi(Enemy::Behaviour::Boss); ImGui::TreePop(); }
 
 	// B1: what each new enemy can do, rolled on its own. Saved with tuning.
 	if (ImGui::TreeNode("Abilities"))
@@ -553,6 +736,12 @@ void debugUi()
 		tune::SliderFloat("Shield chance", &shieldChance, 0.f, 1.f, "%.2f");
 		tune::SliderFloat("Cloak chance", &cloakChance, 0.f, 1.f, "%.2f");
 		tune::SliderFloat("Ram chance", &ramChance, 0.f, 1.f, "%.2f");
+		ImGui::SeparatorText("Weapons (B2)");
+		tune::SliderFloat("Second weapon", &secondWeaponChance, 0.f, 1.f, "%.2f chance");
+		tune::SliderFloat("Stun", &stunChance, 0.f, 1.f, "%.2f chance per weapon");
+		tune::SliderFloat("Lockdown", &lockdownChance, 0.f, 1.f, "%.2f chance per weapon");
+		tune::SliderFloat("Spread", &spreadChance, 0.f, 1.f, "%.2f chance per weapon");
+		tune::SliderInt("Spread shots", &spreadShots, 1, 6, "%d extra");
 		ImGui::SeparatorText("When they use them");
 		tune::SliderFloat("Ram reach", &ramReach, 200.f, 4000.f, "%.0f");
 		tune::SliderFloat("Ram cone", &ramConeDegrees, 1.f, 45.f, "%.0f deg either side");

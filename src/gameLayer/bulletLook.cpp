@@ -118,7 +118,7 @@ void cleanup()
 }
 
 void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direction, bool isEnemy,
-	BulletStyle style, float size)
+	BulletStyle style, float size, Mark mark)
 {
 	if (capsule.id == 0) { return; }
 
@@ -132,7 +132,9 @@ void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position, glm::vec2 direct
 	const float length = glowLength * size;
 	const float width = glowWidth * size;
 	const glm::vec2 centre = position + direction * (centreAhead * size);
-	const glm::vec4 color = lookFor(style, isEnemy).glow * intensity;
+	glm::vec4 color = lookFor(style, isEnemy).glow * intensity;
+	if (mark == Mark::Stun) { color = glm::vec4(1.0f, 0.92f, 0.25f, 1.f) * intensity; }
+	if (mark == Mark::Lockdown) { color = glm::vec4(0.72f, 0.35f, 1.0f, 1.f) * intensity; }
 
 	renderer.renderRectangle(
 		{centre - glm::vec2(length * 0.5f, width * 0.5f), length, width},

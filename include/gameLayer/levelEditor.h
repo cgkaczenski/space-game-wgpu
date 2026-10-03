@@ -35,6 +35,7 @@ namespace levelEditor
 		glm::vec4 playerCell;
 		glm::vec4 rusherCell;
 		glm::vec4 sniperCell;
+		glm::vec4 bossCell;
 		float shipSize;
 		float enemySize;
 	};

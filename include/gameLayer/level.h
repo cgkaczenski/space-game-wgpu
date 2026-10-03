@@ -10,15 +10,20 @@
 //
 //   arena 20000                             radius; the arena is centred on 0,0
 //   start -17000 0 0                        x y facing
-//   enemy rusher 4000 1200 180 missile shield:yes
-//                                           kind x y facing, then optionally
-//                                           a weapon -- burst | heavy |
-//                                           missile | laser; without one it
-//                                           rolls -- and shield:yes |
-//                                           shield:random; without it, no
-//                                           shield (B1); likewise cloak:yes |
-//                                           cloak:random and ram:yes |
-//                                           ram:random
+//   enemy rusher 4000 1200 180 gun:missile:spread=yes shield:yes
+//                                           kind x y facing: rusher | sniper |
+//                                           boss (B2); then optionally its
+//                                           weapons, one gun: per slot -- a
+//                                           kind, burst | heavy | missile |
+//                                           laser | random, then any of
+//                                           :stun= :lockdown= :spread= yes or
+//                                           random (without one, no). No gun:
+//                                           at all, they are rolled. A bare
+//                                           kind (older files) is one gun with
+//                                           its modifiers rolled. Then
+//                                           shield:, cloak:, ram: yes or
+//                                           random (without one, no; a boss
+//                                           has every ability)
 //   marker gate 15000 -1000                 kind x y: gate
 //   ring 9000 -1500 12000                   x y radius (gameplay roadmap L4)
 //   asteroid 3000 -800 900 1234             x y radius seed (gameplay roadmap A1)
@@ -58,9 +63,9 @@ namespace level
 		Enemy::Behaviour behaviour = Enemy::Behaviour::CloseIn;
 		glm::vec2 position = {};
 		float facingDegrees = 0.f;
-		// Which of the shared weapons it carries (gameplay roadmap B1): a slot
-		// of weapons::shipWeapon, or -1 to roll one each round.
-		int weapon = -1;
+		// Its weapons, slot by slot (B2): each a kind of weapons::shipWeapon or
+		// rolled, each modifier yes, no or rolled. Empty, they are rolled.
+		std::vector<GunChoice> guns;
 		// Whether it has a shield: no unless the level says, and Random rolls
 		// it each round at the Shield chance.
 		AbilityChoice shield = AbilityChoice::No;

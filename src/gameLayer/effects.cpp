@@ -232,7 +232,7 @@ void drawAwareness(wgpu2d::Renderer2D &renderer, const Enemy &enemy, float time)
 
 	// Above the ship on screen, whatever way the ship faces.
 	const float size = enemyShipSize * 0.14f;
-	const glm::vec2 at = enemy.body.position + glm::vec2(0.f, -enemyShipSize * 0.72f);
+	const glm::vec2 at = enemy.body.position + glm::vec2(0.f, -enemy.size * 0.72f);
 	renderer.renderRectangle({at - glm::vec2(size * 0.5f), size, size}, color, {}, 45.f);
 }
 
@@ -367,7 +367,7 @@ void shipDestroyed(wgpu2d::Texture texture, glm::vec4 cell, glm::vec2 position,
 void enemyKilled(const Enemy &enemy, wgpu2d::Texture shipSheet, glm::vec4 cell)
 {
 	shipDestroyed(shipSheet, cell, enemy.body.position, enemy.body.facing, enemy.body.velocity,
-		enemyShipSize);
+		enemy.size);
 }
 
 void update(float gameDeltaTime)

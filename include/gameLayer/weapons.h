@@ -51,6 +51,17 @@ namespace weapons
 		float burstGap = 0.f;    // seconds between shots of a burst
 		int maxAmmo = -1;        // -1: unlimited
 		bool beam = false;       // held, not fired: the laser (C3b)
+		// Where it is best used, in world units (B2): a ship with several
+		// weapons picks the ready one whose best range is nearest how far
+		// away its target is.
+		float bestRange = 2000.f;
+
+		// Modifiers (gameplay roadmap B2), on this weapon in this loadout.
+		// Stun and lockdown act on a hit that reaches the hull -- a raised
+		// shield blocks them as it blocks the damage.
+		bool stun = false;       // the hit stuns the target, as a ram does
+		bool lockdown = false;   // the hit shuts the target's weapons down, then they cool down
+		int spread = 0;          // extra shots, fanned either side; not on a beam
 	};
 
 	// The laser this frame, as `update` left it. The beam is not a bullet: the
@@ -63,6 +74,8 @@ namespace weapons
 		glm::vec2 origin = {};      // the ship's nose
 		glm::vec2 direction = {};   // unit, toward the mouse
 		float damagePerSecond = 0.f;
+		bool stun = false;          // its weapon's modifiers (B2), for what it burns
+		bool lockdown = false;
 	};
 
 	// What one ship carries, and the state of it.
@@ -88,6 +101,10 @@ namespace weapons
 		Beam beam;
 
 		float nextSide = 1.f;      // which wing the next missile leaves from: a salvo alternates
+
+		// Locked down by a hit (B2): no weapon fires for this long, and then
+		// each starts its cooldown.
+		float lockedFor = 0.f;
 	};
 
 	// The player's four, refilled and ready.
@@ -98,6 +115,26 @@ namespace weapons
 	// one (B1). Several weapons per ship, and modifiers on top of a base
 	// weapon, are B2's.
 	Weapon shipWeapon(int slot);
+
+	// The ready weapon in `loadout` best suited to a target `distance` away
+	// (B2): the one whose best range is nearest, a laser against a raised
+	// shield, never the beam against one -- a shield holds a beam. Keeps the
+	// one already selected unless another is clearly better, so a ship does
+	// not flick between two. The selected slot if none is ready.
+	int choose(const Loadout &loadout, float distance, bool targetShielded);
+
+	// A lockdown hit (B2): nothing fires for `seconds`, and then every weapon
+	// starts its cooldown. A burst in progress stops; the beam goes off.
+	void lockdown(Loadout &loadout, float seconds);
+	bool lockedDown(const Loadout &loadout);
+
+	// The modifiers' shared numbers (B2): how long a stun lasts on the player
+	// and on an enemy, how long a lockdown, and the grace after either, during
+	// which another does not take.
+	float stunSecondsOnPlayer();
+	float stunSecondsOnEnemy();
+	float lockdownSeconds();
+	float effectGraceSeconds();
 
 	// A short name for each of the four, for files: burst, heavy, missile,
 	// laser. A level keeps which weapon its enemies carry by it.

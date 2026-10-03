@@ -852,6 +852,103 @@ Built on P1 (moves like the player) and B1 (has the player's kit).
 - What does it drop? A deposit, or a big haul of orbs?
 - Does it need a health bar, and a name (U1)?
 
+**Decided (first pass)**
+- **A boss kind**, a third class beside rusher and sniper: an enemy hull
+  scaled up (about 1.6x) and tinted, much more life (about 10x), the
+  player's flight tuning, every ability (shield, cloak, ram), and 2 to 4
+  weapons. Placed in the editor; its numbers on sliders.
+- **Phases by health.** Above 2/3 it fights with its guns; below, it adds the
+  ram and the cloak; below 1/3 it is enraged -- faster, shorter cooldowns.
+  Thresholds on sliders.
+- **Optional, with no health bar.** Not tied to the gate. Killing it bursts a
+  big haul of orbs. Its health is read from its damage.
+- **Several weapons, chosen by range and situation.** Each weapon has a best
+  range; a ship picks the best one that is ready -- missiles from afar, lasers
+  to break a raised shield, the beam on a target with its shield down.
+  Bosses carry 2 to 4, each picked per slot in the editor or rolled;
+  ordinary enemies get a second weapon at a tunable chance (low by default).
+- **Weapon modifiers**, on a weapon in a loadout (picked or rolled, chances
+  tunable):
+  - **Stun:** a hit stuns the target as a ram does.
+  - **Lockdown:** a hit disables all of the target's weapons for 2 s; then
+    each must go through its cooldown before it fires again.
+  - **Spread:** extra shots in a fan -- a missile salvo, a shotgun laser.
+  - _(Suggested, to confirm:)_ stun and lockdown only on a hit that reaches
+    the hull -- a raised shield blocks them, as it blocks the damage; 0.5 s
+    of stun on the player, the ram's on an enemy; and a target is immune to
+    another stun or lockdown for 1 s after one ends, so a beam carrying
+    either cannot hold it forever. Spread: two extra shots, 15 degrees either
+    side. Ordinary enemies: 10% chance of a second weapon, 10% of each
+    modifier per weapon.
+- **Enemy shots carry the shooter's velocity**, as the player's do -- every
+  enemy.
+
+**Steps (suggestion):**
+1. **Weapons:** several per loadout and choosing between them by range and
+   situation; the three modifiers and their on-hit effects on any ship;
+   enemy shots with the shooter's velocity; ordinary enemies' second weapon
+   and modifiers by chance.
+   - _Built:_ a `Weapon` has a best range (burst 1600, heavy 2200, missile
+     3500, beam 2500) and its modifiers (`stun`, `lockdown`, `spread`).
+     `weapons::choose` picks the ready weapon that suits the distance --
+     lasers against a raised shield, never the beam against one -- and keeps
+     the current one unless another is clearly better. Spread fans its extra
+     shots in the fire function (15 degrees apart). A lockdown is part of the
+     loadout: nothing fires for 2 s, then every weapon starts its cooldown;
+     the HUD dims its slots meanwhile.
+   - Stun and lockdown ride on the bullet or the beam, and act through one
+     rule on either side when a hit reaches the hull: the player is stunned
+     0.5 s (tumbling, as after an enemy's ram), an enemy 2 s (the ram's);
+     a lockdown takes the loadout; then 1 s of grace. Enemy shots carrying
+     either glow yellow (stun) or violet (lockdown).
+   - Ordinary enemies: a second weapon of another kind at 10%, and each
+     weapon's stun, lockdown and spread (not on a beam) at 10% each, under
+     **Enemies -> Abilities -> Weapons**. `enemyAi::update` now takes a
+     `Player` view -- position, velocity, facing, hidden, shielded.
+   - Enemy shots carry the enemy's velocity.
+   - _Found:_ an enemy's shot hitting the player always took a fixed 0.1 of
+     the hull, whatever the weapon, so since B1 enemies' heavy lasers and
+     missiles hit no harder than their old gun. It now takes the shot's own
+     damage, as the player's shots do to enemies.
+   - Checked: 2000 rolls gave 203 second weapons and about 10% of each
+     modifier, none spread on a beam; `choose` picks burst up close, the beam
+     at 2400 unshielded but the heavy laser shielded, missiles at 3600; a
+     spread heavy laser fires three, each carrying the enemy's velocity; its
+     first volley through the hull stunned the player 0.5 s and locked their
+     weapons 2 s, after which the burst laser cycled its cooldown, and a hit
+     inside the grace did damage but no stun or lockdown.
+2. **The boss:** the kind, its look, flight and life; its phases; its
+   weapons and modifiers in the editor; the orb haul.
+   - _Built:_ `Behaviour::Boss`, placed with the editor's **Boss** tool or
+     the Kind picker, and spawned with **Spawn boss**. The column-1 hull of
+     the ship sheet, 1.6x the size (every place an enemy is drawn or hit now
+     uses its own `size`), tinted warm; life 10; the player's flight (6000
+     thrust, 0.3 falloff, top speed 2000), mass 3; circling at 1200. It has
+     the shield, cloak and ram.
+   - **Phases:** above 2/3 of its life it fights with its guns; below, it
+     rams and cloaks too -- cloaking whenever its bar is full; below 1/3 it is
+     enraged for good: thrust and top speed x1.3, cooldowns x0.6. Entering a
+     phase shakes the screen and flares its shield.
+   - **Weapons, for any placed enemy:** the editor's enemy panel lists its
+     weapon slots, up to four -- each a kind or Random, with Stun, Lockdown
+     and Spread each No, Yes or Random -- saved as
+     `gun:missile:spread=yes:stun=random` words on its line. With none, they
+     are rolled: one (sometimes two) for an ordinary enemy, two to four
+     different ones for a boss, its modifiers at 0.3 each. A bare weapon word
+     from an older file loads as one slot with its modifiers rolled.
+   - **Death:** a bigger blast, and 24 orbs of 0.5 thrown all round.
+   - Tuning under **Enemies -> Boss** (and the boss's tree beside it in the
+     editor): life, size, phase thresholds, enraged speed and cooldowns, how
+     many weapons and the modifier chance; the haul under the game's tuning.
+   - Checked: a level with a boss (missile with spread, heavy with stun and
+     random lockdown, one random), a rusher with an old bare weapon word and
+     a plain sniper loaded and spawned as written, and saved back in the new
+     form. A boss through its phases: circling at 1200 switching heavy laser
+     and beam; at phase 2 it cloaked at once and drifted off; at phase 3
+     accel 6000 -> 7800, top speed 2000 -> 2600, cooldowns cut to 60%, and
+     it rammed and locked down the player; killed, the player's hold went
+     from 0 to 12.3 (12 of orbs, the rest the usual fragments).
+
 **Engine ideas**
 - The shield bubble already takes per-quad parameters. A boss's shield can be
   the same bubble in another colour, rippling where it is hit.

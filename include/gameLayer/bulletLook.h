@@ -44,9 +44,14 @@ namespace bulletLook
 	// **The caller must have set `BlendMode::Additive` already.** That is not
 	// laziness: setting it inside would break a draw run twice per bullet
 	// instead of twice per frame. Draw every glow, then every sprite.
+	//
+	// `mark` is what the shot's weapon does besides damage (B2), shown in its
+	// glow -- stun electric yellow, lockdown violet -- so a dangerous shot can
+	// be told from the rest.
+	enum class Mark { None, Stun, Lockdown };
 	void drawGlow(wgpu2d::Renderer2D &renderer, glm::vec2 position,
 		glm::vec2 direction, bool isEnemy,
-		BulletStyle style = BulletStyle::Standard, float size = 1.f);
+		BulletStyle style = BulletStyle::Standard, float size = 1.f, Mark mark = Mark::None);
 
 	// The art on top of the glow: five overlapping quads along the heading,
 	// fading in from the tail. Player and enemy use different cells of the sheet.

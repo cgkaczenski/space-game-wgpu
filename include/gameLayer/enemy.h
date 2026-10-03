@@ -17,6 +17,16 @@ constexpr float enemyShipSize = 250.f;
 // or leave it to the ability's chance.
 enum class AbilityChoice { No, Yes, Random };
 
+// One weapon slot as a placement chooses it (B2): which of the four -- or -1,
+// rolled -- and each modifier.
+struct GunChoice
+{
+	int weapon = -1;
+	AbilityChoice stun = AbilityChoice::No;
+	AbilityChoice lockdown = AbilityChoice::No;
+	AbilityChoice spread = AbilityChoice::No;
+};
+
 struct Enemy
 {
 	// Stable for the enemy's life, never reused. The enemy list is erased from
@@ -28,9 +38,19 @@ struct Enemy
 
 	// Which function enemyAi calls. Same data, same draw; the policy is not a
 	// subclass. CloseIn flies at the player. KeepDistance faces them and holds
-	// a range -- movement and facing are not the same vector.
-	enum class Behaviour { CloseIn, KeepDistance };
+	// a range -- movement and facing are not the same vector. Boss (B2) holds
+	// a middle range with the player's flight, every ability and several
+	// weapons, and fights in phases as its life falls.
+	enum class Behaviour { CloseIn, KeepDistance, Boss };
 	Behaviour behaviour = Behaviour::CloseIn;
+
+	// How big it is, in world units: its art, its hitbox, its plume, its
+	// shield. A boss is larger (B2).
+	float size = enemyShipSize;
+	// A boss's phase (B2): 1 above two thirds of its life, 2 below, 3 below a
+	// third. Ordinary enemies stay 1.
+	int phase = 1;
+	float lifeFull = 1.f;         // what `life` starts at: a boss has more
 
 	// Its body: position, velocity, facing (where it looks, and where its
 	// sight cone points), how it moves and how fast it turns -- the same kind
@@ -57,6 +77,7 @@ struct Enemy
 	float cloakLevel = 0.f;       // its cloak, eased: how faint the hull, how strong the bending
 	float cloakedFor = 0.f;       // seconds cloaked: it ambushes, or gives up, in time
 	float ramMemory = 0.f;        // seconds it still knows where the player is, after a ram
+	float effectImmune = 0.f;     // seconds before another stun or lockdown takes (B2)
 
 	float life = 1.f;
 
@@ -92,6 +113,6 @@ struct Enemy
 
 	collision::Circle getHitbox() const
 	{
-		return game::shipHitbox(body.position, enemyShipSize);
+		return game::shipHitbox(body.position, size);
 	}
 };

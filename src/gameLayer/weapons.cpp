@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <glm/geometric.hpp>
+#include <glm/trigonometric.hpp>
 #include <string>
 
 namespace weapons
@@ -19,11 +20,14 @@ namespace
 	// cooldown is a decision the player makes, and under a second it is only
 	// a rate of fire.
 	const Weapon shipWeapons[slotCount] = {
-		{"Burst laser", BulletStyle::Standard, BulletMotion::Straight, 0.8f, 0.1f, 1.0f, 3000.f, 2, 0.08f, -1},
-		{"Heavy laser", BulletStyle::Heavy,    BulletMotion::Straight, 2.0f, 0.3f, 1.5f, 2600.f, 1, 0.f,   -1},
-		{"Missile",     BulletStyle::Missile,  BulletMotion::Missile,  3.0f, 0.5f, 1.2f, 6000.f, 1, 0.f,    5},
+		// The last number is each one's best range (B2): the burst laser up
+		// close, the heavy laser further, missiles from afar, the beam within
+		// an enemy's reach of it.
+		{"Burst laser", BulletStyle::Standard, BulletMotion::Straight, 0.8f, 0.1f, 1.0f, 3000.f, 2, 0.08f, -1, false, 1600.f},
+		{"Heavy laser", BulletStyle::Heavy,    BulletMotion::Straight, 2.0f, 0.3f, 1.5f, 2600.f, 1, 0.f,   -1, false, 2200.f},
+		{"Missile",     BulletStyle::Missile,  BulletMotion::Missile,  3.0f, 0.5f, 1.2f, 6000.f, 1, 0.f,    5, false, 3500.f},
 		// The laser's damage is per second while the beam touches, not per shot.
-		{"Laser",       BulletStyle::Laser,    BulletMotion::Straight, 4.0f, 0.4f, 1.0f, 0.f,    1, 0.f,   -1, true},
+		{"Laser",       BulletStyle::Laser,    BulletMotion::Straight, 4.0f, 0.4f, 1.0f, 0.f,    1, 0.f,   -1, true,  2500.f},
 	};
 
 	// The laser's charge, in seconds of beam (gameplay roadmap C3b). It drains
@@ -52,6 +56,13 @@ namespace
 	float turnRateStart = 3.f;       // radians per second as the chase begins
 	float turnRateGrowth = 6.f;      // added per second of chase: the no-miss rule
 	float launchSideFraction = 0.45f; // of the ship's size, out to the wing
+
+	// Modifiers (B2).
+	float spreadDegrees = 15.f;       // between a spread weapon's shots
+	float modifierStunPlayer = 0.5f;  // seconds: the player, as an enemy's ram stuns it
+	float modifierStunEnemy = 2.f;    // seconds: an enemy, as the player's ram stuns it
+	float lockdownFor = 2.f;          // seconds with no weapon, before the cooldowns
+	float effectGrace = 1.f;          // seconds after a stun or lockdown when another does not take
 
 	// Wheel travel not yet turned into a switch. A mouse sends whole notches;
 	// a trackpad sends fractions, which add up to one. The player's alone:
@@ -132,7 +143,38 @@ namespace
 			b.aimDirection = context.aim;
 			b.target = context.missileTarget;
 		}
+		b.stun = w.stun;
+		b.lockdown = w.lockdown;
 		return b;
+	}
+
+	// A weapon's shot, and its spread (B2): the extra shots fanned either
+	// side of the aim, one more each side per pair, `spreadDegrees` apart.
+	int fire(Loadout &l, const Weapon &w, const FireContext &context, std::vector<Bullet> &out)
+	{
+		out.push_back(shot(l, w, context));
+		int fired = 1;
+		for (int k = 1; k <= w.spread; k++)
+		{
+			const float side = (k % 2) ? 1.f : -1.f;
+			const float turn = glm::radians(spreadDegrees) * (float)((k + 1) / 2) * side;
+			FireContext turned = context;
+			const float c = std::cos(turn), s = std::sin(turn);
+			turned.aim = {context.aim.x * c - context.aim.y * s, context.aim.x * s + context.aim.y * c};
+			out.push_back(shot(l, w, turned));
+			fired++;
+		}
+		return fired;
+	}
+
+	// How well a weapon suits a target `distance` away: lower is better.
+	float unsuited(const Weapon &w, float distance, bool targetShielded)
+	{
+		float score = std::fabs(distance - w.bestRange) / std::max(w.bestRange, 1.f);
+		if (targetShielded && w.beam) { score += 10.f; }               // a shield holds a beam
+		if (targetShielded && !w.beam && w.motion == BulletMotion::Straight) { score *= 0.5f; } // lasers break shields
+		if (w.motion == BulletMotion::Missile && distance < 800.f) { score += 1.f; } // too close to turn
+		return score;
 	}
 }
 
@@ -146,6 +188,45 @@ Loadout loadoutOf(const Weapon *weapons, int count)
 }
 
 Loadout playersLoadout() { return loadoutOf(shipWeapons, slotCount); }
+
+int choose(const Loadout &l, float distance, bool targetShielded)
+{
+	auto ready = [&](int i)
+	{
+		const Weapon &w = l.slots[i];
+		return l.cooldownLeft[i] <= 0.f && usable(l, i) && (!w.beam || l.laserCharge > 0.f);
+	};
+	int best = -1;
+	float bestScore = 0.f;
+	for (int i = 0; i < l.count; i++)
+	{
+		if (!ready(i)) { continue; }
+		const float score = unsuited(l.slots[i], distance, targetShielded);
+		if (best < 0 || score < bestScore) { best = i; bestScore = score; }
+	}
+	if (best < 0) { return l.selected; }
+	// Keep the current one if it is ready and nearly as good.
+	if (best != l.selected && l.selected < l.count && ready(l.selected)
+		&& unsuited(l.slots[l.selected], distance, targetShielded) <= bestScore + 0.2f)
+	{
+		return l.selected;
+	}
+	return best;
+}
+
+void lockdown(Loadout &l, float seconds)
+{
+	l.lockedFor = std::max(l.lockedFor, seconds);
+	l.pendingShots = 0;
+	l.beam = {};
+}
+
+bool lockedDown(const Loadout &l) { return l.lockedFor > 0.f; }
+
+float stunSecondsOnPlayer() { return modifierStunPlayer; }
+float stunSecondsOnEnemy() { return modifierStunEnemy; }
+float lockdownSeconds() { return lockdownFor; }
+float effectGraceSeconds() { return effectGrace; }
 
 Weapon shipWeapon(int slot)
 {
@@ -232,13 +313,26 @@ int update(Loadout &l, float gameDeltaTime, bool triggerHeld, const FireContext 
 	int fired = 0;
 	if (l.count <= 0) { return 0; }
 
+	// Locked down (B2): nothing fires; when it ends, every weapon starts its
+	// cooldown, so the lockdown costs a full cycle and not only its 2 s.
+	if (l.lockedFor > 0.f)
+	{
+		l.lockedFor -= gameDeltaTime;
+		if (l.lockedFor <= 0.f)
+		{
+			l.lockedFor = 0.f;
+			for (int i = 0; i < l.count; i++) { l.cooldownLeft[i] = l.slots[i].cooldown; }
+		}
+		l.laserWasFiring = false;
+		return 0;
+	}
+
 	if (l.pendingShots > 0)
 	{
 		l.pendingTimer -= gameDeltaTime;
 		while (l.pendingShots > 0 && l.pendingTimer <= 0.f)
 		{
-			out.push_back(shot(l, l.slots[l.pendingSlot], context));
-			fired++;
+			fired += fire(l, l.slots[l.pendingSlot], context, out);
 			l.pendingShots--;
 			l.pendingTimer += l.slots[l.pendingSlot].burstGap;
 		}
@@ -260,6 +354,8 @@ int update(Loadout &l, float gameDeltaTime, bool triggerHeld, const FireContext 
 			l.beam.direction = context.aim;
 			l.beam.origin = context.origin + context.aim * (context.shipSize * 0.4f);
 			l.beam.damagePerSecond = w.damage;
+			l.beam.stun = w.stun;
+			l.beam.lockdown = w.lockdown;
 
 			if (l.laserCharge <= 0.f)
 			{
@@ -274,8 +370,7 @@ int update(Loadout &l, float gameDeltaTime, bool triggerHeld, const FireContext 
 
 	if (triggerHeld && l.pendingShots == 0 && l.cooldownLeft[l.selected] <= 0.f && usable(l, l.selected))
 	{
-		out.push_back(shot(l, w, context));
-		fired++;
+		fired += fire(l, w, context, out);
 
 		if (w.maxAmmo >= 0) { l.ammo[l.selected]--; }
 		l.cooldownLeft[l.selected] = w.cooldown;
@@ -371,17 +466,22 @@ SlotView slot(const Loadout &l, int index)
 	if (index < 0 || index >= l.count) { view.usable = false; return view; }
 	const Weapon &w = l.slots[index];
 	view.style = w.style;
-	view.ready = w.cooldown > 0.f ? 1.f - l.cooldownLeft[index] / w.cooldown : 1.f;
+	view.ready = l.lockedFor > 0.f ? 0.f : w.cooldown > 0.f ? 1.f - l.cooldownLeft[index] / w.cooldown : 1.f;
 	view.ammo = w.maxAmmo < 0 ? -1 : l.ammo[index];
 	view.maxAmmo = w.maxAmmo;
 	view.selected = index == l.selected;
-	view.usable = usable(l, index);
+	view.usable = usable(l, index) && l.lockedFor <= 0.f; // locked down: dimmed
 	return view;
 }
 
 // The tunables this file offers (platform/tuning.h): registered at start-up,
 // after everything above, so each one's default is the value it is declared with.
 const tuning::Group tunables("weapons", {
+	{"modifier.spreadDegrees", spreadDegrees},
+	{"modifier.stunOnPlayer", modifierStunPlayer},
+	{"modifier.stunOnEnemy", modifierStunEnemy},
+	{"modifier.lockdown", lockdownFor},
+	{"modifier.grace", effectGrace},
 	{"laserChargeSeconds", laserChargeSeconds},
 	{"laserIdleBeforeRegen", laserIdleBeforeRegen},
 	{"laserRegenSeconds", laserRegenSeconds},
@@ -395,6 +495,16 @@ const tuning::Group tunables("weapons", {
 
 void debugUi(Loadout &l)
 {
+	if (l.lockedFor > 0.f) { ImGui::TextColored({1.f, 0.5f, 0.9f, 1.f}, "Locked down: %.1f s", l.lockedFor); }
+	if (ImGui::TreeNode("Modifiers (B2)"))
+	{
+		tune::SliderFloat("Spread angle", &spreadDegrees, 1.f, 45.f, "%.0f deg");
+		tune::SliderFloat("Stun on player", &modifierStunPlayer, 0.f, 3.f, "%.2f s");
+		tune::SliderFloat("Stun on enemy", &modifierStunEnemy, 0.f, 6.f, "%.2f s");
+		tune::SliderFloat("Lockdown", &lockdownFor, 0.f, 6.f, "%.1f s, then the cooldowns");
+		tune::SliderFloat("Grace", &effectGrace, 0.f, 5.f, "%.1f s before another takes");
+		ImGui::TreePop();
+	}
 	for (int i = 0; i < l.count; i++)
 	{
 		Weapon &w = l.slots[i];

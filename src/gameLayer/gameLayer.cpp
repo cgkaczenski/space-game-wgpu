@@ -89,6 +89,10 @@ struct Session
 	float stunned = 0.f;
 	float stunSpin = 0.f;
 
+	// Seconds before another stun or lockdown takes (B2): a modified weapon's
+	// effect, then a grace.
+	float effectImmune = 0.f;
+
 	std::vector<Bullet> bullets;
 
 	std::vector<Enemy> enemies;
@@ -200,6 +204,10 @@ float bumpEnemyDamage = 0.05f;   // to the enemy's life (1 at full)
 float bumpMinSpeed = 200.f;      // units per second of closing speed
 float bumpGrace = 0.5f;          // seconds
 
+// What a boss bursts into when it dies (B2): a big haul of orbs.
+int bossOrbCount = 24;
+float bossOrbValue = 0.5f;
+
 // The player's tumble after an enemy's ram (B1 step 3): the drag on the blow,
 // as a rammed enemy's (Enemies -> Steering and stun).
 float playerStunDrag = 4.f;
@@ -237,6 +245,50 @@ float playerStunDrag = 4.f;
 void syncSolid()
 {
 	session.ship.solid = !energy::isCloaked(session.energy);
+}
+
+// A modified weapon's hit that reached the hull (gameplay roadmap B2) -- the
+// shield took nothing, so the effect lands: a stun, as a ram's; a lockdown of
+// every weapon, then their cooldowns. Then a grace, so a beam carrying either
+// cannot hold a ship for good. The same rule on both sides.
+void hitEffectsOnPlayer(bool stun, bool lockdown)
+{
+	if ((!stun && !lockdown) || session.effectImmune > 0.f) { return; }
+	float lasts = 0.f;
+	if (stun)
+	{
+		if (session.stunned <= 0.f)
+		{
+			const float turns = 6.f + (rand() % 1000) / 200.f;
+			session.stunSpin = (rand() % 2) ? turns : -turns;
+		}
+		session.stunned = std::max(session.stunned, weapons::stunSecondsOnPlayer());
+		ram::stop(session.ram);
+		lasts = weapons::stunSecondsOnPlayer();
+	}
+	if (lockdown)
+	{
+		weapons::lockdown(playerWeapons, weapons::lockdownSeconds());
+		lasts = std::max(lasts, weapons::lockdownSeconds());
+	}
+	session.effectImmune = lasts + weapons::effectGraceSeconds();
+}
+
+void hitEffectsOnEnemy(Enemy &e, bool stun, bool lockdown)
+{
+	if ((!stun && !lockdown) || e.effectImmune > 0.f) { return; }
+	float lasts = 0.f;
+	if (stun)
+	{
+		enemyAi::stun(e, {}, weapons::stunSecondsOnEnemy());
+		lasts = weapons::stunSecondsOnEnemy();
+	}
+	if (lockdown)
+	{
+		weapons::lockdown(e.loadout, weapons::lockdownSeconds());
+		lasts = std::max(lasts, weapons::lockdownSeconds());
+	}
+	e.effectImmune = lasts + weapons::effectGraceSeconds();
 }
 bool sceneryVisible = true;
 int awakeEnemies = 0; // last frame's, for the panel
@@ -322,6 +374,7 @@ const tuning::Group tunedGame("game", {
 	{"bump.minSpeed", bumpMinSpeed}, {"bump.grace", bumpGrace},
 	{"enemyBeam.range", enemyBeamRange},
 	{"playerStunDrag", playerStunDrag},
+	{"boss.orbCount", bossOrbCount}, {"boss.orbValue", bossOrbValue},
 });
 
 // Where the camera is before the world shake. Follow chases from here, and the
@@ -360,7 +413,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		for (const level::EnemyPlacement &p : currentLevel.enemies)
 		{
 			session.enemies.push_back(enemyAi::spawnAt(p.position,
-				level::direction(p.facingDegrees), p.behaviour, p.weapon, p.shield, p.cloak, p.ram));
+				level::direction(p.facingDegrees), p.behaviour, p.guns, p.shield, p.cloak, p.ram));
 		}
 	}
 	if (startAt) { session.ship.position = *startAt; }
@@ -402,8 +455,19 @@ void killEnemy(int index)
 {
 	const Enemy &e = session.enemies[index];
 	effects::enemyKilled(e, shipSheet, shipAtlas.get(e.type.x, e.type.y));
-	asteroids::blast(e.body.position); // the blast shoves rocks near it (A2)
+	const bool boss = e.behaviour == Enemy::Behaviour::Boss;
+	asteroids::blast(e.body.position, boss ? 3.f : 1.f); // the blast shoves rocks near it (A2)
 	resources::enemyDropped(e.body.position); // fragments among the wreckage (L3)
+	if (boss)
+	{
+		// A boss bursts a big haul of orbs (B2), thrown out all round.
+		effects::shake(1.f);
+		for (int k = 0; k < bossOrbCount; k++)
+		{
+			const float angle = 6.2831853f * ((float)k + (rand() % 100) / 100.f) / (float)bossOrbCount;
+			resources::emitOrb(e.body.position, {std::cos(angle), std::sin(angle)}, bossOrbValue);
+		}
+	}
 	session.enemies.erase(session.enemies.begin() + index);
 }
 
@@ -457,7 +521,12 @@ void enemiesDebugUi()
 		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::KeepDistance));
 	}
 	ImGui::SameLine();
-	ImGui::TextDisabled("(random weapon)");
+	if (ImGui::Button("Spawn boss"))
+	{
+		session.enemies.push_back(enemyAi::spawnNear(session.ship.position, Enemy::Behaviour::Boss));
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("(rolled weapons)");
 	enemyAi::debugUi();
 }
 
@@ -703,6 +772,7 @@ void editorFrame(float deltaTime, int w, int h)
 	look.playerCell = shipAtlas.get(3, 0);
 	look.rusherCell = shipAtlas.get(0, 0);
 	look.sniperCell = shipAtlas.get(2, 0);
+	look.bossCell = shipAtlas.get(1, 0);
 	look.shipSize = shipSize;
 	look.enemySize = enemyShipSize;
 	levelEditor::draw(currentLevel, renderer, look);
@@ -831,6 +901,7 @@ bool gameLogic(float deltaTime)
 	// Rammed by an enemy (B1 step 3), the ship is out of control for a moment:
 	// no flying, firing, ramming or cloaking until the stun runs out.
 	const bool stunnedNow = session.stunned > 0.f;
+	session.effectImmune = std::max(0.f, session.effectImmune - time.game);
 	if (controls && !stunnedNow && platform::isButtonPressedOn(platform::Button::E) && !ram::barrierUp(session.ram))
 	{
 		energy::cloak(session.energy);
@@ -1169,6 +1240,7 @@ bool gameLogic(float deltaTime)
 		}
 		if (onEnemy == energy::HitResult::Damaged && !hitboxDebug::isDamageFrozen())
 		{
+			hitEffectsOnEnemy(session.enemies[target], beam.stun, beam.lockdown);
 			session.enemies[target].life -= beam.damagePerSecond * time.game;
 			if (session.enemies[target].life <= 0.f)
 			{
@@ -1238,6 +1310,7 @@ bool gameLogic(float deltaTime)
 						if (result == energy::HitResult::Damaged)
 						{
 							struck.life -= session.bullets[i].damage;
+							hitEffectsOnEnemy(struck, session.bullets[i].stun, session.bullets[i].lockdown);
 						}
 
 						if (session.enemies[e].life <= 0)
@@ -1298,9 +1371,14 @@ bool gameLogic(float deltaTime)
 
 					if (hit == energy::HitResult::Damaged)
 					{
-						session.health -= 0.1;
+						// The shot's own damage, as the player's shots do to
+						// enemies -- since enemies carry the player's weapons
+						// (B1), a heavy laser or a missile hits harder than the
+						// old fixed 0.1.
+						session.health -= session.bullets[i].damage;
 						hud::onDamage();  // shake the HUD when the hull is hit
 						resources::interrupt(); // and the drill loses its hold
+						hitEffectsOnPlayer(session.bullets[i].stun, session.bullets[i].lockdown);
 					}
 
 					session.bullets.erase(session.bullets.begin() + i);
@@ -1466,20 +1544,32 @@ bool gameLogic(float deltaTime)
 			|| playerInField
 			|| asteroids::blocksSight(session.enemies[i].body.position, session.ship.position);
 		Enemy &e = session.enemies[i];
-		const enemyAi::Orders orders = enemyAi::update(e, time.game, session.ship.position,
-			session.ship.velocity, session.ship.facing, hidden, comingBack ? &wayIn : nullptr);
+		enemyAi::Player seen;
+		seen.position = session.ship.position;
+		seen.velocity = session.ship.velocity;
+		seen.facing = session.ship.facing;
+		seen.hidden = hidden;
+		seen.shielded = session.energy.hasShield && (session.energy.state == energy::State::Full
+			|| session.energy.state == energy::State::Breaking);
+		e.effectImmune = std::max(0.f, e.effectImmune - time.game);
+		const enemyAi::Orders orders = enemyAi::update(e, time.game, seen, comingBack ? &wayIn : nullptr);
+		if (orders.phaseChanged)
+		{
+			// A boss entering its next phase (B2): felt, and seen in its shield.
+			effects::shake(0.7f);
+			shield::hit(e.energy.bubble, {0.f, -1.f}, 1.f);
+		}
 
 		// Its gun, through the same weapons::update as the player's (B1). Only
 		// while it fights, as it always was: the AI decides the trigger, the
-		// loadout the cooldown. Its shots do not carry its own velocity as the
-		// player's do -- they never have, and B1 changes no enemy; whether they
-		// should is a question for B2.
+		// loadout the cooldown -- and, with several weapons, which one (B2).
 		if (orders.fighting)
 		{
 			weapons::FireContext gun;
 			gun.origin = e.body.position;
 			gun.aim = e.body.facing;
-			gun.shipSize = enemyShipSize;
+			gun.shipVelocity = e.body.velocity; // its shots carry its motion, as the player's do (B2)
+			gun.shipSize = e.size;
 			gun.shooter = e.id;
 			gun.missileTarget = playerShip; // its missiles, if it rolled them, chase the player
 			const int fired = weapons::update(e.loadout, time.game, orders.trigger, gun, session.bullets);
@@ -1534,6 +1624,7 @@ bool gameLogic(float deltaTime)
 						drawn.impact = bulletLook::BeamImpact::Burn;
 						if (!hitboxDebug::isDamageFrozen()) { session.health -= eb.damagePerSecond * time.game; }
 						resources::interrupt();
+						hitEffectsOnPlayer(eb.stun, eb.lockdown);
 						enemyBeamShakeLeft -= time.game;
 						if (enemyBeamShakeLeft <= 0.f)
 						{
@@ -1555,11 +1646,11 @@ bool gameLogic(float deltaTime)
 		e.body.solid = !energy::isCloaked(e.energy);
 		if (ram::active(e.ram))
 		{
-			effects::ramTrail(e.body.position, ram::direction(e.ram), enemyShipSize,
+			effects::ramTrail(e.body.position, ram::direction(e.ram), e.size,
 				shipAtlas.get(e.type.x, e.type.y), time.game);
 			// And its prow shoves the rocks it meets, as the player's does.
 			const glm::vec2 heading = ram::direction(e.ram);
-			asteroids::ram(e.body.position + heading * (enemyShipSize * 0.3f), enemyShipSize * 0.65f,
+			asteroids::ram(e.body.position + heading * (e.size * 0.3f), e.size * 0.65f,
 				heading, e.ram.serial);
 		}
 	}
@@ -1579,7 +1670,7 @@ bool gameLogic(float deltaTime)
 		{
 			if (!ram::active(e.ram)) { continue; }
 			const glm::vec2 heading = ram::direction(e.ram);
-			const collision::Circle prow = {e.body.position + heading * (enemyShipSize * 0.3f), enemyShipSize * 0.65f};
+			const collision::Circle prow = {e.body.position + heading * (e.size * 0.3f), e.size * 0.65f};
 			if (!collisionSystem.overlaps(prow, playerHull) || !ram::firstHit(e.ram, playerShip)) { continue; }
 
 			gameClock::hitStop(ram::hitStopSeconds());
@@ -1623,14 +1714,15 @@ bool gameLogic(float deltaTime)
 	// convention, at syncSolid).
 	syncSolid();
 	{
-		const float enemyRadius = game::shipHitboxRadius(enemyShipSize);
+		// Each its own size: a boss is larger (B2).
+		auto radiusOf = [](const Enemy &e) { return game::shipHitboxRadius(e.size); };
 		for (Enemy &e : session.enemies) { e.bumpGrace = std::max(0.f, e.bumpGrace - time.game); }
 		for (size_t a = 0; a < session.enemies.size(); a++)
 		{
 			for (size_t b = a + 1; b < session.enemies.size(); b++)
 			{
-				movement::collide(session.enemies[a].body, enemyRadius,
-					session.enemies[b].body, enemyRadius, shipBounce);
+				movement::collide(session.enemies[a].body, radiusOf(session.enemies[a]),
+					session.enemies[b].body, radiusOf(session.enemies[b]), shipBounce);
 			}
 		}
 		if (gameState::playerPresent() && !ram::active(session.ram) && !ram::windingUp(session.ram))
@@ -1639,6 +1731,7 @@ bool gameLogic(float deltaTime)
 			for (int i = 0; i < (int)session.enemies.size(); i++)
 			{
 				Enemy &e = session.enemies[i];
+				const float enemyRadius = radiusOf(e);
 				const movement::Contact contact = movement::collide(session.ship, playerRadius,
 					e.body, enemyRadius, shipBounce);
 				if (!contact.touched || contact.impactSpeed < bumpMinSpeed || e.bumpGrace > 0.f) { continue; }
@@ -1687,7 +1780,7 @@ bool gameLogic(float deltaTime)
 	for (auto &e : session.enemies)
 	{
 		e.cloakLevel = cloak::ease(e.cloakLevel, energy::isCloaked(e.energy), time.game);
-		cloak::addField(e.body.position, enemyShipSize, e.cloakLevel);
+		cloak::addField(e.body.position, e.size, e.cloakLevel);
 	}
 	auto hidden = [](const Enemy &e) { return e.cloakLevel > 0.5f; };
 
@@ -1707,7 +1800,7 @@ bool gameLogic(float deltaTime)
 	{
 		const float forward = std::max(0.f, glm::dot(e.body.thrust, e.body.facing));
 		e.plume = thruster::ease(e.plume, forward, time.game);
-		thruster::drawPlume(renderer, e.body.position, enemyShipSize, e.body.facing, e.plume,
+		thruster::drawPlume(renderer, e.body.position, e.size, e.body.facing, e.plume,
 			effectClock + (float)(e.id % 7u) * 0.13f, enemyPlumeColour);
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
@@ -1716,9 +1809,12 @@ bool gameLogic(float deltaTime)
 	{
 		// Darkened where a field rock's shadow falls on it (A3).
 		const float lit = 1.f - asteroids::shadowOn(e.body.position, e.getHitbox().radius);
-		renderSpaceShip(renderer, e.body.position, enemyShipSize,
+		// A boss's hull warmer, toward the enemies' red (B2), so it reads as
+		// their champion even with its shield down.
+		const glm::vec3 tint = e.behaviour == Enemy::Behaviour::Boss ? glm::vec3(1.f, 0.78f, 0.72f) : glm::vec3(1.f);
+		renderSpaceShip(renderer, e.body.position, e.size,
 			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing,
-			{lit, lit, lit, cloak::shipAlpha(e.cloakLevel)});
+			{lit * tint.r, lit * tint.g, lit * tint.b, cloak::shipAlpha(e.cloakLevel)});
 	}
 
 	// Their shields, over the hulls as the player's is (B1) -- only on an
@@ -1729,7 +1825,7 @@ bool gameLogic(float deltaTime)
 		shield::setRam(e.energy.bubble, ram::barrierLevel(e.ram), ram::direction(e.ram));
 		if (e.energy.hasShield || ram::barrierUp(e.ram))
 		{
-			shield::draw(renderer, e.energy.bubble, e.body.position, enemyShipSize, time.game);
+			shield::draw(renderer, e.energy.bubble, e.body.position, e.size, time.game);
 		}
 	}
 
@@ -1747,7 +1843,7 @@ bool gameLogic(float deltaTime)
 		for (const auto &e : session.enemies)
 		{
 			if (e.id != b.target) { continue; }
-			effects::drawTargetBox(renderer, e.body.position, enemyShipSize * 1.3f, b.age);
+			effects::drawTargetBox(renderer, e.body.position, e.size * 1.3f, b.age);
 		}
 	}
 
@@ -1819,7 +1915,8 @@ bool gameLogic(float deltaTime)
 			thruster::drawPlume(renderer, b.position, 130.f * b.size, b.fireDirection,
 				weapons::missileThrottle(b), b.age, glm::vec4(0.30f, 0.85f, 0.35f, 1.f));
 		}
-		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.fromEnemy(), b.style, b.size);
+		bulletLook::drawGlow(renderer, b.position, b.fireDirection, b.fromEnemy(), b.style, b.size,
+			b.lockdown ? bulletLook::Mark::Lockdown : b.stun ? bulletLook::Mark::Stun : bulletLook::Mark::None);
 	}
 	if (beam.firing)
 	{
@@ -1876,7 +1973,7 @@ bool gameLogic(float deltaTime)
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
 	for (const Enemy &e : session.enemies)
 	{
-		arena::drawBurnFlash(renderer, e.burnFlash, e.body.position, enemyShipSize,
+		arena::drawBurnFlash(renderer, e.burnFlash, e.body.position, e.size,
 			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing);
 	}
 	if (gameState::current() != gameState::State::Dying)
