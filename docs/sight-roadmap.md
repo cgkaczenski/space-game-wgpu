@@ -1,0 +1,630 @@
+# Sight and space roadmap
+
+Line of sight, a fog over what the player cannot see, levels that are mostly
+asteroid field, and maps big enough to need fast ways across them. Work on
+this happens on the `line-of-sight` branch.
+
+**How this file works.** It works like `gameplay-roadmap.md`. The author sets
+the requirements, items stay loose until the author and Claude refine them,
+and each session does one milestone. What the author asked for is marked
+**Asked**. Everything else is **Proposed** or a **Suggestion**, and none of
+it is decided until it says so.
+
+Each item has two kinds of note, kept apart:
+
+- **Open questions:** what has to be answered before building.
+- **Engine ideas:** suggestions based on what `wgpu2d` and `engine/` already
+  make cheap.
+
+Items carry a letter and a number: **S** for sight, **W** for the world
+(levels that are bigger and mostly field, and getting across them). Numbers
+are never reused.
+
+---
+
+## What exists already
+
+The sight work builds on code that is already in place. This is what it can
+reuse:
+
+| What                                  | Where                        | What it gives this work                                                             |
+| ------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
+| Enemy sight (C5)                      | `enemyAi`                    | Cones, hearing, engaged / searching / unaware, and a last known position            |
+| `blocksSight`, `raycast`, `hitCircle` | `asteroids`                  | Rock queries. **Each one loops over every rock.**                                   |
+| The field "hidden" rule (A1b)         | `gameLayer.cpp`              | The player is hidden from every enemy while inside paint                            |
+| Star-shaped polygons and fans         | `engine/polygon`             | A shape seen whole from one point is drawn as a fan from that point                 |
+| Per-cell deterministic scatter        | `engine/scatter`             | Rocks from a hash of each cell, a bounds rectangle, `keepOut` circles, `density`    |
+| A grade on the world                  | `worldGrade`                 | The world already goes into a target, and one quad brings it back through an effect |
+| `renderTriangles`                     | `wgpu2d`                     | Any mesh, with a texture, UVs and a colour per vertex                               |
+| Render targets                        | `wgpu2d::FrameBuffer`        | Keep their contents unless `clear()` is called, so drawing into one accumulates     |
+| The outline effect                    | `outline`                    | Draws any sprite as a line around its shape                                         |
+| Warp and speed looks                  | `gate`, `gameState`, `cloak` | The swirl field, the warp stretch, the ram's afterimages, the white fade            |
+| Zoom easing                           | `engine/cameraZoom`          | The zoom eases toward a target, so it can follow speed                              |
+
+---
+
+## The rule, stated once
+
+**Asked:** a ray goes out from the player in every direction, including
+behind. Only asteroids and asteroid fields block it. When an enemy and the
+player are both inside a field, they can see and shoot each other without the
+field's rocks getting in the way. The field's core still blocks.
+
+**Asked (refined): inside a field, vision and shots invert.** Inside a field,
+the field is open space and its edge is the wall. A level that is half field
+and half open should feel much the same on either side, for both vision and
+shots. A shot fired inside a field is stopped when it reaches the field's
+outer edge, the same way a shot fired outside is stopped when it reaches the
+field.
+
+**Proposed as one rule.** A line from A to B is blocked by:
+
+1. any single rock (A1);
+2. any core;
+3. **the edge of a painted area, crossed in either direction.**
+
+The paint's edge is a wall from both sides. Inside the paint, the field's
+rocks block nothing; outside it, there are no field rocks in the way. So two
+points see each other only when they are on the same side of the edge, with
+no single rock or core between them. What follows from that:
+
+- **Two ships in the same continuous paint** see each other unless a core is
+  between them. This is what the author asked for.
+- **Inside paint, you can't see out. Outside, you can't see in.** Each side
+  is a room, and the edge is the wall between them. A1b's tall grass becomes
+  symmetric: a ship in a field is hidden from everything outside it, and
+  everything outside is hidden from that ship.
+- **Two fields that touch count as one.** A line that goes from one into the
+  other never leaves paint, so nothing blocks it. Two fields with open space
+  between them are different: the line is blocked where it leaves the first.
+- **The fog (S3) inverts too.** In open space, the fields are grey; inside a
+  field, the open space around it is grey.
+- C5's cone, range and hearing still apply on top of this rule. The rule
+  replaces only `blocksSight` and the `playerInField` shortcut.
+
+**Why continuous paint and not "the same field":** a level that is 80% field
+will be painted in many strokes, and a generator may make many fields. Two
+fields that touch should not have an invisible wall between them.
+
+**It is also what makes this cheap.** Inside a dense field, the only things
+that block are cores and single rocks, which number in the tens rather than
+the thousands. The edge itself is found with a grid lookup. Sight never needs
+to test a field rock.
+
+**Shots, the same rule.** A shot is stopped where it crosses a paint edge,
+whichever way it is going. Single rocks and cores always stop it. Inside
+paint, field rocks let shots through. This holds for the player's shots and
+for enemy shots alike.
+
+- **Where a shot stops.** The rule uses the paint edge, so a shot can't slip
+  out through a gap between the edge rocks. *Proposed* for the look: if a
+  field rock sits at the point where a shot crosses the edge, the shot strikes
+  that rock, pushing it and hurting it as shots do today (A2, A4). If not, the
+  shot bursts at the edge itself. From either side, this reads as hitting the
+  field's outer rocks.
+- **Missiles** follow the same rule. A missile can't chase a target across an
+  edge.
+
+**Open questions.** Each of these is now a debug selection (see **The
+options as debug selections** below). The questions are what each default
+should be, and which option survives once they have been played.
+
+- **Continuous paint, or the same field?** Continuous paint is recommended,
+  for the reasons above.
+- **The edge's thickness.** Is the wall the paint's exact edge, or a band a
+  few hundred units deep, an "outer section" of rocks? A band would mean the
+  outermost rocks block even for a ship inside, while the field's interior
+  stays open. It would look more like a wall of rocks, but it is a second
+  number to tune, and sight would need the mask to store distance to the edge.
+  *Recommended:* the exact edge first, and a band only if the edge looks too
+  thin.
+- **The beam is how rocks get mined.** If it obeys the shot rule, it passes
+  through field rocks inside paint, and nothing in a field could be mined from
+  inside. **Recommended:** the beam stops at the edge like a shot does, but
+  still stops at any rock it touches, on either side. It is a mining tool, not
+  a gun.
+- **Rocks stop being pushed.** Shots fired inside a field no longer hit the
+  field's rocks, except at the edge, so the field stays still during a fight
+  inside it. Is that fine?
+- **Missile locks:** should a lock need sight? (See the suggestions.)
+- **The player's outline in a field** currently means "no enemy can see
+  you". Under the new rule it means "nothing outside can see you".
+  *Suggestion:* keep the mint outline, and turn it amber while an enemy
+  inside the same paint has sight of you.
+
+**Where it lands:** the rule is this game's, so it goes in a new
+`gameLayer/sight`. The queries it needs are engine work (S1, S2).
+
+---
+
+## The options as debug selections
+
+**Decided:** the author asked for each option to be a choice in the debug
+panel, rather than settled in this file. That way the choices get compared
+in play.
+
+**How they're built.** Each choice is an enum in the module that owns it,
+registered in that file's `tuning::Group`. Enums are kept as their int, so
+the existing tuning system handles them. In the panel, each choice is a
+radio group or a combo, wrapped in `tune::Highlight` so it turns amber when
+it differs from the default. As R11 asks, each module draws its own section.
+
+**Comparing them.** A named tuning set stores only what differs from the
+defaults. So each variant can be saved as its own set, for example
+`sight-rooms` or `sight-tallgrass`, and the picklist switches between them
+during play. Applying a set restarts the round, which also rebuilds anything
+grown at the start of a round, such as the mask.
+
+**The defaults are the recommendations**, so a fresh build plays the proposed
+rule. Each item below adds its own selections when it is built. A selection
+that only makes sense after a later item does not appear before that item.
+
+### Sight and shots: a new **Sight** section (S1)
+
+| Selection       | Options                                                                                                                                        | Default        |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| Fields are      | **Continuous paint** (touching fields are one) · **Each field** (an edge between touching fields is a wall)                                    | Continuous     |
+| Vision at edges | **Both ways** (rooms: the inverted rule) · **Into fields only** (the first proposal: inside, you see out) · **Rocks** (today: every rock blocks sight on its own outline; A1b's inside-is-hidden rule still applies) | Both ways      |
+| Shots at edges  | **Both ways** · **Into fields only** · **Rocks** (today: every field rock stops every shot)                                                    | Both ways      |
+| Wall            | **Edge** · **Band**, with a **Band depth** slider (100–1000 units) that shows only when Band is chosen                                          | Edge           |
+| Shot stops      | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks) | On an edge rock |
+| Beam            | **Mining tool** (stops at the edge and at any rock it touches) · **Like a shot** · **Rocks** (today)                                            | Mining tool    |
+| Missile locks   | **Any target** (today) · **Seen only** (a missile that loses its target flies to the ghost, S4)                                                | Any target     |
+| Hidden outline  | **Mint** (today) · **Mint, amber when seen** (when an enemy inside the same paint has sight of you)                                           | Mint, amber    |
+| Mask cell       | slider, 25–200 units                                                                                                                           | 50             |
+
+Vision and shots are separate selections on purpose, so the rule can be tried
+on one before the other. The **Rocks** options exist so today's behaviour
+stays one click away for comparison.
+
+### What the player sees: in the **Sight** section (S2)
+
+| Selection        | Options                                                                                 | Default  |
+| ---------------- | --------------------------------------------------------------------------------------- | -------- |
+| Sight range      | **Fixed**, with a range slider · **View** (the screen's diagonal at the current zoom) · **Unlimited** (to the arena's edge) | Fixed, 4000 |
+| Slices           | slider, 180–2048                                                                        | 720      |
+| Rock silhouettes | **Exact outline** · **Bounding circle** (cheaper, cruder; for measuring the difference) | Exact    |
+| Cloaked sight    | **Unchanged** · **Shorter**, with a multiplier slider                                    | Unchanged |
+| Show polar map   | checkbox: draws each slice's end point as a debug overlay                               | off      |
+
+### The fog: a **Fog** section, beside the grade's (S3)
+
+| Selection          | Options                                                                                              | Default |
+| ------------------ | ---------------------------------------------------------------------------------------------------- | ------- |
+| Fog                | **Off** · **Grey** · **Grey and dim** · **Black** (classic fog of war, for comparison)               | Grey    |
+| Grey and dim       | a desaturation slider and a brightness slider, used by Grey and by Grey and dim                      | to tune |
+| Edge               | **Hard** · **Soft**, with a width slider                                                             | Soft    |
+| Unseen enemies     | **Hidden** · **Greyed** · **Shown** (the last two are debug views; they give away positions)         | Hidden  |
+| Unseen explosions  | **Greyed** · **Hidden**                                                                              | Greyed  |
+
+### Ghosts: a **Last known** section (S4)
+
+| Selection    | Options                                                                               | Default        |
+| ------------ | ------------------------------------------------------------------------------------- | -------------- |
+| Ghost lasts  | **Until checked** (gone once the spot is seen empty) · **Fades**, with a seconds slider · **Forever** | Until checked |
+| Ageing       | **None** · **Fade** · **Dashed when old**, with a seconds slider                      | Fade           |
+| Heading line | checkbox                                                                              | on             |
+| Colour       | colour picker                                                                         | muted red      |
+
+### Later items
+
+These are listed now so the shape is known. Each one arrives with its item.
+
+- **W2, interior movement:** **Normal** · **Speed cap**, with a multiplier
+  slider · **Cap and drag**, with both sliders. Default: **Speed cap**.
+- **W4, lane behaviour:** **Current** (pushes along the lane) · **Rail**
+  (steers along the lane). Plus a strength slider and a top-speed multiplier.
+- **W5, gate transit:** **Instant** · **Short transit**, with a seconds
+  slider.
+
+---
+
+## Now: line of sight
+
+### S1. One sight rule for everyone
+
+Replace `asteroids::blocksSight` and `playerInField` with a single function,
+`sight::clear(from, to)`, that implements the rule above. Enemies use it
+together with their cones (C5). A shot compares the mask at its last position
+with the mask at its new one each frame; if they differ, it crossed an edge and
+stops there. Nothing changes on screen yet.
+The enemies' awareness diamonds and the cones are enough to test it.
+
+**What it needs:**
+
+- **A paint mask** (engine, `regionMask`): a grid built from the stamps once
+  per round. Paint and erase are applied in order, so each cell gives the
+  same answer as `AsteroidField::contains`. Each cell stores which field
+  covers it, if any. With the mask:
+  - `inField` becomes one lookup. Today it checks every stamp of every field:
+    `level3` has about 450 stamps, and an 80% level would have far more.
+  - A segment can be marched cell by cell (a DDA), which reports each point
+    where it goes into or out of paint.
+- **A rock index** (engine, a spatial hash): `asteroids::update` already
+  builds one for rocks bumping into each other. Moving it into `engine/` and
+  using it in `hitCircle` and `raycast` serves this item, and W1 needs it
+  anyway.
+
+**Open questions**
+
+- **Is the grid the truth?** Paint edges are circles, so a 50-unit grid puts
+  a stair step of up to about 35 units on them. **Recommended:** the grid is
+  the truth everywhere: hiding, sight, shots and the fog. `contains` is used
+  only to build it. That way they all agree on where the edge is.
+- What cell size should the grid use? It is rebuilt whenever the editor
+  paints, which is cheap.
+
+**Where it lands:** engine (`regionMask`, `spatialHash`); game (`sight`).
+
+### S2. What the player can see: a visibility polygon
+
+**Asked:** a raycast in every direction from the player.
+
+**Proposed: a polar map**, which is a one-dimensional shadow map. The circle
+around the player is cut into N slices, for example 720 slices of half a
+degree each. Each slice stores how far the player can see along it, starting
+at the sight range. Two things fill it in:
+
+- **Rocks:** each single rock or core in range writes its outline's edges
+  into the slices they cover, and a slice keeps the nearest distance. The
+  result is the rock's exact silhouette, not a circle drawn around it.
+- **Paint:** each slice marches outward through the paint mask and stops at
+  the first cell on the other side of the edge from the player: into paint
+  from outside, or out of paint from inside.
+
+The result is N distances, and that one structure has two uses:
+
+1. **Rules:** "can the player see this point?" means comparing the point's
+   distance with its slice's distance. Enemies, bullets and ghosts (S4) all
+   ask this question, so the drawing and the rules share one answer.
+2. **Drawing:** the end points of the slices form a polygon around the
+   player. By construction, every point of it is visible from the player, so
+   it is star-shaped from there. A triangle fan from the player draws it, the
+   same way A1 draws a rock.
+
+**Why not just cast 720 rays at the rocks?** That would work with the spatial
+hash, but each ray would test the rocks along it. The polar map visits each
+nearby rock once. In a mostly-field level, S1's rule leaves very few rocks
+that block at all.
+
+**Cost, as a guess to measure:** with a range of 4000 and 50-unit cells, the
+paint march is 720 slices × 80 cells, about 58 thousand lookups. The rocks
+are tens of outlines with about 28 edges each. This should come in well under
+a millisecond.
+
+**Open questions**
+
+- **Sight range:** fixed (for example 4000), the size of the view, or a stat
+  of the ship?
+- Does the cloak change what the player can see?
+- **Is the terrain fogged?** *Proposed:* no. Rocks are always drawn, and grey
+  outside the polygon. Grey means "not seen now", not "never seen". W6 covers
+  "never seen".
+
+**Engine idea:** a GPU version, in which a compute shader writes edges into a
+storage buffer of slices with `atomicMin`. That is N4 territory and a good
+exercise. But the rules need the answer on the CPU in the same frame, and
+reading it back arrives a frame late (outline 15). So the CPU comes first,
+and the GPU version only as practice.
+
+**Where it lands:** engine (`visibility`: the polar map, given occluder
+segments and a callback that decides where a march is blocked, with nothing
+in it about rocks or fields); game (the range, and which things block).
+
+### S3. The fog: greying what can't be seen
+
+**Asked:** grey out what the player's rays can't see.
+
+**Proposed, building on what `worldGrade` already does.** `worldGrade` already
+flushes the world into a target and records one quad that brings it back
+through the grade effect. The fog adds one draw to that:
+
+1. The full-screen quad comes back **greyed**. This is a third grade,
+   "unseen", next to "paused" and "outside the circle", with its own
+   desaturation and brightness.
+2. Then the **S2 fan** is drawn with the same world texture and without the
+   unseen grade. Each vertex's UV is its position on the screen divided by
+   the screen size, worked out on the CPU from the camera, the way the cloak
+   places its field. Inside the fan the world shows in colour; outside it,
+   the grey quad shows.
+
+That is `renderTriangles` with a texture and UVs, plus `setEffect`. **No new
+library API**, and no extra full-screen copy, because the world is already in
+that target.
+
+- **A soft edge:** a second ring of triangles just past the fan's edge, with
+  vertex alpha going from 1 to 0. Colours blend across a triangle, so a soft
+  edge costs one ring of vertices.
+- **The pause and outside-the-circle grades** apply on top, as they do now.
+  The cloak pass comes after and bends the fogged world, as it does now.
+- **Cost:** today the grade sends the world through a target only when the
+  game is paused or the view crosses the circle. With fog, that happens every
+  frame of play. Measure it at 2560×1440. The render-scale control exists if
+  the extra target costs too much.
+
+**Fog hides some things instead of greying them.** A grey enemy still tells
+the player where it is. So enemies, their shots, beams, plumes, shields,
+cones and awareness marks are **not drawn** in unseen space. Each one asks
+S2's polar map. A hull is tested at its centre plus its radius, so an enemy
+at the edge of the polygon appears as soon as its nose comes into view. The
+part of it still in shadow comes out grey, which reads correctly.
+
+- **Explosions and debris:** *proposed* to show greyed, since that is how the
+  player learns something died out there.
+- **Enemy shots coming out of the fog** are drawn once they are in sight. A
+  shot appearing out of the grey is a sniper's whole threat.
+
+**Alternative:** pixel-exact hiding. Enemies would draw into their own target,
+composited through the fan. That costs a target, and the layering is awkward,
+because field rocks draw over ships. Not the first version.
+
+**Open questions:** how grey, given the world has to stay readable? Does
+unseen space also dim? Fog is off in the editor, presumably.
+
+**Where it lands:** game (`worldGrade` grows the fog, and the game decides
+which things hide). No library change.
+
+### S4. Last known positions
+
+**Asked:** an outline of each enemy at its last known position.
+
+**Proposed:**
+
+- **A ghost:** when an enemy leaves sight, its hull stays where it was last
+  seen, at the facing it had, drawn by `outline` in a muted red. It is drawn
+  after the fog, so it is not greyed. `outline` is the module that already
+  outlines the player in a field.
+- **When the ghost goes:**
+  - the enemy is seen again (the ghost is replaced by the live ship);
+  - the player's sight covers the ghost's spot and the enemy is not there, so
+    you looked and it was gone (S2 answers this);
+  - after some time (open: never, or a 20-second fade).
+- **Aging:** the ghost fades slowly, or its outline turns dashed after a few
+  seconds, so an old position reads as old.
+- *Optional:* a short line from the ghost along the velocity it had, showing
+  which way it was heading.
+
+**Mechanism and policy.** The mechanism is a **contact memory**: for each id,
+the last position, facing, velocity and time it was seen. It is updated from
+the set of things seen each frame, and cleared by "looked here and found
+nothing". It knows nothing about ships, so it goes in engine. C5's "last
+known position" is the same mechanism pointed the other way, and the enemy
+AI could use it too.
+
+**Where it lands:** engine (contact memory); game (drawing the ghosts).
+
+### S5. *(Suggestion)* What enemies think, shown
+
+*Splinter Cell: Conviction* draws a ghost of the player where the enemies
+believe the player to be. Searching enemies here already fly to the player's
+last known position (C5). Drawing a faint outline of the player's own ship
+there mirrors S4: it shows where they will search, and it makes slipping away
+into a field something the player can read. It uses the same outline and the
+same memory.
+
+### S6. *(Suggestion)* Cones that stop at rocks
+
+C5 draws each cone as a wedge that passes through everything. If S2's polar
+map is computed from an enemy, only for the slices in its cone and only for
+enemies on screen, the cone takes the shape of what the enemy can actually
+see: cut by rocks and stopped at paint. That is the stealth-game readout of
+*Mark of the Ninja* or *Commandos*. It is drawn with the same fan.
+
+---
+
+## Next: levels that are mostly field
+
+### W1. Levels that are 80% asteroid field
+
+**Asked:** levels where about 80% of the area is asteroid field, as
+preparation for procedural generation.
+
+**What breaks at that size today:**
+
+- **Rock count.** `level3`'s density (max size 90, gap 40) over 80% of a
+  20000-radius arena covers roughly a billion square units. A back-of-envelope
+  estimate puts that between tens of thousands of rocks and more than a
+  hundred thousand, each with its own outline, mesh and body. **Measure it
+  first:** paint one level and read the count in the Asteroids panel.
+- **Every hit test loops over every rock.** `hitCircle` and `raycast` check
+  all of them. Every bullet calls `hitCircle` every frame, and every enemy's
+  sight calls `raycast`. Drawing is already culled to the view; the queries
+  are not. S1's spatial hash fixes this.
+- **`inField` checks every stamp of every field.** S1's mask fixes this.
+- **Painting 80% of a level with a brush is tedious.**
+
+**Proposed steps:**
+
+1. **The spatial hash and the mask**, both from S1. They come first.
+2. **Paint the clearings, not the field.** An editor action fills the arena
+   with one huge paint stamp, and the Shift-erase brush then carves out
+   clearings and lanes. The file format already supports this, because paint
+   and erase stamps are applied in order. Nothing changes in the file.
+3. **Rocks only near the camera.** `engine/scatter` was built for this. Each
+   rock comes from its own cell's hash, and `scatter()` takes a bounds
+   rectangle. So rocks can be made for the chunks near the view, dropped when
+   the view moves away, and made again identically when it comes back.
+   - **What doesn't come back on its own:** rocks that were broken or mined
+     (A4). A per-chunk record of which rock seeds are gone handles that.
+     Rocks that were only moved spring home anyway (A2).
+   - **A caveat:** each layer checks its gaps against nearby rocks from
+     coarser layers. A chunk therefore has to be scattered with a margin,
+     keeping only the rocks that land inside it. Test that a chunk made alone
+     comes out the same as that chunk made together with its neighbours.
+4. **Cores:** each field has one core, at its middle, so one huge field would
+   have a single core. *Suggestion:* let the level place several cores in a
+   field, or let density place them.
+
+**Open questions:** 80% of what: the arena circle? How big are the clearings?
+Do the clearings hold the resources and the gate? Does a huge field need
+several cores?
+
+**Where it lands:** engine (chunked scatter, the region mask); game (what
+persists); the editor (the fill action).
+
+### W2. The interior is slow
+
+**Asked:** inside the fields, ships move slower and there is more combat.
+
+**Proposed:** paint carries a movement modifier. In paint, a ship's top speed
+is capped lower and its drag is higher; in the open it moves normally; in a
+lane (W4) it moves faster. `movement::Options` (mode, `maxSpeed`, drag) is
+already the setting for this, and the game picks a body's Options each frame
+from the mask. Enemies get the same treatment, so a chase into a field slows
+both sides.
+
+**Open questions:** a speed cap only, or drag as well, so momentum carries a
+ship a little way in? Does the ram still work inside? (Bullets keep their
+speed.)
+
+**Engine idea:** rock shadows already darken ships (A3's `shadowOn`), and a
+foreground layer of debris already exists (`drawForeground`). Making the
+debris denser over fields would help sell "the interior".
+
+---
+
+## Then: bigger maps, and getting across them
+
+### W3. Bigger arenas
+
+**What already scales:** the arena radius is a single number, the closing
+circle uses rings, and enemies away from the view sleep (L2).
+
+**What doesn't:**
+
+- the rocks (W1);
+- the HUD, which points only to the gate;
+- float precision. At 100 000 units from the origin, a float resolves about
+  0.008 of a unit, which is fine. At a million it starts to show, because
+  vertices are sent in world units and the camera is a matrix on the GPU.
+
+**Open question:** how big is the target: 2×, or 5×?
+
+### W4. High-speed lanes
+
+**Asked:** high-speed lanes or gates, so the player can cross quickly between
+areas.
+
+**Proposed shape:** a lane is a polyline with a width, stored in the level
+file as a `lane width speed` line followed by `point x y` lines, the way a
+field is followed by its stamps.
+
+- **A current** along the lane pushes ships forward: an acceleration along
+  the lane's direction, added in the integrator, with a higher top speed. A
+  ship that enters at an angle is turned into the current.
+- **Lanes are open space, cut out of the fields.** Scatter's `keepOut`
+  circles, which exist already for cores, are placed along the lane, and the
+  mask marks lane cells as not paint. Under S1's rule a lane is a corridor:
+  its walls are paint edges, so ships in the lane and ships in the field
+  beside it can't see each other. Along a straight stretch, though, a lane
+  can be seen from end to end. **Fast but exposed to whoever else is in the
+  lane, against slow and close in the fields:** to ambush the lane, you wait
+  in it, at a bend or an exit. That comes straight out of the rule, with no
+  extra code.
+- **Leaving a lane** throws the ship out at speed. Momentum carries it on,
+  and W2's interior drag slows it again.
+
+**Engine ideas:**
+
+- streaks along the lane, made with the generated-gradient pattern the plume
+  and the bullet glow use, drawn additive and scrolled;
+- the warp stretch and the ram's afterimages on the ship at lane speed;
+- the camera zooming out with speed, since `camera::Zoom` eases toward a
+  target;
+- FinalGlow blooming the streaks;
+- a chromatic flash on entering, which is an F2 effect.
+
+**Open questions:** does the lane steer the ship like a rail, or only push it
+like a current? Can ships fight in a lane? Do enemies use lanes? Do lanes run
+both ways?
+
+### W5. Gates: jumping between areas
+
+This can replace lanes or sit alongside them: paired gates, where flying into
+one brings the ship out of the other. The extraction gate (L5) already has
+the look: the spinning black hole, the swirl in the cloak's pass, the warp
+stretch, and the white fade from L1's "extracted". A jump gate plays that
+sequence without ending the round.
+
+**Open questions:** is the jump instant, or a short transit? Is the exit
+protected? Can enemies follow? Does a gate charge, like the extraction gate?
+
+### W6. *(Suggestion)* A map of what has been seen
+
+A `FrameBuffer` the size of a minimap. Each frame, S2's fan is drawn into it
+at map scale. A target keeps what was drawn into it unless it is cleared, so
+the fans build up into an "explored" area. The minimap is drawn in a HUD
+corner, with lanes, gates, the closing ring and S4's ghosts on top: black
+where nothing has been explored, grey where something was explored but is not
+seen now, colour where it is seen. It costs one small fan per frame.
+
+---
+
+## More suggestions in line with this
+
+- **Sensor ping.** The player spends energy, and a ring expands from the ship
+  (additive, like the wave of the shield ripple). Everything it passes is
+  revealed for a second, through rocks and paint, and every enemy it touches
+  learns where the player is. It trades stealth for sight.
+- **Noise.** Firing makes noise. An unseen enemy that fires shows a short
+  flash at its muzzle through the fog. The player's own fire alerts enemies
+  within an earshot that depends on the weapon: missiles loud, the beam
+  quiet. C5's hearing for enemies already exists.
+- **A scout drone, or a flare.** A drone is a second point the player sees
+  from, with its own polar map and its own fan, drawn in the same fog pass:
+  two fans are just two draws. A flare lights a radius around where it lands
+  for a few seconds.
+- **A lamp.** The asteroid shader lights each rock from a direction (A3 and
+  A5, `EffectParams.b`). A point light at the ship lighting the rocks around
+  it would make the interior of a field dark and the player a torch in it.
+  Each rock quad already carries its own parameters (F6). Switching the lamp
+  off would be stealthier.
+- **Ambushes at lane exits, and patrols along lanes.** This is the enemy AI
+  from **Later** in the gameplay roadmap, now with places for it to happen.
+- **Missile locks need sight.** A missile locks only onto an enemy the player
+  can see. If sight is lost, the missile flies to the ghost.
+- **Procedural generation.** The generator decides where to erase (clearings,
+  lanes) using scatter's `density`, then places cores, resources and enemies
+  by clearing. All of it writes the same `Level` struct.
+
+---
+
+## What the render API already gives this
+
+Only one row asks for anything new in the library.
+
+| Want                                     | Existing mechanism                                                         | New library work                                |
+| ---------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------- |
+| Draw the visible area                    | A `renderTriangles` fan, as for rocks                                      | none                                            |
+| Grey everything outside it               | `worldGrade`'s target, a third grade, and the fan textured with the target | none                                            |
+| A soft fog edge                          | Vertex alpha on a ring of triangles                                        | none                                            |
+| A blurred, softer edge                   | A mask target, blurred by FinalGlow's compute blur                         | **an effect that reads a second texture**       |
+| Ghost outlines                           | `outline::begin` / `end`                                                   | none                                            |
+| Cones cut by rocks                       | A fan from the enemy                                                       | none                                            |
+| An explored map                          | A `FrameBuffer` that is never cleared                                      | none                                            |
+| Lane streaks                             | Additive blend, generated gradient textures                                | none                                            |
+| The speed look                           | Warp stretch, afterimages, `camera::Zoom`, FinalGlow                       | none                                            |
+| A jump gate                              | The gate's body, the swirl field in the cloak pass                         | none                                            |
+| The sensor ping's wave                   | Per-quad effect parameters, as in the shield ripple                        | none                                            |
+| A lamp in the fields                     | The asteroid effect's parameters                                           | none                                            |
+| Pixel-exact hiding of half-seen enemies  | Their own target, composited through the fan                               | none; layering work only                        |
+
+**An effect that reads two textures** (the world and a mask) is a general
+capability: any game's lighting, fog or masking would want it. It is only
+worth building if the fan's hard edge, softened with vertex alpha, turns out
+not to be good enough.
+
+Lane streaks would be the fourth module to generate its own gradient texture,
+and four is where the roadmap says a shared helper "stops being speculative"
+(F-notes, `docs/roadmap.md`).
+
+---
+
+## Suggested order
+
+**S1 → S2 → S3 → S4 → W1 → W2 → W4 / W5 → W3 → W6.** The suggestions can go
+anywhere along the way.
+
+- **S1** changes the rules and can be tested without anything new on screen.
+- **S2** is the structure that everything after it reads.
+- **W1**'s spatial hash already arrives with S1.
