@@ -101,6 +101,7 @@ add_library(engine STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/gridWalk.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/spatialGrid.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/visibility.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/contactMemory.cpp"
 )
 set_property(TARGET engine PROPERTY CXX_STANDARD 17)
 target_include_directories(engine PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/")

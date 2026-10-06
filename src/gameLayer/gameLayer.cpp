@@ -37,6 +37,7 @@
 #include <asteroids.h>
 #include <outline.h>
 #include <sight.h>
+#include <lastKnown.h>
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
@@ -439,6 +440,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	// extracting are not a round's and survive.
 	resources::reset();
 	asteroids::reset(currentLevel.asteroids, currentLevel.fields); // gameplay roadmap A1, A1b
+	lastKnown::reset(); // a new round's ghosts (sight roadmap S4)
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
 	gameClock::reset();
@@ -725,6 +727,7 @@ void debugPanelUi()
 	debugPanel::section("Gate", gate::debugUi);
 	debugPanel::section("Asteroids", asteroids::debugUi);
 	debugPanel::section("Sight", sight::debugUi);
+	debugPanel::section("Last known", lastKnown::debugUi);
 	debugPanel::section("Hidden outline", outline::debugUi);
 	debugPanel::section("Resources", resources::debugUi);
 	debugPanel::section("World grade", worldGrade::debugUi);
@@ -1872,6 +1875,19 @@ bool gameLogic(float deltaTime)
 		enemyInSight[i] = !fogHides || sight::playerSeesShip(e.body.position, e.getHitbox().radius);
 	}
 	auto inSight = [&](const Enemy &e) { return enemyInSight[(size_t)(&e - session.enemies.data())] != 0; };
+
+	// Where the player last saw each (sight roadmap S4): an enemy is lost when
+	// the fog hides it, or when it cloaks in sight. With nothing hidden there
+	// is nothing to remember.
+	if (fogHides)
+	{
+		lastKnown::update(session.enemies, [&](const Enemy &e) { return inSight(e) && !hidden(e); },
+			[&](const Enemy &e) { return shipAtlas.get(e.type.x, e.type.y); }, time.game);
+	}
+	else
+	{
+		lastKnown::reset();
+	}
 	const effects::Shown traceShown = fogHides
 		? effects::Shown([](glm::vec2 p) { return sight::playerSeesShip(p, 60.f); }) : effects::Shown();
 	const effects::Shown explosionShown = fogged
@@ -2122,6 +2138,12 @@ bool gameLogic(float deltaTime)
 			gameState::warpStretch());
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+
+	// The ghosts of enemies out of sight (S4), over the grade so the fog does
+	// not grey them; still in the world's batch, so the cloak bends them.
+	if (fogHides) { lastKnown::draw(renderer, shipSheet); }
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+
 	// The gate's swirl rides the cloak's pass, so it bends the same target.
 	cloak::setSwirl(gate::position(), gate::swirlRadius(), gate::swirlStrength());
 	cloak::flushWorld(renderer, session.ship.position, shipSize, w, h, time.game);
@@ -2136,6 +2158,23 @@ bool gameLogic(float deltaTime)
 			const glm::vec2 onScreen = {(gate::position().x - view.x) / view.z * (float)w,
 				(gate::position().y - view.y) / view.w * (float)h};
 			hud::pointTo(true, onScreen, gate::pulse(), gate::colour());
+		}
+	}
+
+	// And to each ghost off screen (sight roadmap S4): a smaller chevron in the
+	// ghosts' colour toward where an enemy was last seen, fading as it does.
+	if (fogHides && lastKnown::arrowsShown())
+	{
+		const glm::vec4 view = renderer.getViewRect();
+		if (view.z != 0.f && view.w != 0.f)
+		{
+			const glm::vec3 colour = lastKnown::ghostColour();
+			lastKnown::forEachGhost([&](glm::vec2 position, float alpha)
+			{
+				const glm::vec2 onScreen = {(position.x - view.x) / view.z * (float)w,
+					(position.y - view.y) / view.w * (float)h};
+				hud::markOffScreen(onScreen, {colour, alpha});
+			});
 		}
 	}
 

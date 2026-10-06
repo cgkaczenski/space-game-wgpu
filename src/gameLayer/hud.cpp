@@ -1,4 +1,5 @@
 #include <hud.h>
+#include <vector>
 
 #include <bulletLook.h>
 #include <shipShield.h>
@@ -60,20 +61,31 @@ namespace
 	const float pointerSizePerc = 0.035f;  // of the window height
 	const float pointerInsetPerc = 0.07f;  // from the edge, of the height
 
-	void drawPointer(wgpu2d::Renderer2D &renderer, int width, int height)
+	// Off-screen markers for this draw (sight roadmap S4): the ghosts of
+	// enemies last seen off screen, in their colour, a little smaller than
+	// the gate's so the two do not read as the same thing.
+	struct Marker
 	{
-		if (!pointerShown) { return; }
+		glm::vec2 target;
+		glm::vec4 colour;
+		float scale;
+	};
+	std::vector<Marker> markers;
+
+	// A chevron just inside the screen's edge, on the line from the centre to
+	// `target` (screen pixels), pointing out toward it -- unless `target` is
+	// on screen, where the thing speaks for itself.
+	void drawChevron(wgpu2d::Renderer2D &renderer, glm::vec2 target, glm::vec4 colour, float scale,
+		int width, int height)
+	{
 		const glm::vec2 size = {(float)width, (float)height};
 		const float inset = height * pointerInsetPerc;
-
-		// On screen, the gate speaks for itself.
-		if (pointerTarget.x >= 0.f && pointerTarget.y >= 0.f
-			&& pointerTarget.x <= size.x && pointerTarget.y <= size.y) { return; }
+		if (target.x >= 0.f && target.y >= 0.f && target.x <= size.x && target.y <= size.y) { return; }
 
 		// Along the ray from the centre, stopped at the inset rectangle: the
 		// ray's length to each pair of edges, and whichever it meets first.
 		const glm::vec2 centre = size * 0.5f;
-		const glm::vec2 toward = pointerTarget - centre;
+		const glm::vec2 toward = target - centre;
 		const float length = glm::length(toward);
 		if (length <= 0.f) { return; }
 		const glm::vec2 dir = toward / length;
@@ -84,15 +96,21 @@ namespace
 		const glm::vec2 tip = centre + dir * reach;
 
 		// A chevron: two strokes back from the tip, 40 degrees either side.
-		const float arm = height * pointerSizePerc;
+		const float arm = height * pointerSizePerc * scale;
 		const float c = std::cos(2.44f), s = std::sin(2.44f); // 140 degrees
 		const glm::vec2 left = {dir.x * c - dir.y * s, dir.x * s + dir.y * c};
 		const glm::vec2 right = {dir.x * c + dir.y * s, -dir.x * s + dir.y * c};
-		const float bright = 0.45f + 0.55f * pointerPulse;
-		const glm::vec4 colour = {pointerColour * bright, 1.f};
-		const float stroke = std::max(2.f, height * 0.006f);
+		const float stroke = std::max(2.f, height * 0.006f * scale);
 		renderer.renderLine(tip, tip + left * arm, colour, stroke);
 		renderer.renderLine(tip, tip + right * arm, colour, stroke);
+	}
+
+	void drawPointer(wgpu2d::Renderer2D &renderer, int width, int height)
+	{
+		for (const Marker &m : markers) { drawChevron(renderer, m.target, m.colour, m.scale, width, height); }
+		if (!pointerShown) { return; }
+		const float bright = 0.45f + 0.55f * pointerPulse;
+		drawChevron(renderer, pointerTarget, {pointerColour * bright, 1.f}, 1.f, width, height);
 	}
 
 	// ---- Weapon slots ---------------------------------------------------
@@ -301,6 +319,11 @@ void pointTo(bool shown, glm::vec2 target, float pulse, glm::vec3 colour)
 	pointerColour = colour;
 }
 
+void markOffScreen(glm::vec2 target, glm::vec4 colour, float scale)
+{
+	markers.push_back({target, colour, scale});
+}
+
 void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 	const WeaponSlot *slots, int slotCount, float ramReady, int width, int height)
 {
@@ -327,6 +350,7 @@ void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 		drawSlots(renderer, slots, slotCount, ramReady, width, height);
 		drawPointer(renderer, width, height);
 		pointerShown = false; // for one draw; the game says so every frame
+		markers.clear();
 	}
 	renderer.popCamera();
 

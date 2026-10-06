@@ -211,7 +211,7 @@ stays one click away for comparison.
 | Selection    | Options                                                                                               | Default       |
 | ------------ | ----------------------------------------------------------------------------------------------------- | ------------- |
 | Ghost lasts  | **Until checked** (gone once the spot is seen empty) · **Fades**, with a seconds slider · **Forever** | Until checked |
-| Ageing       | **None** · **Fade** · **Dashed when old**, with a seconds slider                                      | Fade          |
+| Ageing       | **None** · **Fade** _(Dashed dropped: the outline shader draws a solid line)_ | Fade |
 | Heading line | checkbox                                                                                              | on            |
 | Colour       | colour picker                                                                                         | muted red     |
 
@@ -772,7 +772,7 @@ mean what they did.
 - **Not captured:** seeing in, and the beam lighting what it burns. Both need
   the ship outside a field or firing, which a hidden run cannot do.
 
-### S4. Last known positions
+### S4. Last known positions — _built_
 
 **Asked:** an outline of each enemy at its last known position.
 
@@ -800,6 +800,68 @@ known position" is the same mechanism pointed the other way, and the enemy
 AI could use it too.
 
 **Where it lands:** engine (contact memory); game (drawing the ghosts).
+
+**Decided**
+
+- **A ghost is armed before it can be cleared.** It clears only after its
+  spot has been out of sight and comes back into sight empty. Cleared on
+  "spot in sight", a ghost would go the frame after it is made, because its
+  spot is where the enemy was last seen.
+- **An enemy cloaking in sight leaves a ghost** where it vanished.
+- **An enemy that dies out of sight keeps its ghost** until it is checked or
+  fades. Removing it would tell the player something they could not know.
+- **With the fog off there are no ghosts.**
+- **"Dashed when old" is dropped.** The outline shader draws a solid line, and
+  Fade says "old" as well.
+
+**What was built**
+
+- **engine, `contactMemory`:**
+  - `observe` keeps each thing's last seen state, and leaves a ghost on the
+    frame it goes from seen to unseen.
+  - `check` arms ghosts whose spot is out of sight, clears armed ones back in
+    sight, and forgets by age.
+  - Nothing in it is about ships. S5 is the same memory pointed the other
+    way.
+- **game, `lastKnown`:**
+  - The policy: lost means hidden by the fog or cloaked in sight.
+  - Each enemy's sprite cell is kept, so its ghost outlives it.
+  - Ghosts are drawn with `outline` in a muted red, with a heading line
+    (velocity × 0.6 s), after the fog's grade so they keep their colour.
+  - A **Last known** section: Ghost lasts (Until checked · Fades · Forever),
+    Ageing (None · Fade, with Fades over and Faintest), Heading line and its
+    reach, Ghost colour.
+
+**Verified**
+
+- **The memory** (a temporary unit test, removed): a never-seen thing leaves
+  no ghost; a lost one leaves exactly one, at its last seen state; it stays
+  while its spot is in sight unarmed; it is armed when the spot leaves sight
+  and cleared when it comes back; Forever never clears; seen again removes
+  it; forgetting by age.
+- **The drawing** (a temporary override that counted `level3`'s enemy as lost
+  after 60 frames, removed): a 2560×1440 capture shows the hull's red outline
+  where it was at frame 60, over the field rocks, with its heading line
+  pointing toward where the live enemy has gone.
+- **Not yet seen in play** against an enemy really slipping out of sight.
+
+**Added after S4: arrows to ghosts off screen.** **Asked:** for a ghost off
+screen, an indicator like the warp gate's pointing toward it.
+
+- **Built:** the HUD's gate chevron became one function (`drawChevron`), and
+  the HUD took a list of off-screen markers for the frame
+  (`hud::markOffScreen`). Each ghost off screen gets a chevron in the ghosts'
+  colour, at 0.75 of the gate's size so the two do not read as the same
+  thing. It fades as the ghost does. **Off-screen arrows** in Last known
+  turns them off.
+- **Verified:** with `level3`'s enemy counted as lost and its arrow's target
+  pushed 6,000 units right (temporary, removed), a capture shows the red
+  chevron at the right edge pointing out toward it.
+- **Worth knowing:** a chevron near a corner can sit over the HUD's bars, as
+  the gate's can.
+
+**Where it landed:** engine (`contactMemory`); game (`lastKnown`, its calls in
+`gameLayer.cpp`).
 
 ### S5. _(Suggestion)_ What enemies think, shown
 

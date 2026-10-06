@@ -48,6 +48,11 @@ namespace hud
 	// gate's `colour`.
 	void pointTo(bool shown, glm::vec2 target, float pulse, glm::vec3 colour);
 
+	// Another off-screen marker for the next draw, the same chevron at
+	// `scale` of the gate's, in `colour`: where an enemy was last seen (sight
+	// roadmap S4). Any number; the gate's is drawn over them.
+	void markOffScreen(glm::vec2 target, glm::vec4 colour, float scale = 0.75f);
+
 	// Draws the HUD and puts it on screen.
 	//
 	// Flushes whatever the renderer has pending first, on purpose: the HUD is
