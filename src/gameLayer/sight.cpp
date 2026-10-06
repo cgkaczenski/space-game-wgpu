@@ -588,6 +588,40 @@ namespace
 	}
 }
 
+namespace
+{
+	// The box a cone covers: its apex, the ends of its sides (soft sides
+	// included), and the arc's extremes where it takes in an axis.
+	void coneBox(glm::vec2 position, const Look &cone, glm::vec2 &lo, glm::vec2 &hi)
+	{
+		const float facing = std::atan2(cone.facing.y, cone.facing.x);
+		const float reach = cone.halfAngle + glm::radians(coneSoftDegrees * 0.5f);
+		lo = hi = position;
+		auto include = [&](float angle)
+		{
+			const glm::vec2 p = position + glm::vec2(std::cos(angle), std::sin(angle)) * cone.range;
+			lo = glm::min(lo, p);
+			hi = glm::max(hi, p);
+		};
+		include(facing - reach);
+		include(facing + reach);
+		for (int k = 0; k < 4; k++)
+		{
+			const float axis = 1.5707963f * (float)k;
+			if (std::fabs(std::remainder(axis - facing, 6.2831853f)) <= reach) { include(axis); }
+		}
+	}
+}
+
+void coneView(glm::vec2 position, const Look &look, visibility::PolarMap &out)
+{
+	glm::vec2 lo, hi;
+	coneBox(position, look, lo, hi);
+	const int keep = segmentCount; // the panel's count is the player's map's
+	build(out, position, look.range, &look, lo, hi);
+	segmentCount = keep;
+}
+
 void updatePlayer(glm::vec2 position, bool cloaked, glm::vec2 aim, float realDeltaTime, const Scope *scope)
 {
 	const auto started = std::chrono::steady_clock::now();
@@ -621,23 +655,8 @@ void updatePlayer(glm::vec2 position, bool cloaked, glm::vec2 aim, float realDel
 	if (scope && scope->amount > 0.f)
 	{
 		const Look &cone = scope->cone;
-		const float facing = std::atan2(cone.facing.y, cone.facing.x);
-		const float reach = cone.halfAngle + glm::radians(coneSoftDegrees * 0.5f);
-		glm::vec2 lo = position, hi = position;
-		auto include = [&](float angle)
-		{
-			const glm::vec2 p = position + glm::vec2(std::cos(angle), std::sin(angle)) * cone.range;
-			lo = glm::min(lo, p);
-			hi = glm::max(hi, p);
-		};
-		include(facing - reach);
-		include(facing + reach);
-		for (int k = 0; k < 4; k++)
-		{
-			// The arc's extremes, where the cone takes in an axis.
-			const float axis = 1.5707963f * (float)k;
-			if (std::fabs(std::remainder(axis - facing, 6.2831853f)) <= reach) { include(axis); }
-		}
+		glm::vec2 lo, hi;
+		coneBox(position, cone, lo, hi);
 		static visibility::PolarMap scoped;
 		build(scoped, position, cone.range, &cone, lo, hi);
 		for (int i = 0; i < (int)playerView.distance.size(); i++)

@@ -112,6 +112,11 @@ namespace sight
 	// mines that rock; enemies' beams follow the same rule.
 	float beam(glm::vec2 origin, glm::vec2 direction, float reach, int *rock);
 
+	// What one viewer at `position` sees with `look`, as a polar map over its
+	// cone's bounds: the shape of the rule `clear` applies, for drawing an
+	// enemy's cone (S6). Slices outside the cone are not meaningful.
+	void coneView(glm::vec2 position, const Look &look, visibility::PolarMap &out);
+
 	// ---- What the player sees (sight roadmap S2) ----
 
 	// Rebuilds the player's polar map. Once a frame, after the player has

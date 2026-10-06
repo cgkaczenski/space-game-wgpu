@@ -13,6 +13,7 @@
 // Restart clears it: an explosion is something that happened, not a setting.
 
 #include <functional>
+#include <engine/visibility.h>
 #include <render/wgpu2d.h>
 #include <enemy.h>
 
@@ -75,12 +76,13 @@ namespace effects
 	// its own ghosts. (The streaks go in drawGlow.)
 	void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet, const Shown &shown = nullptr);
 
-	// An enemy's sight (gameplay roadmap C5): a faint wedge from its nose, out
-	// to its range and as wide as its cone, tinted by what it knows -- grey
-	// unaware, amber searching, red engaged. **The caller must have set
-	// `BlendMode::Additive`**; draw before the ships so the cones sit under
-	// them.
-	void drawSight(wgpu2d::Renderer2D &renderer, const Enemy &enemy);
+	// An enemy's sight (gameplay roadmap C5): its cone as it really sees --
+	// `view` is sight::coneView for it, so rocks and field edges cut it (S6)
+	// -- as a faint fill with a brighter rim along its outline, tinted by what
+	// it knows: grey unaware, amber searching, red engaged. **The caller must
+	// have set `BlendMode::Additive`**; draw before the ships so the cones sit
+	// under them.
+	void drawSight(wgpu2d::Renderer2D &renderer, const Enemy &enemy, const visibility::PolarMap &view);
 
 	// A small diamond over an enemy that knows about the player: solid red
 	// while engaged, pulsing amber while searching, nothing while unaware.

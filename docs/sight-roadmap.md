@@ -1040,13 +1040,47 @@ shot" remains.
 through a gap between rocks, and an enemy's beam the player. Field rocks are
 dense, so this should be rare.
 
-### S6. _(Suggestion)_ Cones that stop at rocks
+### S6. Cones that stop at rocks — _built_
 
-C5 draws each cone as a wedge that passes through everything. If S2's polar
-map is computed from an enemy, only for the slices in its cone and only for
-enemies on screen, the cone takes the shape of what the enemy can actually
-see: cut by rocks and stopped at paint. That is the stealth-game readout of
-_Mark of the Ninja_ or _Commandos_. It is drawn with the same fan.
+C5 drew each cone as a wedge that passed through everything: one pre-made
+45° sector texture, stretched. Now each cone is a polar map computed from the
+enemy, over its cone's bounds and only for enemies drawn, so it takes the
+shape of what the enemy can actually see. That is the stealth-game readout of
+_Mark of the Ninja_ or _Commandos_.
+
+**Decided**
+
+- **The cone is the rule.** It is built with the same look that
+  `sight::clear` uses when deciding whether the enemy sees the player: cut by
+  single rocks and cores, stopped at field edges, and, from inside a field,
+  seeing out of it within its cone (S3b). What is drawn never disagrees with
+  when the enemy spots the player.
+- **A flat fill with a brighter rim** along the outline, the side rays
+  included, in the awareness colours: grey unaware, amber searching, red
+  engaged.
+- **No hearing ring**: it would be clutter.
+
+**What was built**
+
+- **`sight::coneView`:** one viewer's map over its cone's box. The box helper
+  is shared with the scope's.
+- **`effects::drawSight`:** takes that map, and draws a fan through the slice
+  ends inside the cone plus two exact side rays, as a flat fill, with the rim
+  as lines. The sector texture is gone; a white pixel replaces it.
+- **Sliders**, under Explosions: **Cone fill** (0.5), **Cone rim** (1.0,
+  raised from 0.6 after a capture showed an unaware rim barely visible),
+  **Cone rim width** (1.5 px).
+- **`gameLayer`** builds each drawn enemy's view (not cloaked, not stunned, in
+  the player's sight) and hands it over.
+
+**Verified**
+
+- **The map against the walk** (temporary check, removed): enemy-like looks,
+  60° to 90° wide, 2,500 to 3,500 long, from random points facing random
+  ways. They disagreed on 3 of 2.16 million cone slices, the corner cases.
+- **A 2560×1440 capture** shows `level3`'s unaware enemy's cone as a stepped
+  grey outline where its sight is cut, from inside its field.
+- **Not yet seen in play** with an enemy turning past single rocks.
 
 ---
 

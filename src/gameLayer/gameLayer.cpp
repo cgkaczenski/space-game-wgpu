@@ -1954,7 +1954,19 @@ bool gameLogic(float deltaTime)
 	if (enemyAi::showCones())
 	{
 		renderer.setBlendMode(wgpu2d::BlendMode::Additive);
-		for (const auto &e : session.enemies) { if (!hidden(e) && inSight(e)) { effects::drawSight(renderer, e); } }
+		// Each cone as the enemy really sees (S6): its own polar map, so rocks
+		// and field edges cut it exactly where they would hide the player.
+		static visibility::PolarMap coneMap;
+		for (const auto &e : session.enemies)
+		{
+			if (hidden(e) || !inSight(e) || e.stunned > 0.f) { continue; }
+			sight::Look look;
+			look.facing = e.body.facing;
+			look.halfAngle = e.sightHalfAngle;
+			look.range = e.sightRange;
+			sight::coneView(e.body.position, look, coneMap);
+			effects::drawSight(renderer, e, coneMap);
+		}
 		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 	}
 

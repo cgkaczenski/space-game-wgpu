@@ -17,14 +17,13 @@ namespace
 {
 	wgpu2d::Texture glow;
 
-	// A sight cone: a 45-degree-each-way sector with its apex at the middle of
-	// the left edge, reaching the right edge, fading with distance. A narrower
-	// cone is the same texture drawn squashed across: scaling across keeps the
-	// sides straight lines through the apex, so the angle is exact and only the
-	// far edge bends from an arc to an ellipse, which the fade hides.
-	wgpu2d::Texture sector;
-	const int sectorLength = 128;
-	const int sectorBreadth = 256;
+	// A sight cone is drawn as triangles from the enemy (S6): a white pixel
+	// to tint. And how strongly: a faint fill, and a brighter rim along its
+	// outline -- where its sight ends, rocks and edges included.
+	wgpu2d::Texture white;
+	float sightFill = 0.5f;
+	float sightRim = 1.f;
+	float sightRimPixels = 1.5f;
 
 	struct Piece
 	{
@@ -150,35 +149,12 @@ namespace
 
 namespace
 {
-	bool buildSectorTexture()
-	{
-		std::vector<unsigned char> pixels((size_t)sectorLength * sectorBreadth * 4);
-		const float halfAngle = 0.785398f; // 45 degrees
-		const float edgeSoftness = 0.08f;  // radians of fade at the sides
-		for (int y = 0; y < sectorBreadth; y++)
-		{
-			for (int x = 0; x < sectorLength; x++)
-			{
-				const float fx = (x + 0.5f) / sectorLength;               // 0 .. 1 along
-				const float fy = (y + 0.5f) / sectorBreadth * 2.f - 1.f;  // -1 .. 1 across
-				const float r = std::sqrt(fx * fx + fy * fy);
-				const float angle = std::fabs(std::atan2(fy, fx));
-				const float side = std::clamp((halfAngle - angle) / edgeSoftness, 0.f, 1.f);
-				const float reach = std::clamp(1.f - r, 0.f, 1.f);
-				const float a = side * std::pow(reach, 0.6f);
-				unsigned char *p = pixels.data() + ((size_t)y * sectorLength + x) * 4;
-				p[0] = 255; p[1] = 255; p[2] = 255;
-				p[3] = (unsigned char)(std::clamp(a, 0.f, 1.f) * 255.f);
-			}
-		}
-		sector.createFromBuffer((const char *)pixels.data(), sectorLength, sectorBreadth, false, true);
-		return sector.id != 0;
-	}
 }
 
 bool init()
 {
-	if (!buildGlowTexture() || !buildSectorTexture())
+	white.create1PxSquare();
+	if (!buildGlowTexture() || white.id == 0)
 	{
 		std::cerr << "effects: could not create the fireball or sight textures\n";
 		return false;
@@ -189,31 +165,62 @@ bool init()
 void cleanup()
 {
 	glow.cleanup();
-	sector.cleanup();
+	white.cleanup();
 }
 
-void drawSight(wgpu2d::Renderer2D &renderer, const Enemy &enemy)
+void drawSight(wgpu2d::Renderer2D &renderer, const Enemy &enemy, const visibility::PolarMap &view)
 {
-	if (sector.id == 0 || enemy.stunned > 0.f) { return; }
+	if (white.id == 0 || enemy.stunned > 0.f || view.distance.empty()) { return; }
 
-	glm::vec4 color;
+	glm::vec3 hue;
+	float strength = 1.f;
 	switch (enemy.awareness)
 	{
-	case Enemy::Awareness::Unaware:   color = glm::vec4(0.55f, 0.60f, 0.75f, 1.f) * 0.10f; break;
-	case Enemy::Awareness::Searching: color = glm::vec4(1.00f, 0.65f, 0.15f, 1.f) * 0.16f; break;
-	case Enemy::Awareness::Engaged:   color = glm::vec4(1.00f, 0.22f, 0.15f, 1.f) * 0.20f; break;
+	case Enemy::Awareness::Unaware:   hue = {0.55f, 0.60f, 0.75f}; strength = 0.10f; break;
+	case Enemy::Awareness::Searching: hue = {1.00f, 0.65f, 0.15f}; strength = 0.16f; break;
+	case Enemy::Awareness::Engaged:   hue = {1.00f, 0.22f, 0.15f}; strength = 0.20f; break;
 	}
-	color.a = 1.f;
+	const wgpu2d::Color4f fill = {hue * strength * sightFill, 1.f};
+	const wgpu2d::Color4f rim = {hue * std::min(1.f, strength * 4.f * sightRim), 1.f};
 
-	// The texture's 45 degrees fills its breadth; tan(angle) of that is the
-	// squash for this enemy's own cone.
-	const float range = enemy.sightRange;
-	const float breadth = 2.f * range * std::tan(enemy.sightHalfAngle);
-	const glm::vec2 dir = enemy.body.facing;
-	const glm::vec2 centre = enemy.body.position + dir * (range * 0.5f);
-	const float rotation = glm::degrees(std::atan2(-dir.y, dir.x));
-	renderer.renderRectangle({centre - glm::vec2(range * 0.5f, breadth * 0.5f), range, breadth},
-		sector, color, {}, rotation);
+	// The outline: the side at one edge of the cone, every slice's end inside
+	// it, the side at the other edge. The sides are exact rays at the cone's
+	// angle, each as long as the slice they fall in.
+	const int n = (int)view.distance.size();
+	const float step = 6.2831853f / (float)n;
+	auto slice = [&](int k) { return view.distance[(size_t)(((k % n) + n) % n)]; };
+	const glm::vec2 apex = view.origin;
+	const float facing = std::atan2(enemy.body.facing.y, enemy.body.facing.x);
+	const float a0 = facing - enemy.sightHalfAngle, a1 = facing + enemy.sightHalfAngle;
+	auto along = [&](float angle, float distance) { return apex + glm::vec2(std::cos(angle), std::sin(angle)) * distance; };
+
+	static std::vector<glm::vec2> rimPoints;
+	rimPoints.clear();
+	rimPoints.push_back(along(a0, slice((int)std::floor(a0 / step))));
+	for (int k = (int)std::ceil(a0 / step - 0.5f); ((float)k + 0.5f) * step <= a1; k++)
+	{
+		rimPoints.push_back(along(((float)k + 0.5f) * step, slice(k)));
+	}
+	rimPoints.push_back(along(a1, slice((int)std::floor(a1 / step))));
+
+	static std::vector<glm::vec2> positions, uvs;
+	static std::vector<wgpu2d::Color4f> colours;
+	positions.clear(); uvs.clear(); colours.clear();
+	for (size_t i = 0; i + 1 < rimPoints.size(); i++)
+	{
+		for (const glm::vec2 &p : {apex, rimPoints[i], rimPoints[i + 1]})
+		{
+			positions.push_back(p);
+			uvs.push_back({0.5f, 0.5f});
+			colours.push_back(fill);
+		}
+	}
+	renderer.renderTriangles(positions.data(), uvs.data(), colours.data(), positions.size(), white);
+
+	const float width = sightRimPixels / std::max(renderer.currentCamera.zoom, 1e-4f);
+	renderer.renderLine(apex, rimPoints.front(), rim, width);
+	for (size_t i = 0; i + 1 < rimPoints.size(); i++) { renderer.renderLine(rimPoints[i], rimPoints[i + 1], rim, width); }
+	renderer.renderLine(rimPoints.back(), apex, rim, width);
 }
 
 void drawAwareness(wgpu2d::Renderer2D &renderer, const Enemy &enemy, float time)
@@ -522,6 +529,9 @@ void drawTargetBox(wgpu2d::Renderer2D &renderer, glm::vec2 centre, float size, f
 // The tunables this file offers (platform/tuning.h): registered at start-up,
 // after everything above, so each one's default is the value it is declared with.
 const tuning::Group tunables("effects", {
+	{"sightFill", sightFill},
+	{"sightRim", sightRim},
+	{"sightRimPixels", sightRimPixels},
 	{"debrisKept", debrisKept},
 	{"debrisSpeedMax", debrisSpeedMax},
 	{"debrisSpinMax", debrisSpinMax},
@@ -536,6 +546,10 @@ void debugUi()
 	ImGui::Text("%d pieces, %d fireballs", (int)pieces.size(), (int)blasts.size());
 	tune::SliderInt("Debris kept", &debrisKept, 0, 3000);
 	if (ImGui::SmallButton("Clear debris")) { pieces.clear(); }
+	ImGui::TextDisabled("Enemy sight cones");
+	tune::SliderFloat("Cone fill", &sightFill, 0.f, 2.f, "%.2f");
+	tune::SliderFloat("Cone rim", &sightRim, 0.f, 1.f, "%.2f");
+	tune::SliderFloat("Cone rim width", &sightRimPixels, 0.5f, 6.f, "%.1f px");
 	tune::SliderFloat("Debris speed", &debrisSpeedMax, 100.f, 3000.f, "%.0f");
 	tune::SliderFloat("Debris spin", &debrisSpinMax, 0.f, 1440.f, "%.0f deg/s");
 	tune::SliderFloat("Fireball life", &blastLife, 0.1f, 2.f, "%.2f s");
