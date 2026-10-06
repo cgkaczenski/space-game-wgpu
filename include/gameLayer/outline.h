@@ -20,6 +20,9 @@ namespace outline
 	// Everything drawn between these two is outlined. `pulse` 0 .. 1 brightens
 	// the line, so it can breathe.
 	void begin(wgpu2d::Renderer2D &renderer, float pulse = 0.f);
+	// The same in a colour of the caller's instead of the tuned one -- a
+	// warning, say. Width, pulse and silhouette stay as tuned.
+	void begin(wgpu2d::Renderer2D &renderer, float pulse, glm::vec3 lineColour);
 	void end(wgpu2d::Renderer2D &renderer);
 
 	void debugUi();

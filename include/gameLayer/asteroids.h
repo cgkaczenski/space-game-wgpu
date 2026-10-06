@@ -26,6 +26,7 @@
 // the triangles are wgpu2d's renderTriangles.
 
 #include <render/wgpu2d.h>
+#include <engine/regionMask.h>
 #include <level.h>
 #include <vector>
 
@@ -41,8 +42,14 @@ namespace asteroids
 	void reset(const std::vector<level::Asteroid> &placed,
 		const std::vector<level::AsteroidField> &fields);
 
-	// Inside any field's painted area: hidden, like tall grass.
+	// Inside any field's painted area: hidden, like tall grass. Answered from
+	// the painted area's grid (paintMask), so it agrees with sight.
 	bool inField(glm::vec2 point);
+
+	// Every field's painted area as one grid (sight roadmap S1), each cell
+	// labelled with the field painted there or -1. Built when a round starts;
+	// sight walks lines through it to find where they cross a field's edge.
+	const region::Mask &paintMask();
 
 	// How much light a ship in a field keeps: its hull is tinted by this, so
 	// in the gaps between rocks it looks in shadow.
@@ -50,12 +57,24 @@ namespace asteroids
 
 	// Hit tests against this round's rocks, in world units.
 
+	// Which rocks a query looks at (sight roadmap S1). Inside its field's
+	// paint, a field rock can be passed by sight and shots; everything else
+	// -- a single rock, a core, or a field rock knocked out of the paint -- is
+	// solid to them always.
+	enum class Which
+	{
+		All,
+		Solid,    // single rocks, cores, and field rocks outside the paint
+		InPaint,  // field rocks inside the paint, cores excepted
+	};
+
 	// Which rock a circle touches, or -1 if none.
-	int hitCircle(glm::vec2 centre, float radius);
+	int hitCircle(glm::vec2 centre, float radius, Which which = Which::All);
 
 	// How far along a ray (unit `direction`) the first rock is, or -1 if none
 	// within `maxDistance`. `rock`, when given, is set to which one, or -1.
-	float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock = nullptr);
+	float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock = nullptr,
+		Which which = Which::All);
 
 	// A rock lies anywhere on the line from `from` to `to`, ends included.
 	bool blocksSight(glm::vec2 from, glm::vec2 to);

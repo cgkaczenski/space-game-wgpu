@@ -50,14 +50,17 @@ behind. Only asteroids and asteroid fields block it. When an enemy and the
 player are both inside a field, they can see and shoot each other without the
 field's rocks getting in the way. The field's core still blocks.
 
-**Asked (refined): inside a field, vision and shots invert.** Inside a field,
-the field is open space and its edge is the wall. A level that is half field
-and half open should feel much the same on either side, for both vision and
-shots. A shot fired inside a field is stopped when it reaches the field's
-outer edge, the same way a shot fired outside is stopped when it reaches the
-field.
+**Asked (refined): inside a field, vision inverts.** Inside a field, the
+field is open space and its edge is the wall. Inside paint, you can't see
+out. Outside, you can't see in.
 
-**Proposed as one rule.** A line from A to B is blocked by:
+**Asked: a weapon fired inside does not stop at the edge.** Bullets, missiles
+and beams fired in the paint fly out through it. One fired outside still
+stops when it reaches the field. Single rocks and cores always stop a
+weapon. Inside paint, field rocks do not. **Both ways**, where the edge
+stops a weapon leaving as well as entering, stays in the debug panel.
+
+**Proposed as one rule, for sight.** A line from A to B is blocked by:
 
 1. any single rock (A1);
 2. any core;
@@ -76,7 +79,8 @@ no single rock or core between them. What follows from that:
   everything outside is hidden from that ship.
 - **Two fields that touch count as one.** A line that goes from one into the
   other never leaves paint, so nothing blocks it. Two fields with open space
-  between them are different: the line is blocked where it leaves the first.
+  between them are different: sight is blocked where the line leaves the
+  first. A shot flies out of the first and stops where it enters the second.
 - **The fog (S3) inverts too.** In open space, the fields are grey; inside a
   field, the open space around it is grey.
 - C5's cone, range and hearing still apply on top of this rule. The rule
@@ -91,19 +95,26 @@ that block are cores and single rocks, which number in the tens rather than
 the thousands. The edge itself is found with a grid lookup. Sight never needs
 to test a field rock.
 
-**Shots, the same rule.** A shot is stopped where it crosses a paint edge,
-whichever way it is going. Single rocks and cores always stop it. Inside
-paint, field rocks let shots through. This holds for the player's shots and
-for enemy shots alike.
+**Shots leave, they do not enter.** A shot stops where it crosses into paint.
+One fired inside flies out: the edge does not stop it, and the field's rocks
+do not either. Single rocks and cores always stop it. This holds for the
+player's shots and for enemy shots alike.
 
-- **Where a shot stops.** The rule uses the paint edge, so a shot can't slip
-  out through a gap between the edge rocks. *Proposed* for the look: if a
-  field rock sits at the point where a shot crosses the edge, the shot strikes
-  that rock, pushing it and hurting it as shots do today (A2, A4). If not, the
-  shot bursts at the edge itself. From either side, this reads as hitting the
-  field's outer rocks.
-- **Missiles** follow the same rule. A missile can't chase a target across an
-  edge.
+- **Where a shot stops,** when it does: on the way in. The edge is the paint
+  boundary, so a shot from outside can't slip in through a gap between the
+  edge rocks. _Proposed_ for the look: if a field rock sits at the crossing,
+  the shot strikes that rock, pushing it and hurting it as shots do today
+  (A2, A4). If not, the shot bursts at the edge itself.
+- **Missiles** follow the same rule. One fired inside can chase a target out
+  of the field. One fired outside cannot chase a target in.
+
+**Beams, the same rule.** A beam is not blocked by a field's rocks, and one
+fired inside flies out through the edge. One fired outside stops at the
+edge, and at a single rock or a core. This holds for the player's beam and
+for enemy beams. A field rock is mined where an inbound beam meets it at
+that edge, or once it has been knocked out of the paint and counts as a
+single rock. The earlier recommendation, that the beam stop on every rock so
+the interior could be mined, stays in the debug panel as **Mining tool**.
 
 **Open questions.** Each of these is now a debug selection (see **The
 options as debug selections** below). The questions are what each default
@@ -116,20 +127,16 @@ should be, and which option survives once they have been played.
   outermost rocks block even for a ship inside, while the field's interior
   stays open. It would look more like a wall of rocks, but it is a second
   number to tune, and sight would need the mask to store distance to the edge.
-  *Recommended:* the exact edge first, and a band only if the edge looks too
+  _Recommended:_ the exact edge first, and a band only if the edge looks too
   thin.
-- **The beam is how rocks get mined.** If it obeys the shot rule, it passes
-  through field rocks inside paint, and nothing in a field could be mined from
-  inside. **Recommended:** the beam stops at the edge like a shot does, but
-  still stops at any rock it touches, on either side. It is a mining tool, not
-  a gun.
 - **Rocks stop being pushed.** Shots fired inside a field no longer hit the
-  field's rocks, except at the edge, so the field stays still during a fight
-  inside it. Is that fine?
+  field's rocks, and they fly out through the edge, so the field stays still
+  during a fight inside it. A shot coming in from outside can still strike
+  the edge. Is that fine?
 - **Missile locks:** should a lock need sight? (See the suggestions.)
 - **The player's outline in a field** currently means "no enemy can see
   you". Under the new rule it means "nothing outside can see you".
-  *Suggestion:* keep the mint outline, and turn it amber while an enemy
+  _Suggestion:_ keep the mint outline, and turn it amber while an enemy
   inside the same paint has sight of you.
 
 **Where it lands:** the rule is this game's, so it goes in a new
@@ -161,17 +168,17 @@ that only makes sense after a later item does not appear before that item.
 
 ### Sight and shots: a new **Sight** section (S1)
 
-| Selection       | Options                                                                                                                                        | Default        |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
-| Fields are      | **Continuous paint** (touching fields are one) · **Each field** (an edge between touching fields is a wall)                                    | Continuous     |
-| Vision at edges | **Both ways** (rooms: the inverted rule) · **Into fields only** (the first proposal: inside, you see out) · **Rocks** (today: every rock blocks sight on its own outline; A1b's inside-is-hidden rule still applies) | Both ways      |
-| Shots at edges  | **Both ways** · **Into fields only** · **Rocks** (today: every field rock stops every shot)                                                    | Both ways      |
-| Wall            | **Edge** · **Band**, with a **Band depth** slider (100–1000 units) that shows only when Band is chosen                                          | Edge           |
-| Shot stops      | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks) | On an edge rock |
-| Beam            | **Mining tool** (stops at the edge and at any rock it touches) · **Like a shot** · **Rocks** (today)                                            | Mining tool    |
-| Missile locks   | **Any target** (today) · **Seen only** (a missile that loses its target flies to the ghost, S4)                                                | Any target     |
-| Hidden outline  | **Mint** (today) · **Mint, amber when seen** (when an enemy inside the same paint has sight of you)                                           | Mint, amber    |
-| Mask cell       | slider, 25–200 units                                                                                                                           | 50             |
+| Selection       | Options                                                                                                                                                                                                              | Default         |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Fields are      | **Continuous paint** (touching fields are one) · **Each field** (an edge between touching fields is a wall)                                                                                                          | Continuous      |
+| Vision at edges | **Both ways** (rooms: the inverted rule) · **Into fields only** (the first proposal: inside, you see out) · **Rocks** (today: every rock blocks sight on its own outline; A1b's inside-is-hidden rule still applies) | Both ways       |
+| Shots at edges  | **Into fields only** (a weapon fired inside flies out; one fired outside stops at the field) · **Both ways** · **Rocks** (today: every field rock stops every shot)                                                  | Into fields only |
+| Wall            | **Edge** · **Band**, with a **Band depth** slider (100–1000 units) that shows only when Band is chosen                                                                                                               | Edge            |
+| Shot stops      | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks)                                                 | On an edge rock |
+| Beam            | **Like a shot** (the shot rule: field rocks inside paint do not stop it) · **Mining tool** (stops at the edge and at any rock it touches) · **Rocks** (today)                                                         | Like a shot     |
+| Missile locks   | **Any target** (today) · **Seen only** (a missile that loses its target flies to the ghost, S4)                                                                                                                      | Any target      |
+| Hidden outline  | **Mint** (today) · **Mint, amber when seen** (when an enemy inside the same paint has sight of you)                                                                                                                  | Mint, amber     |
+| Mask cell       | slider, 25–200 units                                                                                                                                                                                                 | 50              |
 
 Vision and shots are separate selections on purpose, so the rule can be tried
 on one before the other. The **Rocks** options exist so today's behaviour
@@ -179,32 +186,32 @@ stays one click away for comparison.
 
 ### What the player sees: in the **Sight** section (S2)
 
-| Selection        | Options                                                                                 | Default  |
-| ---------------- | --------------------------------------------------------------------------------------- | -------- |
+| Selection        | Options                                                                                                                     | Default     |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------- |
 | Sight range      | **Fixed**, with a range slider · **View** (the screen's diagonal at the current zoom) · **Unlimited** (to the arena's edge) | Fixed, 4000 |
-| Slices           | slider, 180–2048                                                                        | 720      |
-| Rock silhouettes | **Exact outline** · **Bounding circle** (cheaper, cruder; for measuring the difference) | Exact    |
-| Cloaked sight    | **Unchanged** · **Shorter**, with a multiplier slider                                    | Unchanged |
-| Show polar map   | checkbox: draws each slice's end point as a debug overlay                               | off      |
+| Slices           | slider, 180–2048                                                                                                            | 720         |
+| Rock silhouettes | **Exact outline** · **Bounding circle** (cheaper, cruder; for measuring the difference)                                     | Exact       |
+| Cloaked sight    | **Unchanged** · **Shorter**, with a multiplier slider                                                                       | Unchanged   |
+| Show polar map   | checkbox: draws each slice's end point as a debug overlay                                                                   | off         |
 
 ### The fog: a **Fog** section, beside the grade's (S3)
 
-| Selection          | Options                                                                                              | Default |
-| ------------------ | ---------------------------------------------------------------------------------------------------- | ------- |
-| Fog                | **Off** · **Grey** · **Grey and dim** · **Black** (classic fog of war, for comparison)               | Grey    |
-| Grey and dim       | a desaturation slider and a brightness slider, used by Grey and by Grey and dim                      | to tune |
-| Edge               | **Hard** · **Soft**, with a width slider                                                             | Soft    |
-| Unseen enemies     | **Hidden** · **Greyed** · **Shown** (the last two are debug views; they give away positions)         | Hidden  |
-| Unseen explosions  | **Greyed** · **Hidden**                                                                              | Greyed  |
+| Selection         | Options                                                                                      | Default |
+| ----------------- | -------------------------------------------------------------------------------------------- | ------- |
+| Fog               | **Off** · **Grey** · **Grey and dim** · **Black** (classic fog of war, for comparison)       | Grey    |
+| Grey and dim      | a desaturation slider and a brightness slider, used by Grey and by Grey and dim              | to tune |
+| Edge              | **Hard** · **Soft**, with a width slider                                                     | Soft    |
+| Unseen enemies    | **Hidden** · **Greyed** · **Shown** (the last two are debug views; they give away positions) | Hidden  |
+| Unseen explosions | **Greyed** · **Hidden**                                                                      | Greyed  |
 
 ### Ghosts: a **Last known** section (S4)
 
-| Selection    | Options                                                                               | Default        |
-| ------------ | ------------------------------------------------------------------------------------- | -------------- |
+| Selection    | Options                                                                                               | Default       |
+| ------------ | ----------------------------------------------------------------------------------------------------- | ------------- |
 | Ghost lasts  | **Until checked** (gone once the spot is seen empty) · **Fades**, with a seconds slider · **Forever** | Until checked |
-| Ageing       | **None** · **Fade** · **Dashed when old**, with a seconds slider                      | Fade           |
-| Heading line | checkbox                                                                              | on             |
-| Colour       | colour picker                                                                         | muted red      |
+| Ageing       | **None** · **Fade** · **Dashed when old**, with a seconds slider                                      | Fade          |
+| Heading line | checkbox                                                                                              | on            |
+| Colour       | colour picker                                                                                         | muted red     |
 
 ### Later items
 
@@ -221,40 +228,103 @@ These are listed now so the shape is known. Each one arrives with its item.
 
 ## Now: line of sight
 
-### S1. One sight rule for everyone
+### S1. One sight rule for everyone — _built, to playtest_
 
-Replace `asteroids::blocksSight` and `playerInField` with a single function,
-`sight::clear(from, to)`, that implements the rule above. Enemies use it
-together with their cones (C5). A shot compares the mask at its last position
-with the mask at its new one each frame; if they differ, it crossed an edge and
-stops there. Nothing changes on screen yet.
-The enemies' awareness diamonds and the cones are enough to test it.
+`asteroids::blocksSight` and the `playerInField` shortcut are replaced by
+`sight::clear(from, to)`, which implements the rule above. Enemies use it
+together with their cones (C5). Each frame, a shot walks the path it flew
+since the last frame. If that path crosses into paint, the shot stops there.
+A shot that starts inside and leaves the paint keeps going.
 
-**What it needs:**
+**Decided**
 
-- **A paint mask** (engine, `regionMask`): a grid built from the stamps once
-  per round. Paint and erase are applied in order, so each cell gives the
-  same answer as `AsteroidField::contains`. Each cell stores which field
-  covers it, if any. With the mask:
-  - `inField` becomes one lookup. Today it checks every stamp of every field:
-    `level3` has about 450 stamps, and an 80% level would have far more.
-  - A segment can be marched cell by cell (a DDA), which reports each point
-    where it goes into or out of paint.
-- **A rock index** (engine, a spatial hash): `asteroids::update` already
-  builds one for rocks bumping into each other. Moving it into `engine/` and
-  using it in `hitCircle` and `raycast` serves this item, and W1 needs it
-  anyway.
+- **The grid is the truth.** `asteroids::inField`, sight, shots and beams all
+  read the painted area's grid. `AsteroidField::contains` is used only to
+  build it, and the editor's drawing.
+- **The band is deferred** (S1c). The Wall selection waits until it exists.
+- **The rock spatial hash is split out** (S1b). It changes no behaviour, and
+  W1 is where it matters.
+- **Beams follow the shot rule.** The default is **Like a shot**: inside
+  paint, field rocks do not stop a beam. **Mining tool** stays selectable.
+  Enemy beams use the same selection as the player's.
+- **Weapons fired inside fly out.** The default for **Shots at edges** is
+  **Into fields only**. Bullets, missiles and both beams share it. **Both
+  ways** stays selectable. Vision stays **Both ways**.
+- **A field rock knocked outside the paint acts as a single rock.** It is
+  solid to sight, shots and beams until its spring brings it home. "Outside"
+  is decided by the cell under its centre.
 
-**Open questions**
+**What was built**
 
-- **Is the grid the truth?** Paint edges are circles, so a 50-unit grid puts
-  a stair step of up to about 35 units on them. **Recommended:** the grid is
-  the truth everywhere: hiding, sight, shots and the fog. `contains` is used
-  only to build it. That way they all agree on where the edge is.
-- What cell size should the grid use? It is rebuilt whenever the editor
-  paints, which is cheap.
+- **engine, `region::Mask`** (`engine/regionMask`):
+  - `build` paints the stamps into a grid, layer by layer. Each stamp visits
+    only the cells under its own square.
+  - `labelAt` looks up a point.
+  - `march` walks a segment through the grid (Amanatides–Woo), reporting
+    every cell it touches in order, with the distance at which the segment
+    entered it. A segment that starts outside the grid is clipped to it
+    first.
+- **game, `sight`**: the rule, and every S1 selection in a **Sight** section
+  of the debug panel, registered with the tuning system. `clear` and
+  `blockedAt` are for vision, `shot` for one frame of a shot's flight, and
+  `beam` for both beams. Two debug views: **Show mask** (the grid's painted
+  cells, coloured by field) and **Show sight lines** (green from each awake
+  enemy to the player, red past the point where the line is blocked).
+- **asteroids**:
+  - owns and builds the mask when a round starts;
+  - `hitCircle` and `raycast` take a `Which` (`All`, `Solid`, `InPaint`);
+  - the cell size is a **Mask cell** slider among the field sliders, which
+    rebuilds only the grid.
+- **Bullet** carries `sweptFrom`, which is set to the shooter's centre when
+  fired. A ship outside the paint can't fire in through a nose that pokes
+  across the edge. A ship inside fires out.
+- **outline** takes an optional colour, for the amber warning.
 
-**Where it lands:** engine (`regionMask`, `spatialHash`); game (`sight`).
+_(Choices made while building — to confirm:)_
+
+- **Mask cell lives under Asteroids, not Sight.** The grid is the fields'
+  area, and asteroids owns it (R11).
+- A shot that crosses an edge strikes the nearest field rock in paint within
+  its radius plus **Edge rock reach** (60 units, a Sight slider) of the
+  crossing. With no rock there, it ends, as a shot hitting a rock always has.
+  There is no burst effect yet.
+- **Amber** means: the player is in paint, and an engaged enemy has a clear
+  line to them this frame.
+- **"Rocks" vision is today's rule**, with one change: the paint test is the
+  grid, not the stamps.
+- **Solid rocks are still tested only where a shot is now**, as before S1.
+  Only the edge is swept.
+- **Missile locks wait for S2**, since "seen" only means something once the
+  player has sight of their own.
+
+**Verified:**
+
+- A temporary program, linked against `engine` and then deleted, ran on all
+  three levels at cells of 25, 50 and 200.
+- **The mask:** every cell agreed with `contains`, 125,000 cells in all.
+- **`march`:** 18,000 random segments, including axis-aligned ones and ones
+  starting outside the grid. Each matched an exact reference built from the
+  closed-form grid-line crossings.
+- **The game:** it ran with no validation errors.
+- **Playing it** is the author's part: the rule is untested in play.
+
+**Where it landed:** engine (`regionMask`); game (`sight`, plus the
+`asteroids`, `outline` and `Bullet` changes, and the call sites in
+`gameLayer.cpp`).
+
+### S1b. A rock index
+
+`asteroids::update` already builds a spatial hash for rocks bumping into each
+other. The plan is to move it into `engine/` and use it in `hitCircle` and
+`raycast`, which today loop over every rock. It changes no behaviour, so it is
+measured rather than played. W1 needs it.
+
+### S1c. _(Deferred)_ The wall as a band
+
+The **Wall** selection, with a band depth: field rocks within the band are
+solid even from inside, so the edge is a wall of rocks rather than a line.
+For this, the mask needs each cell's distance to the edge, from a two-pass
+distance transform.
 
 ### S2. What the player can see: a visibility polygon
 
@@ -297,7 +367,7 @@ a millisecond.
 - **Sight range:** fixed (for example 4000), the size of the view, or a stat
   of the ship?
 - Does the cloak change what the player can see?
-- **Is the terrain fogged?** *Proposed:* no. Rocks are always drawn, and grey
+- **Is the terrain fogged?** _Proposed:_ no. Rocks are always drawn, and grey
   outside the polygon. Grey means "not seen now", not "never seen". W6 covers
   "never seen".
 
@@ -349,7 +419,7 @@ S2's polar map. A hull is tested at its centre plus its radius, so an enemy
 at the edge of the polygon appears as soon as its nose comes into view. The
 part of it still in shadow comes out grey, which reads correctly.
 
-- **Explosions and debris:** *proposed* to show greyed, since that is how the
+- **Explosions and debris:** _proposed_ to show greyed, since that is how the
   player learns something died out there.
 - **Enemy shots coming out of the fog** are drawn once they are in sight. A
   shot appearing out of the grey is a sniper's whole threat.
@@ -381,7 +451,7 @@ which things hide). No library change.
   - after some time (open: never, or a 20-second fade).
 - **Aging:** the ghost fades slowly, or its outline turns dashed after a few
   seconds, so an old position reads as old.
-- *Optional:* a short line from the ghost along the velocity it had, showing
+- _Optional:_ a short line from the ghost along the velocity it had, showing
   which way it was heading.
 
 **Mechanism and policy.** The mechanism is a **contact memory**: for each id,
@@ -393,22 +463,22 @@ AI could use it too.
 
 **Where it lands:** engine (contact memory); game (drawing the ghosts).
 
-### S5. *(Suggestion)* What enemies think, shown
+### S5. _(Suggestion)_ What enemies think, shown
 
-*Splinter Cell: Conviction* draws a ghost of the player where the enemies
+_Splinter Cell: Conviction_ draws a ghost of the player where the enemies
 believe the player to be. Searching enemies here already fly to the player's
 last known position (C5). Drawing a faint outline of the player's own ship
 there mirrors S4: it shows where they will search, and it makes slipping away
 into a field something the player can read. It uses the same outline and the
 same memory.
 
-### S6. *(Suggestion)* Cones that stop at rocks
+### S6. _(Suggestion)_ Cones that stop at rocks
 
 C5 draws each cone as a wedge that passes through everything. If S2's polar
 map is computed from an enemy, only for the slices in its cone and only for
 enemies on screen, the cone takes the shape of what the enemy can actually
 see: cut by rocks and stopped at paint. That is the stealth-game readout of
-*Mark of the Ninja* or *Commandos*. It is drawn with the same fan.
+_Mark of the Ninja_ or _Commandos_. It is drawn with the same fan.
 
 ---
 
@@ -452,7 +522,7 @@ preparation for procedural generation.
      keeping only the rocks that land inside it. Test that a chunk made alone
      comes out the same as that chunk made together with its neighbours.
 4. **Cores:** each field has one core, at its middle, so one huge field would
-   have a single core. *Suggestion:* let the level place several cores in a
+   have a single core. _Suggestion:_ let the level place several cores in a
    field, or let density place them.
 
 **Open questions:** 80% of what: the arena circle? How big are the clearings?
@@ -549,7 +619,7 @@ sequence without ending the round.
 **Open questions:** is the jump instant, or a short transit? Is the exit
 protected? Can enemies follow? Does a gate charge, like the extraction gate?
 
-### W6. *(Suggestion)* A map of what has been seen
+### W6. _(Suggestion)_ A map of what has been seen
 
 A `FrameBuffer` the size of a minimap. Each frame, S2's fan is drawn into it
 at map scale. A target keeps what was drawn into it unless it is cleared, so
@@ -593,21 +663,21 @@ seen now, colour where it is seen. It costs one small fan per frame.
 
 Only one row asks for anything new in the library.
 
-| Want                                     | Existing mechanism                                                         | New library work                                |
-| ---------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------- |
-| Draw the visible area                    | A `renderTriangles` fan, as for rocks                                      | none                                            |
-| Grey everything outside it               | `worldGrade`'s target, a third grade, and the fan textured with the target | none                                            |
-| A soft fog edge                          | Vertex alpha on a ring of triangles                                        | none                                            |
-| A blurred, softer edge                   | A mask target, blurred by FinalGlow's compute blur                         | **an effect that reads a second texture**       |
-| Ghost outlines                           | `outline::begin` / `end`                                                   | none                                            |
-| Cones cut by rocks                       | A fan from the enemy                                                       | none                                            |
-| An explored map                          | A `FrameBuffer` that is never cleared                                      | none                                            |
-| Lane streaks                             | Additive blend, generated gradient textures                                | none                                            |
-| The speed look                           | Warp stretch, afterimages, `camera::Zoom`, FinalGlow                       | none                                            |
-| A jump gate                              | The gate's body, the swirl field in the cloak pass                         | none                                            |
-| The sensor ping's wave                   | Per-quad effect parameters, as in the shield ripple                        | none                                            |
-| A lamp in the fields                     | The asteroid effect's parameters                                           | none                                            |
-| Pixel-exact hiding of half-seen enemies  | Their own target, composited through the fan                               | none; layering work only                        |
+| Want                                    | Existing mechanism                                                         | New library work                          |
+| --------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------- |
+| Draw the visible area                   | A `renderTriangles` fan, as for rocks                                      | none                                      |
+| Grey everything outside it              | `worldGrade`'s target, a third grade, and the fan textured with the target | none                                      |
+| A soft fog edge                         | Vertex alpha on a ring of triangles                                        | none                                      |
+| A blurred, softer edge                  | A mask target, blurred by FinalGlow's compute blur                         | **an effect that reads a second texture** |
+| Ghost outlines                          | `outline::begin` / `end`                                                   | none                                      |
+| Cones cut by rocks                      | A fan from the enemy                                                       | none                                      |
+| An explored map                         | A `FrameBuffer` that is never cleared                                      | none                                      |
+| Lane streaks                            | Additive blend, generated gradient textures                                | none                                      |
+| The speed look                          | Warp stretch, afterimages, `camera::Zoom`, FinalGlow                       | none                                      |
+| A jump gate                             | The gate's body, the swirl field in the cloak pass                         | none                                      |
+| The sensor ping's wave                  | Per-quad effect parameters, as in the shield ripple                        | none                                      |
+| A lamp in the fields                    | The asteroid effect's parameters                                           | none                                      |
+| Pixel-exact hiding of half-seen enemies | Their own target, composited through the fan                               | none; layering work only                  |
 
 **An effect that reads two textures** (the world and a mask) is a general
 capability: any game's lighting, fog or masking would want it. It is only

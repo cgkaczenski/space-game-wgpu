@@ -38,6 +38,67 @@ namespace
 		return {v.x * c - v.y * s, v.x * s + v.y * c};
 	}
 
+	float cross(glm::vec2 a, glm::vec2 b) { return a.x * b.y - a.y * b.x; }
+
+	// `point` lies in the enemy's sight cone: within range, and within the
+	// half-angle of its nose. The apex itself does not count.
+	bool inCone(const Enemy &enemy, glm::vec2 point)
+	{
+		const glm::vec2 to = point - enemy.body.position;
+		const float dist2 = glm::dot(to, to);
+		const float range = enemy.sightRange;
+		if (dist2 <= 1e-8f || dist2 > range * range) { return false; }
+		return glm::dot(to, enemy.body.facing) >= std::cos(enemy.sightHalfAngle) * std::sqrt(dist2);
+	}
+
+	// The two segments cross, endpoints included. Parallel ones do not.
+	bool segmentsCross(glm::vec2 a, glm::vec2 b, glm::vec2 c, glm::vec2 d)
+	{
+		const glm::vec2 ab = b - a;
+		const glm::vec2 cd = d - c;
+		const float denominator = cross(ab, cd);
+		if (std::abs(denominator) < 1e-8f) { return false; }
+		const glm::vec2 ac = c - a;
+		const float t = cross(ac, cd) / denominator;
+		const float s = cross(ac, ab) / denominator;
+		return t >= 0.f && t <= 1.f && s >= 0.f && s <= 1.f;
+	}
+
+	// The cone is a closed sector, and a sector is convex, so a segment meets
+	// it exactly when an end is inside or the segment meets the boundary: one
+	// of the two straight edges, or the arc.
+	bool shotCrossesCone(const Enemy &enemy, glm::vec2 from, glm::vec2 to)
+	{
+		if (inCone(enemy, from) || inCone(enemy, to)) { return true; }
+
+		const glm::vec2 apex = enemy.body.position;
+		const glm::vec2 left = apex + rotated(enemy.body.facing, enemy.sightHalfAngle) * enemy.sightRange;
+		const glm::vec2 right = apex + rotated(enemy.body.facing, -enemy.sightHalfAngle) * enemy.sightRange;
+		if (segmentsCross(from, to, apex, left) || segmentsCross(from, to, apex, right)) { return true; }
+
+		const glm::vec2 d = to - from;
+		const glm::vec2 f = from - apex;
+		const float a = glm::dot(d, d);
+		if (a < 1e-8f) { return false; }
+		const float b = 2.f * glm::dot(f, d);
+		const float c = glm::dot(f, f) - enemy.sightRange * enemy.sightRange;
+		const float discriminant = b * b - 4.f * a * c;
+		if (discriminant < 0.f) { return false; }
+
+		const float root = std::sqrt(discriminant);
+		const float cosine = std::cos(enemy.sightHalfAngle);
+		for (const float sign : {-1.f, 1.f})
+		{
+			const float t = (-b + sign * root) / (2.f * a);
+			if (t < 0.f || t > 1.f) { continue; }
+			const glm::vec2 at = from + d * t;
+			const glm::vec2 toHit = at - apex;
+			const float dist = std::sqrt(glm::dot(toHit, toHit));
+			if (dist > 1e-4f && glm::dot(toHit, enemy.body.facing) >= cosine * dist) { return true; }
+		}
+		return false;
+	}
+
 	// How each class flies (gameplay roadmap P1). Every enemy is on Momentum,
 	// as the player is -- thrust, a little drag, a top speed -- and each class
 	// has its own feel. Rolled at spawn, so a change applies to new spawns
@@ -390,6 +451,13 @@ void alert(Enemy &enemy, glm::vec2 playerPos)
 	const glm::vec2 toPlayer = playerPos - enemy.body.position;
 	const float distance = glm::length(toPlayer);
 	if (distance > 0.001f) { enemy.body.facing = toPlayer / distance; }
+}
+
+void noticeShot(Enemy &enemy, glm::vec2 from, glm::vec2 to, glm::vec2 playerPos)
+{
+	if (enemy.awareness == Enemy::Awareness::Engaged) { return; }
+	if (!shotCrossesCone(enemy, from, to)) { return; }
+	alert(enemy, playerPos);
 }
 
 bool showCones() { return conesVisible; }

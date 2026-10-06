@@ -4,6 +4,7 @@
 #include <engine/polygon.h>
 #include <engine/rigidBody.h>
 #include <engine/scatter.h>
+#include <engine/regionMask.h>
 #include <effects.h>
 #include <resources.h>
 #include "imgui.h"
@@ -170,7 +171,26 @@ namespace
 		return {std::cos(a), std::sin(a)};
 	}
 	std::vector<level::Asteroid> placedCopy; // to regrow when a shape slider moves
-	std::vector<level::AsteroidField> fieldsCopy; // also the areas inField tests
+	std::vector<level::AsteroidField> fieldsCopy;
+
+	// The fields' painted area as a grid (sight roadmap S1): what inField
+	// answers from, and what sight walks along a line. Built from the stamps
+	// once a round. Its stair-step edge is the truth for hiding, sight and
+	// shots alike, so they all agree on where a field ends.
+	region::Mask mask;
+	float maskCell = 50.f;          // world units per cell
+
+	void buildMask()
+	{
+		std::vector<std::vector<region::Stamp>> layers;
+		layers.reserve(fieldsCopy.size());
+		for (const level::AsteroidField &f : fieldsCopy)
+		{
+			std::vector<region::Stamp> &layer = layers.emplace_back();
+			for (const level::FieldStamp &s : f.stamps) { layer.push_back({s.position, s.radius, s.erase}); }
+		}
+		mask = region::build(layers, maskCell);
+	}
 
 	// Fields (A1b). A field's own numbers are its max rock size and the room
 	// between rocks; these shape every field's spread.
@@ -905,6 +925,7 @@ void reset(const std::vector<level::Asteroid> &placed, const std::vector<level::
 {
 	placedCopy = placed;
 	fieldsCopy = fields;
+	buildMask();
 	rocks.clear();
 	for (const level::Asteroid &a : placed) { rocks.push_back(grow(a)); }
 	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, rocks); }
@@ -947,26 +968,39 @@ float hiddenShade() { return shadeInField; }
 
 bool inField(glm::vec2 point)
 {
-	for (const level::AsteroidField &f : fieldsCopy)
-	{
-		if (f.contains(point)) { return true; }
-	}
-	return false;
+	return region::labelAt(mask, point) >= 0;
 }
 
-int hitCircle(glm::vec2 centre, float radius)
+const region::Mask &paintMask() { return mask; }
+
+namespace
+{
+	// Whether `r` takes part in a query asking for `which` (sight roadmap
+	// S1). A field rock knocked out of the paint is solid until its spring
+	// brings it home: out there it is a rock on its own, not part of a field.
+	bool counts(const Rock &r, Which which)
+	{
+		if (which == Which::All) { return true; }
+		const bool fieldRock = r.field >= 0 && !r.core
+			&& region::labelAt(mask, r.placement.position) >= 0;
+		return which == Which::InPaint ? fieldRock : !fieldRock;
+	}
+}
+
+int hitCircle(glm::vec2 centre, float radius, Which which)
 {
 	for (int i = 0; i < (int)rocks.size(); i++)
 	{
 		const Rock &r = rocks[i];
 		// Broad phase: two circles that do not touch rule out the triangles.
 		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
+		if (!counts(r, which)) { continue; }
 		if (polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { return i; }
 	}
 	return -1;
 }
 
-float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock)
+float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock, Which which)
 {
 	float nearest = -1.f;
 	if (rock) { *rock = -1; }
@@ -978,6 +1012,7 @@ float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *roc
 		const float along = glm::dot(toCentre, direction);
 		const float miss = glm::length(toCentre - direction * along);
 		if (miss > r.bound || along < -r.bound || along > maxDistance + r.bound) { continue; }
+		if (!counts(r, which)) { continue; }
 
 		const float reach = nearest >= 0.f ? nearest : maxDistance;
 		const float t = polygon::raycast(r.outline, polygon::toLocal(r.placement, origin),
@@ -1474,6 +1509,7 @@ const tuning::Group tunables("asteroids", {
 	{"fieldFill", fieldFill},
 	{"areaDotSpacingPixels", areaDotSpacingPixels},
 	{"shadeInField", shadeInField},
+	{"maskCell", maskCell},
 	{"textureWorldSize", textureWorldSize},
 	{"brightness", brightness},
 	{"showOutlines", showOutlines},
@@ -1593,6 +1629,10 @@ void debugUi()
 	regrow |= tune::SliderFloat("Gap variation", &fieldGapVariation, 0.f, 1.f, "%.2f");
 	regrow |= tune::SliderFloat("Lean small", &fieldSmallBias, 0.5f, 6.f, "%.1f within a layer");
 	regrow |= tune::SliderFloat("Fill", &fieldFill, 0.1f, 1.f, "%.2f of cells");
+	// The painted area as a grid (S1): hiding, sight and shots read it. Only
+	// the grid is rebuilt; the rocks stay where they are.
+	if (tune::SliderFloat("Mask cell", &maskCell, 25.f, 200.f, "%.0f units")) { buildMask(); }
+	ImGui::TextDisabled("  %d x %d cells", mask.width, mask.height);
 	if (regrow) { reset(placedCopy, fieldsCopy); }
 	tune::SliderFloat("Area dots", &areaDotSpacingPixels, 4.f, 60.f, "%.0f px apart (editor)");
 	tune::SliderFloat("Hidden shade", &shadeInField, 0.f, 1.f, "%.2f of the light");

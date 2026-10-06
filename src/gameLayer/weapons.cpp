@@ -112,6 +112,10 @@ namespace
 	{
 		Bullet b;
 		b.position = context.origin;
+		// Its flight is traced from the ship's centre, not the muzzle, so a
+		// ship outside a field cannot fire in by poking its nose across the
+		// edge (S1). One inside fires out.
+		b.sweptFrom = context.origin;
 		b.fireDirection = context.aim;
 		b.speed = w.speed;
 		b.damage = w.damage;

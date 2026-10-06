@@ -36,6 +36,7 @@
 #include <gate.h>
 #include <asteroids.h>
 #include <outline.h>
+#include <sight.h>
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
@@ -303,6 +304,12 @@ struct EnemyBeam
 	glm::vec2 surface = {}; // outward, where a deflected beam meets what stops it
 };
 std::vector<EnemyBeam> enemyBeams;
+
+// This frame's sight (sight roadmap S1): where each awake enemy looks from,
+// for the debug lines, and whether one engaged enemy can see the player in a
+// field, which turns the hidden outline amber.
+std::vector<glm::vec2> sightViewers;
+bool playerSeenInField = false;
 // How far an enemy's beam reaches: the player's runs to the edge of the
 // player's view, which means nothing for an enemy -- this is about a sniper's
 // sight.
@@ -717,6 +724,7 @@ void debugPanelUi()
 	debugPanel::section("Level", levelDebugUi);
 	debugPanel::section("Gate", gate::debugUi);
 	debugPanel::section("Asteroids", asteroids::debugUi);
+	debugPanel::section("Sight", sight::debugUi);
 	debugPanel::section("Hidden outline", outline::debugUi);
 	debugPanel::section("Resources", resources::debugUi);
 	debugPanel::section("World grade", worldGrade::debugUi);
@@ -1200,9 +1208,11 @@ bool gameLogic(float deltaTime)
 
 		// A rock stops it (gameplay roadmap A1): nothing behind a rock is
 		// burned, and from on top of one it goes nowhere. Burning a rock is
-		// how ore is mined (A4) -- asteroids replaced the deposits.
+		// how ore is mined (A4) -- asteroids replaced the deposits. A field's
+		// edge stops it on the way in. One fired inside flies out. Which rocks
+		// count is the Beam selection (sight roadmap S1).
 		int rockHit = -1;
-		const float rock = asteroids::raycast(beam.origin, beam.direction, reach, &rockHit);
+		const float rock = sight::beam(beam.origin, beam.direction, reach, &rockHit);
 		if (rock >= 0.f)
 		{
 			reach = rock;
@@ -1236,6 +1246,9 @@ bool gameLogic(float deltaTime)
 			{
 				beamImpact = bulletLook::BeamImpact::Deflect;
 				beamSurface = beamEnd - struck.body.position;
+				// The shield held it, but the enemy felt the beam: engaged,
+				// turned toward the player, as a hit on the hull already does.
+				enemyAi::alert(struck, session.ship.position);
 			}
 		}
 		if (onEnemy == energy::HitResult::Damaged && !hitboxDebug::isDamageFrozen())
@@ -1274,15 +1287,34 @@ bool gameLogic(float deltaTime)
 		}
 
 		// A rock stops any shot, anyone's, missiles too (gameplay roadmap A1),
-		// and is pushed by it where it landed (A2).
+		// and is pushed by it where it landed (A2). A field's edge stops a
+		// shot that crosses into the paint, not one fired inside and leaving,
+		// and inside a field its own rocks let shots by (sight roadmap S1).
+		// A shot that stops on an edge with no rock there just ends.
 		{
-			const collision::Circle hitbox = session.bullets[i].getHitbox();
-			const int rock = asteroids::hitCircle(hitbox.center, hitbox.radius);
-			if (rock >= 0)
+			Bullet &b = session.bullets[i];
+			const collision::Circle hitbox = b.getHitbox();
+			const glm::vec2 flewFrom = b.sweptFrom;
+			const sight::Stop stop = sight::shot(flewFrom, hitbox.center, hitbox.radius);
+			b.sweptFrom = hitbox.center;
+			// A shot of the player's that crosses an enemy's cone wakes it,
+			// even when the shot goes on to miss or to stop on a rock. The
+			// part past a rock was never flown.
+			if (!b.fromEnemy())
 			{
-				const Bullet &b = session.bullets[i];
-				asteroids::shot(rock, hitbox.center, b.fireDirection, b.damage,
-					b.motion == BulletMotion::Missile);
+				const glm::vec2 flewTo = stop.stopped ? stop.point : hitbox.center;
+				for (Enemy &enemy : session.enemies)
+				{
+					enemyAi::noticeShot(enemy, flewFrom, flewTo, session.ship.position);
+				}
+			}
+			if (stop.stopped)
+			{
+				if (stop.rock >= 0)
+				{
+					asteroids::shot(stop.rock, stop.point, b.fireDirection, b.damage,
+						b.motion == BulletMotion::Missile);
+				}
 				session.bullets.erase(session.bullets.begin() + i);
 				i--;
 				continue;
@@ -1463,8 +1495,8 @@ bool gameLogic(float deltaTime)
 	wakeRect.w *= 1.f + 2.f * wakeMargin;
 	awakeEnemies = 0;
 	enemyBeams.clear();
-
-	// In a field's painted area, no enemy sees the player (A1b).
+	sightViewers.clear();
+	playerSeenInField = false;
 	const bool playerInField = asteroids::inField(session.ship.position);
 
 	for (int i = 0; i < session.enemies.size(); i++)
@@ -1548,13 +1580,14 @@ bool gameLogic(float deltaTime)
 		glm::vec2 wayIn;
 		const bool comingBack = arena::wayBackIn(session.enemies[i].body.position, wayIn);
 		// A rock between them hides the player as well as the cloak does
-		// (gameplay roadmap A1): what makes a rock somewhere to hide. Inside a
-		// field's painted area the player is hidden outright, gaps and all,
-		// like tall grass (A1b). Shooting out does not end it; a hit enemy is
-		// alerted as ever, turns, finds nothing, and comes to search.
+		// (gameplay roadmap A1): what makes a rock somewhere to hide. And a
+		// field's edge, from either side: a field is a room, so an enemy in
+		// the same field sees the player and one outside does not (sight
+		// roadmap S1). A hit enemy that can't see is alerted as ever, turns,
+		// finds nothing, and comes to search.
+		sightViewers.push_back(session.enemies[i].body.position);
 		const bool hidden = energy::isCloaked(session.energy) || !gameState::playerPresent()
-			|| playerInField
-			|| asteroids::blocksSight(session.enemies[i].body.position, session.ship.position);
+			|| !sight::clear(session.enemies[i].body.position, session.ship.position);
 		Enemy &e = session.enemies[i];
 		enemyAi::Player seen;
 		seen.position = session.ship.position;
@@ -1565,6 +1598,7 @@ bool gameLogic(float deltaTime)
 			|| session.energy.state == energy::State::Breaking);
 		e.effectImmune = std::max(0.f, e.effectImmune - time.game);
 		const enemyAi::Orders orders = enemyAi::update(e, time.game, seen, comingBack ? &wayIn : nullptr);
+		if (playerInField && !hidden && e.awareness == Enemy::Awareness::Engaged) { playerSeenInField = true; }
 		if (orders.phaseChanged)
 		{
 			// A boss entering its next phase (B2): felt, and seen in its shield.
@@ -1594,7 +1628,8 @@ bool gameLogic(float deltaTime)
 			}
 
 			// Its beam, if it rolled the laser: traced from the nose, stopped by
-			// a rock or by the player, never past enemyBeamRange. It does not
+			// a rock, a field's edge on the way in (as the player's beam is,
+			// S1) or by the player, never past enemyBeamRange. It does not
 			// push or mine the rock it stops on -- that is the player's beam's
 			// job. On the player, energy decides (onBeam): a shield holds it
 			// and is not broken, and it splashes off; with the shield down it
@@ -1608,7 +1643,7 @@ bool gameLogic(float deltaTime)
 				drawn.start = eb.origin;
 				float reach = enemyBeamRange;
 				int rock = -1;
-				const float toRock = asteroids::raycast(eb.origin, eb.direction, reach, &rock);
+				const float toRock = sight::beam(eb.origin, eb.direction, reach, &rock);
 				if (toRock >= 0.f)
 				{
 					reach = toRock;
@@ -1902,7 +1937,11 @@ bool gameLogic(float deltaTime)
 	asteroids::drawFields(renderer);
 	if (gameState::playerPresent() && asteroids::inField(session.ship.position))
 	{
-		outline::begin(renderer, 0.5f + 0.5f * std::sin(effectClock * 3.f));
+		// Amber while an enemy in the field can see you, if the Sight
+		// section says so (sight roadmap S1): hidden from outside, not from it.
+		const float pulse = 0.5f + 0.5f * std::sin(effectClock * 3.f);
+		if (playerSeenInField && sight::warnsWhenSeen()) { outline::begin(renderer, pulse, sight::seenColour()); }
+		else { outline::begin(renderer, pulse); }
 		renderSpaceShip(renderer, session.ship.position, shipSize,
 			shipSheet, shipAtlas.get(3, 0), session.ship.facing,
 			{1.f, 1.f, 1.f, cloak::shipAlpha()}, gameState::warpStretch());
@@ -1957,6 +1996,7 @@ bool gameLogic(float deltaTime)
 
 	hitboxDebug::draw(renderer, collisionSystem,
 		game::shipHitbox(session.ship.position, shipSize), session.enemies, session.bullets);
+	sight::drawDebug(renderer, sightViewers, session.ship.position);
 
 #pragma endregion
 

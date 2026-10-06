@@ -82,6 +82,11 @@ struct Bullet
 	ShipId shooter = playerShip;
 	bool fromEnemy() const { return shooter != playerShip; }
 
+	// Where its flight was last checked against rocks and field edges (sight
+	// roadmap S1): each frame the path from here to its hitbox is walked, so
+	// it cannot jump an edge between frames. Starts at its shooter's centre.
+	glm::vec2 sweptFrom = {};
+
 	// Its weapon's modifiers (B2): what a hit that reaches the hull does
 	// besides the damage.
 	bool stun = false;

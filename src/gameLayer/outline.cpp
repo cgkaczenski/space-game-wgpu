@@ -58,8 +58,13 @@ void cleanup() {}
 
 void begin(wgpu2d::Renderer2D &renderer, float pulse)
 {
+	begin(renderer, pulse, colour);
+}
+
+void begin(wgpu2d::Renderer2D &renderer, float pulse, glm::vec3 lineColour)
+{
 	wgpu2d::EffectParams params;
-	params.a = {colour * (1.f + pulseGain * pulse), fill};
+	params.a = {lineColour * (1.f + pulseGain * pulse), fill};
 	params.b = {widthTexels, minWidthPixels, 0.f, 0.f};
 	params.c = {fillColour, 0.f};
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);

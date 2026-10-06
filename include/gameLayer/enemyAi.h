@@ -67,9 +67,16 @@ namespace enemyAi
 	};
 	Orders update(Enemy &enemy, float gameDeltaTime, const Player &player, const glm::vec2 *comeBackTo = nullptr);
 
-	// Something of the player's hit it: it engages at once, turned toward
-	// where the player is, whatever it could see.
+	// Something of the player's reached it -- a hit, or a beam on the shield:
+	// it engages at once, turned toward where the player is, whatever it
+	// could see.
 	void alert(Enemy &enemy, glm::vec2 playerPos);
+
+	// The player's shot flew from `from` to `to` this frame. If that crosses
+	// this enemy's sight cone and it is not already fighting, it engages and
+	// turns toward the player, as a hit does. One that is already fighting is
+	// left to its steering: a shot in view must not snap its nose every frame.
+	void noticeShot(Enemy &enemy, glm::vec2 from, glm::vec2 to, glm::vec2 playerPos);
 
 	// The debug toggle for drawing sight cones. On by default.
 	bool showCones();
