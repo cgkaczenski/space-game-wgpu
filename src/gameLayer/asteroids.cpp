@@ -1035,6 +1035,7 @@ namespace
 	bool counts(const Rock &r, Which which)
 	{
 		if (which == Which::All) { return true; }
+		if (which == Which::Cores) { return r.core; }
 		const bool fieldRock = r.field >= 0 && !r.core
 			&& region::labelAt(mask, r.placement.position) >= 0;
 		return which == Which::InPaint ? fieldRock : !fieldRock;
@@ -1065,13 +1066,14 @@ int hitCircle(glm::vec2 centre, float radius, Which which)
 // begins past the nearest hit so far: anything nearer would contain that
 // nearer point, and be listed in a bucket entered before it. On an exact tie
 // the later rock wins, as it did in the loop over every rock.
-float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock, Which which)
+float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock, Which which, int ignore)
 {
 	float nearest = -1.f;
 	int nearestRock = -1;
 	spatial::raycast(rockIndex(), origin, direction, maxDistance, [&](int i, float cellEntry)
 	{
 		if (nearest >= 0.f && cellEntry > nearest) { return false; }
+		if (i == ignore) { return true; }
 		const Rock &r = rocks[i];
 		// Broad phase: how close the ray's line passes the rock's centre.
 		const glm::vec2 toCentre = r.placement.position - origin;
@@ -1092,6 +1094,22 @@ float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *roc
 	});
 	if (rock) { *rock = nearestRock; }
 	return nearest;
+}
+
+void outlinesNear(glm::vec2 centre, float radius, Which which,
+	const std::function<void(int rock, const std::vector<glm::vec2> &outline, glm::vec2 boundCentre, float bound)> &visit)
+{
+	static std::vector<glm::vec2> world;
+	spatial::query(rockIndex(), centre - glm::vec2(radius), centre + glm::vec2(radius), [&](int i)
+	{
+		const Rock &r = rocks[i];
+		if (glm::distance(centre, r.placement.position) > r.bound + radius) { return true; }
+		if (!counts(r, which)) { return true; }
+		world.resize(r.outline.size());
+		for (size_t k = 0; k < r.outline.size(); k++) { world[k] = polygon::toWorld(r.placement, r.outline[k]); }
+		visit(i, world, r.placement.position, r.bound);
+		return true;
+	});
 }
 
 bool blocksSight(glm::vec2 from, glm::vec2 to)

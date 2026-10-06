@@ -37,6 +37,10 @@ namespace effects
 	// rock's own business -- real rocks that fly apart -- so there is no debris.
 	void rockBurst(glm::vec2 position, float size);
 
+	// A fireball and nothing else: no debris, no shake. A missile bursting on
+	// a core (sight roadmap S2).
+	void fireball(glm::vec2 position, float size);
+
 	// Game time.
 	void update(float gameDeltaTime);
 

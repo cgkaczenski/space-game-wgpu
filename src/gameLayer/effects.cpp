@@ -309,6 +309,11 @@ void rockBurst(glm::vec2 position, float size)
 	blasts.push_back(b);
 }
 
+void fireball(glm::vec2 position, float size)
+{
+	blasts.push_back({position, size, 0.f});
+}
+
 void shipDestroyed(wgpu2d::Texture texture, glm::vec4 cell, glm::vec2 position,
 	glm::vec2 facing, glm::vec2 velocity, float size)
 {

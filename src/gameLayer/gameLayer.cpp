@@ -1152,6 +1152,10 @@ bool gameLogic(float deltaTime)
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
 	const bool trigger = controls && !stunnedNow && platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
+	// What the player can see from where the ship now is (sight roadmap S2):
+	// rebuilt once a frame, before anything asks -- a missile's lock first.
+	sight::updatePlayer(session.ship.position, energy::isCloaked(session.energy));
+
 	// The mouse in the world, for a missile's target. The view rect is the
 	// world area on screen, so the pointer's fraction of the window is its
 	// fraction of that.
@@ -1165,7 +1169,13 @@ bool gameLogic(float deltaTime)
 	fire.shipVelocity = session.ship.velocity;
 	fire.shipSize = shipSize;
 	fire.shooter = playerShip;
-	fire.missileTarget = weapons::nearestEnemy(mouseWorld, session.enemies); // a missile locks onto the enemy nearest the mouse
+	// A missile locks onto the enemy nearest the mouse -- one the player can
+	// see, if the Sight section says so (S2). Once locked it chases it,
+	// seen or not.
+	fire.missileTarget = weapons::nearestEnemy(mouseWorld, session.enemies, [](const Enemy &e)
+	{
+		return !sight::locksNeedSight() || sight::playerSees(e.body.position);
+	});
 	// Paused, not at all: a weapon that is ready fires whatever the clock
 	// says, and the beam should stay on screen as it was, not switch off.
 	const int shots = gameState::paused() ? 0
@@ -1295,7 +1305,8 @@ bool gameLogic(float deltaTime)
 			Bullet &b = session.bullets[i];
 			const collision::Circle hitbox = b.getHitbox();
 			const glm::vec2 flewFrom = b.sweptFrom;
-			const sight::Stop stop = sight::shot(flewFrom, hitbox.center, hitbox.radius);
+			const bool missile = b.motion == BulletMotion::Missile;
+			const sight::Stop stop = sight::shot(flewFrom, hitbox.center, hitbox.radius, missile);
 			b.sweptFrom = hitbox.center;
 			// A shot of the player's that crosses an enemy's cone wakes it,
 			// even when the shot goes on to miss or to stop on a rock. The
@@ -1312,9 +1323,10 @@ bool gameLogic(float deltaTime)
 			{
 				if (stop.rock >= 0)
 				{
-					asteroids::shot(stop.rock, stop.point, b.fireDirection, b.damage,
-						b.motion == BulletMotion::Missile);
+					asteroids::shot(stop.rock, stop.point, b.fireDirection, b.damage, missile);
 				}
+				// A missile bursts on a core (S2): the one rock it does not pass.
+				if (missile && asteroids::isCore(stop.rock)) { effects::fireball(stop.point, shipSize * 0.6f * b.size); }
 				session.bullets.erase(session.bullets.begin() + i);
 				i--;
 				continue;
@@ -1617,7 +1629,10 @@ bool gameLogic(float deltaTime)
 			gun.shipVelocity = e.body.velocity; // its shots carry its motion, as the player's do (B2)
 			gun.shipSize = e.size;
 			gun.shooter = e.id;
-			gun.missileTarget = playerShip; // its missiles, if it rolled them, chase the player
+			// Its missiles, if it rolled them, chase the player: locked only
+			// while it can see the player, if the Sight section says so (S2),
+			// and chasing once locked, seen or not.
+			gun.missileTarget = (!sight::locksNeedSight() || !hidden) ? playerShip : noShip;
 			const int fired = weapons::update(e.loadout, time.game, orders.trigger, gun, session.bullets);
 			if (fired > 0) { sfx::enemyShot(); }
 			// Firing uncloaks it, as it does the player -- and the shot still

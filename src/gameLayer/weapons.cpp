@@ -391,13 +391,15 @@ int update(Loadout &l, float gameDeltaTime, bool triggerHeld, const FireContext 
 	return fired;
 }
 
-ShipId nearestEnemy(glm::vec2 point, const std::vector<Enemy> &enemies)
+ShipId nearestEnemy(glm::vec2 point, const std::vector<Enemy> &enemies,
+	const std::function<bool(const Enemy &)> &eligible)
 {
 	ShipId best = noShip;
 	float bestDistance = 0.f;
 	for (const Enemy &e : enemies)
 	{
 		if (energy::isCloaked(e.energy)) { continue; } // nothing to lock onto
+		if (eligible && !eligible(e)) { continue; }
 		const float d = glm::distance(point, e.body.position);
 		if (best == noShip || d < bestDistance) { best = e.id; bestDistance = d; }
 	}

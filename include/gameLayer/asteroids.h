@@ -28,6 +28,7 @@
 #include <render/wgpu2d.h>
 #include <engine/regionMask.h>
 #include <level.h>
+#include <functional>
 #include <vector>
 
 namespace asteroids
@@ -66,6 +67,7 @@ namespace asteroids
 		All,
 		Solid,    // single rocks, cores, and field rocks outside the paint
 		InPaint,  // field rocks inside the paint, cores excepted
+		Cores,    // the fields' cores alone: what stops a missile (S2)
 	};
 
 	// Which rock a circle touches, or -1 if none.
@@ -73,8 +75,16 @@ namespace asteroids
 
 	// How far along a ray (unit `direction`) the first rock is, or -1 if none
 	// within `maxDistance`. `rock`, when given, is set to which one, or -1.
+	// `ignore`, when given, is a rock the ray passes through: the one a ship
+	// is over, looking out (S2).
 	float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock = nullptr,
-		Which which = Which::All);
+		Which which = Which::All, int ignore = -1);
+
+	// Each rock of `which` whose outline may reach within `radius` of
+	// `centre`, with its outline in world units, corner by corner round it,
+	// and its bounding circle: what sight writes into a polar map (S2).
+	void outlinesNear(glm::vec2 centre, float radius, Which which,
+		const std::function<void(int rock, const std::vector<glm::vec2> &outline, glm::vec2 boundCentre, float bound)> &visit);
 
 	// A rock lies anywhere on the line from `from` to `to`, ends included.
 	bool blocksSight(glm::vec2 from, glm::vec2 to);

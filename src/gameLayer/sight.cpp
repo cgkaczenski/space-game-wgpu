@@ -3,9 +3,11 @@
 
 #include <asteroids.h>
 #include <engine/regionMask.h>
+#include <engine/visibility.h>
 #include "imgui.h"
 #include <glm/glm.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <initializer_list>
 #include <utility>
@@ -66,6 +68,34 @@ namespace
 	bool showMask = false;
 	bool showLines = false;
 
+	// ---- What the player sees (S2) ----
+
+	// A rock's shape in the polar map: its outline, or the circle round it
+	// (cheaper and cruder, to measure the difference).
+	enum class Silhouette { Exact, Circle };
+	enum class CloakedSight { Unchanged, Shorter };
+	// A ship over a single rock: the rock under it does not block its own
+	// view, or it sees nothing at all.
+	enum class OnRock { SeeOut, Blind };
+	// What a missile may lock onto: anything, or only what its shooter sees.
+	enum class Locks { AnyTarget, SeenOnly };
+	// What stops a missile: only a field's core, or the shot rule.
+	enum class Missiles { CoresOnly, LikeShot };
+
+	float sightRange = 4000.f;
+	int slices = 720;
+	Silhouette silhouette = Silhouette::Exact;
+	CloakedSight cloakedSight = CloakedSight::Unchanged;
+	float cloakedRange = 0.6f;      // of the range, while cloaked and Shorter
+	OnRock onRock = OnRock::SeeOut;
+	Locks locks = Locks::SeenOnly;
+	Missiles missiles = Missiles::CoresOnly;
+	bool showPolarMap = false;
+
+	visibility::PolarMap playerView;
+	float buildMillis = 0.f;        // the last rebuild, for the panel
+	int segmentCount = 0;
+
 	float nearer(float a, float b)
 	{
 		if (a < 0.f) { return b; }
@@ -114,24 +144,33 @@ float blockedAt(glm::vec2 from, glm::vec2 to)
 {
 	const glm::vec2 line = to - from;
 	const float length = glm::length(line);
-	if (vision == Edges::Rocks)
-	{
-		// The rule before S1: every rock blocks, and anyone in a field's
-		// paint is hidden outright, gaps and all (A1, A1b).
-		if (asteroids::inField(to)) { return length; }
-		if (length <= 0.f) { return asteroids::hitCircle(from, 0.f) >= 0 ? 0.f : -1.f; }
-		return asteroids::raycast(from, line / length, length);
-	}
+	// The rule before S1: every rock blocks, and anyone in a field's paint is
+	// hidden outright, gaps and all (A1, A1b).
+	if (vision == Edges::Rocks && asteroids::inField(to)) { return length; }
+	const asteroids::Which which = vision == Edges::Rocks ? asteroids::Which::All : asteroids::Which::Solid;
+
+	// The rock `from` is over, if any: looked out of, or blinding (S2).
+	const int under = asteroids::hitCircle(from, 0.f, which);
+	if (under >= 0 && onRock == OnRock::Blind) { return 0.f; }
 	if (length <= 0.f) { return -1.f; }
-	const float rock = asteroids::raycast(from, line / length, length, nullptr, asteroids::Which::Solid);
+	const float rock = asteroids::raycast(from, line / length, length, nullptr, which, under);
+	if (vision == Edges::Rocks) { return rock; }
 	return nearer(rock, edgeAlong(from, to, vision));
 }
 
 bool clear(glm::vec2 from, glm::vec2 to) { return blockedAt(from, to) < 0.f; }
 
-Stop shot(glm::vec2 from, glm::vec2 to, float radius)
+Stop shot(glm::vec2 from, glm::vec2 to, float radius, bool missile)
 {
 	Stop stop;
+	if (missile && missiles == Missiles::CoresOnly)
+	{
+		// Through every rock and edge to what it chases; a core is the one
+		// thing in its way (S2).
+		const int core = asteroids::hitCircle(to, radius, asteroids::Which::Cores);
+		if (core >= 0) { stop = {true, to, core}; }
+		return stop;
+	}
 	if (shots == Edges::Rocks)
 	{
 		// The rule before S1: any rock it touches now.
@@ -169,6 +208,128 @@ float beam(glm::vec2 origin, glm::vec2 direction, float reach, int *rock)
 	}
 	return t;
 }
+
+namespace
+{
+	// The sides of the grid's cells, within `range` of `viewer`, where the
+	// vision rule says an edge stands, as segments into the polar map. A line
+	// from the viewer crosses a side from the cell on the viewer's side of it,
+	// so whether it blocks -- any change of side, or only one into a field --
+	// is decided by which of the two cells that is. This is the same test
+	// edgeAlong makes walking a line, made once for every side at once.
+	void addEdges(visibility::PolarMap &map, glm::vec2 viewer, float range)
+	{
+		const region::Mask &mask = asteroids::paintMask();
+		if (mask.width <= 0) { return; }
+		auto side = [&](int x, int y)
+		{
+			const int label = region::labelOf(mask, x, y);
+			return fields == Fields::Continuous ? (label >= 0 ? 0 : -1) : label;
+		};
+		auto blocks = [&](int near, int far) { return near != far && (vision == Edges::BothWays || far >= 0); };
+		// Each side reaches a hair past its corners, so where two meet there
+		// is no crack: a line exactly through a corner hits one of them
+		// rather than slipping between, as floating point otherwise lets it.
+		const float seal = mask.cell * 1e-5f;
+
+		// One cell past the grid on each side: outside it is unpainted, so the
+		// grid's own border can be an edge.
+		const int x0 = std::max(-1, (int)std::floor((viewer.x - range - mask.origin.x) / mask.cell));
+		const int y0 = std::max(-1, (int)std::floor((viewer.y - range - mask.origin.y) / mask.cell));
+		const int x1 = std::min(mask.width - 1, (int)std::floor((viewer.x + range - mask.origin.x) / mask.cell));
+		const int y1 = std::min(mask.height - 1, (int)std::floor((viewer.y + range - mask.origin.y) / mask.cell));
+		for (int y = y0; y <= y1; y++)
+		{
+			const float top = mask.origin.y + (float)y * mask.cell;
+			for (int x = x0; x <= x1; x++)
+			{
+				const float left = mask.origin.x + (float)x * mask.cell;
+				const int here = side(x, y);
+
+				// The side to the right: a vertical line at x + 1.
+				const int right = side(x + 1, y);
+				if (here != right)
+				{
+					const float line = left + mask.cell;
+					const bool viewerLeft = viewer.x < line;
+					if (blocks(viewerLeft ? here : right, viewerLeft ? right : here))
+					{
+						visibility::addSegment(map, {line, top - seal}, {line, top + mask.cell + seal});
+						segmentCount++;
+					}
+				}
+
+				// The side below: a horizontal line at y + 1.
+				const int below = side(x, y + 1);
+				if (here != below)
+				{
+					const float line = top + mask.cell;
+					const bool viewerAbove = viewer.y < line;
+					if (blocks(viewerAbove ? here : below, viewerAbove ? below : here))
+					{
+						visibility::addSegment(map, {left - seal, line}, {left + mask.cell + seal, line});
+						segmentCount++;
+					}
+				}
+			}
+		}
+	}
+}
+
+namespace
+{
+	// Everything the rule says blocks, seen from `position`, into `view`.
+	void build(visibility::PolarMap &view, glm::vec2 position, float range)
+	{
+		visibility::begin(view, position, range, slices);
+
+		const asteroids::Which which = vision == Edges::Rocks ? asteroids::Which::All : asteroids::Which::Solid;
+		const int under = asteroids::hitCircle(position, 0.f, which);
+		if (under >= 0 && onRock == OnRock::Blind)
+		{
+			visibility::blockAll(view);
+		}
+		else
+		{
+			asteroids::outlinesNear(position, range, which,
+				[&](int rock, const std::vector<glm::vec2> &outline, glm::vec2 boundCentre, float bound)
+			{
+				if (rock == under) { return; } // looked out of (S2)
+				if (silhouette == Silhouette::Circle)
+				{
+					constexpr int sides = 16;
+					for (int k = 0; k < sides; k++)
+					{
+						const float a0 = 6.2831853f * (float)k / sides, a1 = 6.2831853f * (float)(k + 1) / sides;
+						visibility::addSegment(view, boundCentre + glm::vec2(std::cos(a0), std::sin(a0)) * bound,
+							boundCentre + glm::vec2(std::cos(a1), std::sin(a1)) * bound);
+					}
+					segmentCount += sides;
+					return;
+				}
+				for (size_t k = 0; k < outline.size(); k++)
+				{
+					visibility::addSegment(view, outline[k], outline[(k + 1) % outline.size()]);
+				}
+				segmentCount += (int)outline.size();
+			});
+			if (vision != Edges::Rocks) { addEdges(view, position, range); }
+		}
+	}
+}
+
+void updatePlayer(glm::vec2 position, bool cloaked)
+{
+	const auto started = std::chrono::steady_clock::now();
+	segmentCount = 0;
+	const float range = sightRange * (cloaked && cloakedSight == CloakedSight::Shorter ? cloakedRange : 1.f);
+	build(playerView, position, range);
+	buildMillis = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
+}
+
+bool playerSees(glm::vec2 point) { return visibility::sees(playerView, point); }
+const visibility::PolarMap &playerMap() { return playerView; }
+bool locksNeedSight() { return locks == Locks::SeenOnly; }
 
 bool warnsWhenSeen() { return outline == Outline::MintAmber; }
 glm::vec3 seenColour() { return warningColour; }
@@ -208,6 +369,23 @@ void drawDebug(wgpu2d::Renderer2D &renderer, const std::vector<glm::vec2> &viewe
 		}
 	}
 
+	if (showPolarMap && !playerView.distance.empty())
+	{
+		// The fan's rim, corner to corner, and every 16th slice's line, so
+		// the slicing shows.
+		const float width = 2.f / zoom;
+		const int n = (int)playerView.distance.size();
+		for (int i = 0; i < n; i++)
+		{
+			renderer.renderLine(visibility::corner(playerView, i), visibility::corner(playerView, i + 1),
+				{0.4f, 0.85f, 1.f, 0.9f}, width);
+			if (i % 16 == 0)
+			{
+				renderer.renderLine(playerView.origin, visibility::corner(playerView, i), {0.4f, 0.85f, 1.f, 0.25f}, width);
+			}
+		}
+	}
+
 	if (showLines)
 	{
 		const float width = 2.5f / zoom;
@@ -241,6 +419,15 @@ const tuning::Group tunables("sight", {
 	{"edgeRockReach", edgeRockReach},
 	{"showMask", showMask},
 	{"showLines", showLines},
+	{"sightRange", sightRange},
+	{"slices", slices},
+	{"silhouette", silhouette},
+	{"cloakedSight", cloakedSight},
+	{"cloakedRange", cloakedRange},
+	{"onRock", onRock},
+	{"locks", locks},
+	{"missiles", missiles},
+	{"showPolarMap", showPolarMap},
 });
 
 namespace
@@ -287,9 +474,28 @@ void debugUi()
 	}
 	choose("Beam", beamRule, {
 		{"Like a shot", Beam::LikeShot}, {"Mining tool", Beam::MiningTool}, {"Rocks", Beam::Rocks}});
+	choose("Missiles", missiles, {
+		{"Cores only", Missiles::CoresOnly}, {"Like a shot", Missiles::LikeShot}});
+	choose("Missile locks", locks, {
+		{"Seen only", Locks::SeenOnly}, {"Any target", Locks::AnyTarget}});
 	choose("Hidden outline", outline, {
 		{"Mint", Outline::Mint}, {"Mint, amber when seen", Outline::MintAmber}});
 	if (outline == Outline::MintAmber) { tune::ColorEdit3("Seen colour", &warningColour.x); }
+
+	ImGui::SeparatorText("What the player sees");
+	tune::SliderFloat("Sight range", &sightRange, 500.f, 20000.f, "%.0f units", ImGuiSliderFlags_Logarithmic);
+	tune::SliderInt("Slices", &slices, 180, 2048);
+	choose("Rock silhouettes", silhouette, {
+		{"Exact outline", Silhouette::Exact}, {"Bounding circle", Silhouette::Circle}});
+	choose("Cloaked sight", cloakedSight, {
+		{"Unchanged", CloakedSight::Unchanged}, {"Shorter", CloakedSight::Shorter}});
+	if (cloakedSight == CloakedSight::Shorter)
+	{
+		tune::SliderFloat("Cloaked range", &cloakedRange, 0.1f, 1.f, "%.2f of the range");
+	}
+	choose("On a rock", onRock, {{"See out", OnRock::SeeOut}, {"Blind", OnRock::Blind}});
+	tune::Checkbox("Show polar map", &showPolarMap);
+	ImGui::TextDisabled("  built in %.2f ms from %d segments", buildMillis, segmentCount);
 
 	ImGui::Separator();
 	tune::Checkbox("Show mask", &showMask);

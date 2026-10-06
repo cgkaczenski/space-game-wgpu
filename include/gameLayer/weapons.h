@@ -30,6 +30,7 @@
 #include <bullet.h>
 #include <shipId.h>
 #include <glm/vec2.hpp>
+#include <functional>
 #include <vector>
 
 struct Enemy;
@@ -174,8 +175,10 @@ namespace weapons
 		std::vector<Bullet> &out);
 
 	// The enemy nearest `point` -- what the player's missiles lock onto, the
-	// one nearest the mouse -- or noShip if there are none.
-	ShipId nearestEnemy(glm::vec2 point, const std::vector<Enemy> &enemies);
+	// one nearest the mouse -- or noShip if there are none. `eligible`, when
+	// given, rules some out: those the player cannot see (sight roadmap S2).
+	ShipId nearestEnemy(glm::vec2 point, const std::vector<Enemy> &enemies,
+		const std::function<bool(const Enemy &)> &eligible = nullptr);
 
 	// Who a missile can chase: the enemies, and the player, when it can be
 	// found -- not cloaked, and not wreckage or leaving.

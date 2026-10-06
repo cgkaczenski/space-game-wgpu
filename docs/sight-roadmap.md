@@ -176,7 +176,7 @@ that only makes sense after a later item does not appear before that item.
 | Wall            | **Edge** · **Band**, with a **Band depth** slider (100–1000 units) that shows only when Band is chosen                                                                                                               | Edge            |
 | Shot stops      | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks)                                                 | On an edge rock |
 | Beam            | **Like a shot** (the shot rule: field rocks inside paint do not stop it) · **Mining tool** (stops at the edge and at any rock it touches) · **Rocks** (today)                                                         | Like a shot     |
-| Missile locks   | **Any target** (today) · **Seen only** (a missile that loses its target flies to the ghost, S4)                                                                                                                      | Any target      |
+| Missile locks _(built with S2)_ | **Seen only** (locks only onto a ship its shooter sees; once locked, chases it seen or not) · **Any target** | Seen only |
 | Hidden outline  | **Mint** (today) · **Mint, amber when seen** (when an enemy inside the same paint has sight of you)                                                                                                                  | Mint, amber     |
 | Mask cell       | slider, 25–200 units                                                                                                                                                                                                 | 50              |
 
@@ -188,11 +188,13 @@ stays one click away for comparison.
 
 | Selection        | Options                                                                                                                     | Default     |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| Sight range      | **Fixed**, with a range slider · **View** (the screen's diagonal at the current zoom) · **Unlimited** (to the arena's edge) | Fixed, 4000 |
+| Sight range      | **Fixed**, a range slider (500–20,000) _(View and Unlimited dropped)_ | 4000 |
 | Slices           | slider, 180–2048                                                                                                            | 720         |
 | Rock silhouettes | **Exact outline** · **Bounding circle** (cheaper, cruder; for measuring the difference)                                     | Exact       |
 | Cloaked sight    | **Unchanged** · **Shorter**, with a multiplier slider                                                                       | Unchanged   |
 | Show polar map   | checkbox: draws each slice's end point as a debug overlay                                                                   | off         |
+| On a rock _(added)_ | **See out** (the rock under a ship does not block its own view) · **Blind** | See out |
+| Missiles _(added)_ | **Cores only** (through every rock and edge; bursts on a core) · **Like a shot** | Cores only |
 
 ### The fog: a **Fog** section, beside the grade's (S3)
 
@@ -394,7 +396,7 @@ solid even from inside, so the edge is a wall of rocks rather than a line.
 For this, the mask needs each cell's distance to the edge, from a two-pass
 distance transform.
 
-### S2. What the player can see: a visibility polygon
+### S2. What the player can see: a visibility polygon — _built_
 
 **Asked:** a raycast in every direction from the player.
 
@@ -445,9 +447,76 @@ exercise. But the rules need the answer on the CPU in the same frame, and
 reading it back arrives a frame late (outline 15). So the CPU comes first,
 and the GPU version only as practice.
 
-**Where it lands:** engine (`visibility`: the polar map, given occluder
-segments and a callback that decides where a march is blocked, with nothing
-in it about rocks or fields); game (the range, and which things block).
+**Decided**
+
+- **Everything that blocks is a segment.** Field edges are the sides of the
+  grid's cells that the vision rule says block, seen from the player. A line
+  from the player crosses a side from the cell on the player's side of it, so
+  which cell that is decides **Into fields only**. This replaces a march per
+  slice, and it is one scan of the box round the player.
+- **On a rock: See out.** A ship over a single rock looks out of it. The rock
+  under it doesn't block its own view, though it still hides the ship and
+  stops its shots. This applies to everyone's sight, enemies' included.
+  **Blind** is the alternative.
+- **Wedges** at shadow edges, one slice wide, are accepted for now.
+- **Locks:** a missile, the player's or an enemy's, locks only onto a ship
+  its shooter can see. Once locked, it chases that ship, seen or not. A
+  cloak still breaks a lock, as it always has.
+- **Missiles pass every rock and every edge, and burst on a field's core**
+  (`effects::fireball`). That's a selection, **Missiles**: Cores only, or
+  Like a shot.
+- **Range is fixed and adjustable**: 4,000 by default, from 500 to 20,000 in
+  the panel. View and Unlimited were dropped.
+
+**What was built**
+
+- **engine, `visibility`:** the polar map. `begin`, `addSegment` (one line
+  intersection per slice the segment covers), `blockAll`, `corner`, and
+  `sees`, which tests the triangle the fan draws there, so the rules and the
+  drawing are the same shape.
+- **game, `sight`:**
+  - `updatePlayer` rebuilds the player's map once a frame, after the ship
+    moves. `playerSees` and `playerMap` read it.
+  - `blockedAt` gained See out.
+  - `shot` takes a missile flag.
+  - The panel gained a **What the player sees** block: Sight range, Slices,
+    Rock silhouettes, Cloaked sight, On a rock, Show polar map, and the last
+    build time.
+- **asteroids:** `Which::Cores`; `raycast` can ignore one rock (the one
+  underneath); `outlinesNear` hands out world-space outlines from the
+  buckets.
+- **weapons:** `nearestEnemy` takes an eligibility test.
+- **effects:** `fireball`.
+
+_(Choices made while building — to confirm:)_
+
+- **The corner seal.** Each side segment reaches 1/100,000 of a cell past its
+  corners. Without it, a line exactly through a corner where two walls meet
+  could slip between them through rounding. A seal of 1/1,000 of a cell
+  caught near-misses too, and blocked 100 times more slices than it should.
+- **A missile's burst** is 0.6 × ship size × the missile's size.
+- **An enemy's lock** follows the same sight that decides whether it is
+  hidden from the player this frame: the S1 rule plus cloak.
+
+**Verified** (temporary check, removed): from the player and from random
+points over the fields, under all four combinations of Both ways or Into
+fields only with Continuous or Each field, every slice of the map was
+compared with `blockedAt` along that slice's centre line.
+
+- **How many agree:** all but about 1.4 slices in a million. Every exception
+  is a line passing exactly through a grid corner, where the walk counts a
+  zero-length clip of the corner cell and the map does not.
+- **Wall leaks:** none. The exceptions are not lines escaping through a wall.
+  The two cases where the map saw further were a line going diagonally from
+  paint into paint past a one-cell notch.
+- **`sees`** matched the slice distances everywhere.
+- **Build cost:** 0.22 ms on `level3` and 0.40 ms on a 65,224-rock field,
+  unoptimised.
+- **Playing it** is the author's part. Nothing visible changes yet except the
+  **Show polar map** overlay, locks, and missiles passing rocks.
+
+**Where it landed:** engine (`visibility`); game (`sight`, plus the
+`asteroids`, `weapons` and `effects` changes and the call sites).
 
 ### S3. The fog: greying what can't be seen
 
