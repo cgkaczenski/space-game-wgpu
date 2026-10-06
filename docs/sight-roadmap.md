@@ -863,6 +863,114 @@ screen, an indicator like the warp gate's pointing toward it.
 **Where it landed:** engine (`contactMemory`); game (`lastKnown`, its calls in
 `gameLayer.cpp`).
 
+### S4b. The long-range scope — _built, to playtest_
+
+**Asked:** hold V for a long-range scope, to make better use of S4.
+
+- The ship comes quickly to a rest.
+- The view zooms further out and leans off the ship toward the pointer: the
+  nearer the screen's edge, the further.
+- A narrow cone of full-colour sight opens along the aim.
+- An enemy the scope sees leaves a ghost when V is let go, with the HUD's
+  arrow pointing to it.
+
+**Decided**
+
+- **The ghosts come for free from S4.** The scope only makes sight reach far.
+  Enemies in its cone are seen; when it lets go they drop out of sight, and
+  S4 leaves a ghost at each one's spot. Those spots are out of sight then,
+  so the ghosts are already armed, and off screen once the view is back, so
+  the arrows point to them.
+- **The cone follows sight's rules, only longer.** Rocks and field edges
+  block, looking out of a field and into one included. Past an edge it
+  reaches all the way to its range, not by the Looking out selection.
+- **The all-round sight shrinks to a small circle** while scoped: looking far
+  is a risk.
+- **No firing and no ramming while scoped.** It is for finding.
+- **The aim is measured from the ship while scoped,** because the view leans
+  off it. Unscoped it is the screen's centre, as before.
+
+**What was built**
+
+- **engine, `cameraFollow`:**
+  - `ease` closes a share of the way per moment rather than at a speed, so a
+    big lean neither crawls nor snaps.
+  - `pointerLead` is the pointer from the screen's centre as a share of half
+    the screen, times a share of half the view. It is measured on the
+    screen, so there is no feedback.
+- **game, `scope`:** the policy and its sliders (a **Scope** section):
+  - cone 20° wide, reaching 12,000;
+  - sight round the ship 800 while scoped;
+  - zoom 0.35× the normal;
+  - lean up to 0.8 of half the view;
+  - speed halving every 0.1 s;
+  - 0.25 s in and out (smoothstep);
+  - the view following at 8 per second.
+- **`sight`:**
+  - `updatePlayer` takes a `Scope`, which shrinks the all-round range and
+    adds the cone.
+  - The cone is a second polar map built over its own bounding box only
+    (a few tens of thousands of grid cells, against hundreds of thousands
+    for a full circle that far). It is merged into the player's map by the
+    further distance per slice, blended at the cone's soft sides and by how
+    far in the scope is. Two shapes seen from one point make one still all
+    visible from it, so the fog, `playerSees`, hiding and the ghosts need no
+    change.
+  - `reachPast` now takes the look, with `reachToRange` for the scope.
+  - `asteroids::outlinesIn` gives a box's rocks.
+- **gameLayer:**
+  - V is read before movement.
+  - The aim is measured from the ship's screen position while held.
+  - The ship drifts (no thrust) and brakes.
+  - The trigger and the ram are off.
+  - The view eases toward ship + lean while scoped and on its way back;
+    otherwise the chase, leash and all, is unchanged.
+  - The zoom is scaled by the scope's.
+
+**Verified**
+
+- **The scope's map against `blockedAt`** (temporary check, removed): from
+  random points, facing random ways, along every slice in the cone, they
+  disagreed on 3 of 672,000. Its rays are three times longer than normal
+  sight's and cross more grid corners; these three were not inspected.
+- **A 2560×1440 capture with the scope held** (the pointer forced to the
+  left, temporary, removed) shows:
+  - the view zoomed out and leaning left, with the ship off to the right;
+  - the narrow cone full colour 12,000 units out of the field;
+  - the sight round the ship shrunk to a small patch;
+  - the enemy's ghost left beside the ship, because the shrinking sight lost
+    it.
+
+**Not yet felt in play:** the braking, the lean as the pointer moves, and
+letting go.
+
+**After the first playtest: a periscope.** **Asked:** slower, like a
+periscope: the view lags the pointer, the zoom goes further out the nearer
+the pointer is to the edge, the cone reaches further and narrows the further
+out the player looks, and down-scoping still leaves ghosts and arrows.
+
+- **Built:**
+  - The scope eases its own copy of the pointer (**Follows the pointer**,
+    0.5 s), and that "how far out" drives three things between the screen's
+    centre and its edge:
+    - the zoom, 0.5× to 0.2×;
+    - the cone's width, 30° to 10°;
+    - its range, 6,000 to 16,000.
+  - The cone swings toward the aim (**Turns to the aim**, 0.6 s, by angle),
+    and the view follows its lean at 2 per second instead of 8.
+  - Easing in and out takes 0.4 s.
+- **Down-scoping already leaves ghosts.** A scripted run (temporary,
+  removed) moved `level3`'s enemy 9,000 units right, beyond normal sight,
+  held the scope pointed right from frame 30 to 180, then let go:
+  - the enemy was seen from frame 120, once the cone had stretched out to
+    it;
+  - it dropped out of sight on letting go, leaving a ghost;
+  - the capture at frame 300 shows the ghost's chevron at the right edge.
+- **Read as the pointer, not as the cone's shape:** "narrows the further the
+  player looks" is built as the pointer's distance setting a longer,
+  narrower cone. A cone that is itself wide near the ship and narrow far out
+  (a spearhead) is the other reading, and would be a few lines in the merge.
+
 ### S5. _(Suggestion)_ What enemies think, shown
 
 _Splinter Cell: Conviction_ draws a ghost of the player where the enemies

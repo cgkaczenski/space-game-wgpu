@@ -59,6 +59,18 @@ namespace sight
 		// reach, with the field's own rocks casting shadows there: destroying
 		// them opens sight deeper in. Enemies see a field's edge as a wall.
 		bool seesIntoFields = false;
+		// Past a field's edge, out or in, it reaches all the way to `range`
+		// rather than by the Looking out selection: the scope's (S4b).
+		bool reachToRange = false;
+	};
+
+	// The scope, while it is up (S4b): its cone, how far in it is (0 .. 1),
+	// and the radius the all-round sight shrinks to meanwhile.
+	struct Scope
+	{
+		Look cone;
+		float amount = 0.f;
+		float aroundRadius = 0.f;
 	};
 
 	// A circle of sight this frame, apart from the player's own: what the
@@ -105,7 +117,9 @@ namespace sight
 	// moved and before anything asks `playerSees`. `aim` (unit) is where the
 	// player looks out of, and into, a field; the cone turns toward it over a
 	// moment. Clears this frame's reveals. Real time, like the camera.
-	void updatePlayer(glm::vec2 position, bool cloaked, glm::vec2 aim, float realDeltaTime);
+	// `scope`, when given, adds its cone and shrinks the all-round sight.
+	void updatePlayer(glm::vec2 position, bool cloaked, glm::vec2 aim, float realDeltaTime,
+		const Scope *scope = nullptr);
 
 	// Inside the player's polar map's fan, or a reveal: what the player can
 	// see now.

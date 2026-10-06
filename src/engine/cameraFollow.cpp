@@ -2,6 +2,8 @@
 
 #include <glm/geometric.hpp>
 #include <algorithm>
+#include <cmath>
+#include <glm/common.hpp>
 
 namespace camera
 {
@@ -57,6 +59,20 @@ glm::vec2 follow(glm::vec2 current, glm::vec2 target, glm::vec2 viewSize,
 	// uneven lurches round a ship moving steadily. (Measured: at 300 u/s the
 	// ship's screen position wobbled up to 2 units a frame; with this, 0.)
 	return current + direction * std::min(speed, distance);
+}
+
+glm::vec2 ease(glm::vec2 current, glm::vec2 target, glm::vec2 viewSize, float rate,
+	float deltaTime)
+{
+	target -= viewSize / 2.f;
+	const float keep = std::exp(-std::max(rate, 0.f) * std::max(deltaTime, 0.f));
+	return target + (current - target) * keep;
+}
+
+glm::vec2 pointerLead(glm::vec2 pointerFraction, glm::vec2 viewWorldSize, float share)
+{
+	const glm::vec2 clamped = glm::clamp(pointerFraction, glm::vec2(-1.f), glm::vec2(1.f));
+	return clamped * viewWorldSize * 0.5f * share;
 }
 
 }

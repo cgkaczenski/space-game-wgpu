@@ -38,6 +38,7 @@
 #include <outline.h>
 #include <sight.h>
 #include <lastKnown.h>
+#include <scope.h>
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
@@ -728,6 +729,7 @@ void debugPanelUi()
 	debugPanel::section("Asteroids", asteroids::debugUi);
 	debugPanel::section("Sight", sight::debugUi);
 	debugPanel::section("Last known", lastKnown::debugUi);
+	debugPanel::section("Scope", scope::debugUi);
 	debugPanel::section("Hidden outline", outline::debugUi);
 	debugPanel::section("Resources", resources::debugUi);
 	debugPanel::section("World grade", worldGrade::debugUi);
@@ -901,6 +903,23 @@ bool gameLogic(float deltaTime)
 		mouseDirection = normalize(mouseDirection);
 	}
 
+	// The long-range scope (sight roadmap S4b): hold V, in control and not
+	// rammed. While it is held the view leans off the ship, so the aim is
+	// measured from where the ship is on screen, not from the screen's centre.
+	scope::update(controls && session.stunned <= 0.f && !ImGui::GetIO().WantCaptureKeyboard
+		&& platform::isButtonHeld(platform::Button::V), (mousePos - screenCenter) / screenCenter, time.real);
+	if (scope::held())
+	{
+		const glm::vec4 view = renderer.getViewRect();
+		if (view.z != 0.f && view.w != 0.f)
+		{
+			const glm::vec2 shipOnScreen = {(session.ship.position.x - view.x) / view.z * (float)w,
+				(session.ship.position.y - view.y) / view.w * (float)h};
+			const glm::vec2 toPointer = mousePos - shipOnScreen;
+			if (glm::length(toPointer) > 0.f) { mouseDirection = glm::normalize(toPointer); }
+		}
+	}
+
 #pragma endregion
 
 
@@ -934,7 +953,7 @@ bool gameLogic(float deltaTime)
 	// it had rather than following the mouse.
 	ram::update(session.ram, time.game, controls ? mouseDirection : ram::direction(session.ram));
 	if (controls && !stunnedNow && !ImGui::GetIO().WantCaptureKeyboard
-		&& platform::isButtonPressedOn(platform::Button::Space)
+		&& platform::isButtonPressedOn(platform::Button::Space) && !scope::held() // no ramming while scoped (S4b)
 		&& ram::tryStart(session.ram, mouseDirection))
 	{
 		energy::uncloak(session.energy);
@@ -1000,7 +1019,11 @@ bool gameLogic(float deltaTime)
 	}
 	else
 	{
-		session.aim = playerMove::update(session.ship, mouseDirection, time.game, energy::isCloaked(session.energy));
+		// Scoped (S4b), no thrust -- the ship drifts as if cloaked -- and it
+		// brakes to a stop, still turning to the aim.
+		session.aim = playerMove::update(session.ship, mouseDirection, time.game,
+			energy::isCloaked(session.energy) || scope::held());
+		if (scope::held()) { session.ship.velocity *= scope::brake(time.game); }
 	}
 
 	// An asteroid field's core is solid (gameplay roadmap A2): the ship is put
@@ -1121,9 +1144,29 @@ bool gameLogic(float deltaTime)
 		// within 2, half within 4), and a ship slower than the chase speed
 		// kept crossing those steps: the camera fell behind, caught up, fell
 		// behind, and the world jittered round a steadily moving ship.
-		cameraBase = camera::follow(
-			cameraBase, session.ship.position, {(float)w, (float)h},
-			{time.real * 550.f, 0.f, 150.f});
+		// Scoped (S4b), the view leans toward the pointer -- the nearer the
+		// screen's edge, the further -- and eases there, and back, at a rate:
+		// the chase's fixed speed and its leash would crawl or snap across a
+		// lean that size. Settled again, the chase takes over.
+		const glm::vec2 viewSize = {(float)w, (float)h};
+		const float zoomNow = std::max(renderer.currentCamera.zoom, 1e-4f);
+		const glm::vec2 lean = scope::lean(viewSize / zoomNow);
+		// Only the scope's lean and its way back: a restart or a teleport
+		// still snaps by the chase's leash, as it always has.
+		static bool comingBack = false;
+		if (scope::amount() > 0.f) { comingBack = true; }
+		else if (glm::distance(cameraBase + viewSize * 0.5f, session.ship.position) <= 150.f) { comingBack = false; }
+		if (scope::amount() > 0.f || comingBack)
+		{
+			cameraBase = camera::ease(cameraBase, session.ship.position + lean, viewSize,
+				scope::cameraRate(), time.real);
+		}
+		else
+		{
+			cameraBase = camera::follow(
+				cameraBase, session.ship.position, viewSize,
+				{time.real * 550.f, 0.f, 150.f});
+		}
 	}
 
 	// The world shake rides on top: the whole world moves, background and all,
@@ -1137,8 +1180,9 @@ bool gameLogic(float deltaTime)
 
 	// Wall time, not game time: see zoomControl.h.
 	// With a level, nothing is removed for distance, so no ring bounds the zoom.
-	renderer.currentCamera.zoom = zoomControl::update(time.real,
-		{(float)w, (float)h}, levelLoaded ? 0.f : enemyDespawnDistance);
+	// Scoped (S4b), zoomed out further, toward the scope's zoom.
+	renderer.currentCamera.zoom = scope::zoom(zoomControl::update(time.real,
+		{(float)w, (float)h}, levelLoaded ? 0.f : enemyDespawnDistance));
 
 	background::draw(renderer);
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
@@ -1154,10 +1198,17 @@ bool gameLogic(float deltaTime)
 
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
-	const bool trigger = controls && !stunnedNow && platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
+	// No firing while scoped (S4b): the scope is for finding, not fighting.
+	const bool trigger = controls && !stunnedNow && !scope::held()
+		&& platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
 	// What the player can see from where the ship now is (sight roadmap S2):
 	// rebuilt once a frame, before anything asks -- a missile's lock first.
-	sight::updatePlayer(session.ship.position, energy::isCloaked(session.energy), session.aim, time.real);
+	// Scoped, its long narrow cone joins the sight and the all-round sight
+	// shrinks (S4b).
+	scope::turnToward(session.aim, time.real); // slowly, as a periscope turns
+	const sight::Scope scoped = scope::view();
+	sight::updatePlayer(session.ship.position, energy::isCloaked(session.energy), session.aim, time.real,
+		scope::amount() > 0.f ? &scoped : nullptr);
 
 	// The mouse in the world, for a missile's target. The view rect is the
 	// world area on screen, so the pointer's fraction of the window is its

@@ -86,6 +86,11 @@ namespace asteroids
 	void outlinesNear(glm::vec2 centre, float radius, Which which,
 		const std::function<void(int rock, const std::vector<glm::vec2> &outline, glm::vec2 boundCentre, float bound)> &visit);
 
+	// The same for every rock whose buckets the box from `boxMin` to `boxMax`
+	// overlaps: a cone's bounds, for the scope (S4b).
+	void outlinesIn(glm::vec2 boxMin, glm::vec2 boxMax, Which which,
+		const std::function<void(int rock, const std::vector<glm::vec2> &outline, glm::vec2 boundCentre, float bound)> &visit);
+
 	// A rock lies anywhere on the line from `from` to `to`, ends included.
 	bool blocksSight(glm::vec2 from, glm::vec2 to);
 

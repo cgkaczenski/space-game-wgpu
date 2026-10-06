@@ -45,4 +45,18 @@ namespace camera
 	// so pass the same width and height the projection uses.
 	glm::vec2 follow(glm::vec2 current, glm::vec2 target, glm::vec2 viewSize,
 		const FollowParams &params);
+
+	// The same, closing a share of the way each moment instead of at a speed:
+	// `rate` per second, so a big jump settles as quickly as a small one and
+	// nothing is snapped. For a target that leaps -- a view leaning toward
+	// the pointer (sight roadmap S4b).
+	glm::vec2 ease(glm::vec2 current, glm::vec2 target, glm::vec2 viewSize, float rate,
+		float deltaTime);
+
+	// How far to lean the view toward the pointer: `pointerFraction` is the
+	// pointer from the screen's centre as a share of half the screen, -1 .. 1
+	// on each axis; the lean is that share of half the view, times `share`.
+	// Measured on the screen, so moving the view does not move it -- no
+	// feedback.
+	glm::vec2 pointerLead(glm::vec2 pointerFraction, glm::vec2 viewWorldSize, float share);
 }

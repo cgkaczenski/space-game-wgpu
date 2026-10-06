@@ -1116,6 +1116,21 @@ void outlinesNear(glm::vec2 centre, float radius, Which which,
 	});
 }
 
+void outlinesIn(glm::vec2 boxMin, glm::vec2 boxMax, Which which,
+	const std::function<void(int rock, const std::vector<glm::vec2> &outline, glm::vec2 boundCentre, float bound)> &visit)
+{
+	static std::vector<glm::vec2> world;
+	spatial::query(rockIndex(), boxMin, boxMax, [&](int i)
+	{
+		const Rock &r = rocks[i];
+		if (!counts(r, which)) { return true; }
+		world.resize(r.outline.size());
+		for (size_t k = 0; k < r.outline.size(); k++) { world[k] = polygon::toWorld(r.placement, r.outline[k]); }
+		visit(i, world, r.placement.position, r.bound);
+		return true;
+	});
+}
+
 bool blocksSight(glm::vec2 from, glm::vec2 to)
 {
 	const glm::vec2 line = to - from;
