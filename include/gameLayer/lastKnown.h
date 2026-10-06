@@ -38,5 +38,8 @@ namespace lastKnown
 	glm::vec3 ghostColour();
 	bool arrowsShown();
 
+	// Whether the player holds a ghost of enemy `id`: it has seen it, and lost it.
+	bool remembers(unsigned id);
+
 	void debugUi();
 }

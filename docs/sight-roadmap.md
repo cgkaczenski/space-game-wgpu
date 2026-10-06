@@ -971,14 +971,46 @@ out the player looks, and down-scoping still leaves ghosts and arrows.
   narrower cone. A cone that is itself wide near the ship and narrow far out
   (a spearhead) is the other reading, and would be a few lines in the merge.
 
-### S5. _(Suggestion)_ What enemies think, shown
+### S5. What enemies think, shown — _built_
 
 _Splinter Cell: Conviction_ draws a ghost of the player where the enemies
 believe the player to be. Searching enemies here already fly to the player's
 last known position (C5). Drawing a faint outline of the player's own ship
 there mirrors S4: it shows where they will search, and it makes slipping away
-into a field something the player can read. It uses the same outline and the
-same memory.
+into a field something the player can read.
+
+**Decided**
+
+- **The enemies' own memory, not `contactMemory`.** A searching enemy already
+  holds `lastKnown`, the spot it flies to and scans. Engaged, it knows where
+  the player is; unaware, it has given up. So a ghost is drawn exactly for
+  each searching enemy, and a second store of the same thing would be a
+  second truth.
+- **Every searching enemy's belief**, as _Conviction_ does: the player learns
+  they were seen, even by an enemy they never saw. "Enemies you know of"
+  (seen, or holding an S4 ghost) is the stricter selection.
+- **Facing as it was** when the player was lost. `Enemy::lastKnownFacing` is
+  set where `lastKnown` is; `alert()`, a hit that gives the player's
+  position, keeps the old facing.
+- **No off-screen arrow** for now. The ghost is usually near where the player
+  just was, and the red arrows mean "enemy".
+
+**What was built**
+
+- **game, `theirGhost`:**
+  - searching enemies' beliefs, merged within 300 units;
+  - stronger for each extra enemy behind one: 0.45 plus 0.15 per extra;
+  - drawn as the player's hull with `outline` in a pale blue-white, after
+    the fog;
+  - a **Their ghost** section: Show (Off · Every searching enemy · Enemies
+    you know of), merge distance, strength, per-extra, colour.
+- **`lastKnown::remembers(id)`** for the stricter option.
+- **`enemyAi`** records the player's facing with its position.
+
+**Verified:** with `level3`'s enemy forced into Searching, believing the
+player 600 units right and facing up (temporary, removed), a 2560×1440
+capture shows the pale outline of the player's hull there, facing up.
+**Not yet seen in play** with an enemy really losing the player.
 
 ### S6. _(Suggestion)_ Cones that stop at rocks
 

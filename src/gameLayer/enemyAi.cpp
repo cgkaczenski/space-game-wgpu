@@ -513,6 +513,7 @@ Orders update(Enemy &enemy, float gameDeltaTime, const Player &player, const glm
 		enemy.ramMemory = ramMemorySeconds;
 		enemy.awareness = Enemy::Awareness::Engaged;
 		enemy.lastKnown = playerPos;
+		enemy.lastKnownFacing = playerFacing;
 		const glm::vec2 heading = ram::direction(enemy.ram);
 		const bool surging = ram::active(enemy.ram);
 		enemy.body.velocity = surging ? heading * ram::surgeSpeed() : -heading * ram::windupBackSpeed();
@@ -527,6 +528,7 @@ Orders update(Enemy &enemy, float gameDeltaTime, const Player &player, const glm
 	{
 		enemy.awareness = Enemy::Awareness::Engaged;
 		enemy.lastKnown = playerPos;
+		enemy.lastKnownFacing = playerFacing;
 	}
 	else if (enemy.awareness == Enemy::Awareness::Engaged)
 	{

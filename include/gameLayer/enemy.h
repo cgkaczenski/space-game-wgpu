@@ -94,6 +94,7 @@ struct Enemy
 	enum class Awareness { Unaware, Engaged, Searching };
 	Awareness awareness = Awareness::Unaware;
 	glm::vec2 lastKnown = {};     // where it last saw the player
+	glm::vec2 lastKnownFacing = {1.f, 0.f}; // and the way the player faced then (sight roadmap S5)
 	float searchLeft = 0.f;       // seconds of scanning left at lastKnown
 	float wanderTurn = 0.f;       // radians per second, while unaware
 	float wanderTimer = 0.f;      // until the next change of wander turn

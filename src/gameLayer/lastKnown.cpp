@@ -89,6 +89,12 @@ void forEachGhost(const std::function<void(glm::vec2 position, float alpha)> &vi
 glm::vec3 ghostColour() { return colour; }
 bool arrowsShown() { return offScreenArrows; }
 
+bool remembers(unsigned id)
+{
+	return std::any_of(memory.ghosts.begin(), memory.ghosts.end(),
+		[&](const contacts::Ghost &g) { return g.id == id; });
+}
+
 void draw(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet)
 {
 	if (memory.ghosts.empty()) { return; }

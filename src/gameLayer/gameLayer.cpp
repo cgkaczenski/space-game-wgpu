@@ -39,6 +39,7 @@
 #include <sight.h>
 #include <lastKnown.h>
 #include <scope.h>
+#include <theirGhost.h>
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
@@ -730,6 +731,7 @@ void debugPanelUi()
 	debugPanel::section("Sight", sight::debugUi);
 	debugPanel::section("Last known", lastKnown::debugUi);
 	debugPanel::section("Scope", scope::debugUi);
+	debugPanel::section("Their ghost", theirGhost::debugUi);
 	debugPanel::section("Hidden outline", outline::debugUi);
 	debugPanel::section("Resources", resources::debugUi);
 	debugPanel::section("World grade", worldGrade::debugUi);
@@ -2193,6 +2195,15 @@ bool gameLogic(float deltaTime)
 	// The ghosts of enemies out of sight (S4), over the grade so the fog does
 	// not grey them; still in the world's batch, so the cloak bends them.
 	if (fogHides) { lastKnown::draw(renderer, shipSheet); }
+
+	// And where the enemies think the player is (S5): the player's own hull,
+	// faint, where each searching enemy last saw it.
+	if (!levelEditor::active() && gameState::playerPresent())
+	{
+		theirGhost::draw(renderer, session.enemies,
+			[&](const Enemy &e) { return inSight(e) || lastKnown::remembers(e.id); },
+			shipSheet, shipAtlas.get(3, 0), shipSize);
+	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	// The gate's swirl rides the cloak's pass, so it bends the same target.
