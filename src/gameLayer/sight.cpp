@@ -56,7 +56,7 @@ namespace
 	Edges vision = Edges::BothWays;
 	Edges shots = Edges::IntoFields;
 	ShotStop shotStop = ShotStop::EdgeRock;
-	Beam beamRule = Beam::LikeShot;
+	Beam beamRule = Beam::MiningTool;
 	Outline outline = Outline::MintAmber;
 	glm::vec3 warningColour = {1.f, 0.66f, 0.22f};
 
@@ -92,9 +92,102 @@ namespace
 	Missiles missiles = Missiles::CoresOnly;
 	bool showPolarMap = false;
 
+	// ---- What the fog hides (S3) ----
+	enum class UnseenEnemies { Hidden, Greyed };
+	enum class UnseenExplosions { Greyed, Hidden };
+	UnseenEnemies unseenEnemies = UnseenEnemies::Hidden;
+	UnseenExplosions unseenExplosions = UnseenExplosions::Greyed;
+
 	visibility::PolarMap playerView;
 	float buildMillis = 0.f;        // the last rebuild, for the panel
 	int segmentCount = 0;
+
+	// ---- Looking out of a field ----
+	//
+	// From inside a field, within the viewer's cone, a line that leaves the
+	// paint sees on past the edge -- less far than in the open. By default out
+	// to a fixed radius from the viewer, so the cone ends in a clean arc
+	// rather than in the field's own edge pushed outward. Behind that,
+	// anything blocks as ever: another field's edge, a rock. Outside the cone,
+	// and looking in from outside, the edge stays a wall. Only with vision
+	// Both ways: Into fields only already sees out everywhere.
+	enum class LookOut
+	{
+		Off,          // the edge is a wall from inside too
+		PastEdge,     // a fixed distance past where the line leaves
+		Peeking,      // that distance near the edge, less deeper in, none at the peek depth
+		Fraction,     // the range cut to a fraction, measured from the viewer
+		Arc,          // out to a fixed radius from the viewer: the cone ends in an arc
+	};
+	// What can block a line in the cone, before its reach runs out.
+	enum class InCone
+	{
+		Nothing,      // the whole cone is seen, out to the reach: rocks, cores, more paint
+		Blockers,     // rocks, cores and the edge of paint it comes back into still block
+	};
+	LookOut lookOut = LookOut::Arc;
+	InCone inConeBlocks = InCone::Nothing;
+	float lookOutDistance = 1500.f;
+	float peekDepth = 1500.f;
+	float lookOutFraction = 0.5f;
+	float lookOutRadius = 2500.f;   // Arc: from the viewer, whatever shape the field is
+	float playerConeDegrees = 90.f; // the player's cone, its full width, round the aim
+
+	bool looksOut() { return lookOut != LookOut::Off && vision == Edges::BothWays; }
+
+	// How far past the edge a line that leaves the field `exit` from the
+	// viewer sees, for a viewer of sight `range`.
+	float reachPast(float exit, float range)
+	{
+		switch (lookOut)
+		{
+		case LookOut::PastEdge: return lookOutDistance;
+		case LookOut::Peeking: return lookOutDistance * std::max(0.f, 1.f - exit / std::max(peekDepth, 1.f));
+		case LookOut::Fraction: return std::max(0.f, range * lookOutFraction - exit);
+		case LookOut::Arc: return std::max(0.f, lookOutRadius - exit);
+		default: return 0.f;
+		}
+	}
+
+	// ---- Seeing into a field, smoothing, and light (after the S3b playtests) ----
+
+	// Looking into a field from outside, the player's cone (not an enemy's)
+	// sees past the edge to the same reach, but the field's own rocks cast
+	// shadows there: destroying them opens sight deeper in.
+	enum class LookIn { Off, RocksBlock };
+	LookIn lookIn = LookIn::RocksBlock;
+
+	// The cone's sides fade over this many degrees: a slice near a side gets
+	// part of the reach rather than all or none, so the cone does not flicker
+	// as the aim moves a hair. And the cone turns toward the aim over this
+	// long, rather than snapping to it.
+	float coneSoftDegrees = 8.f;
+	float coneEaseSeconds = 0.08f;
+	glm::vec2 coneFacing = {1.f, 0.f};
+
+	// The fog is drawn from an eased copy of the player's map: each slice
+	// eases to where it now is over about this long, which hides the jumps of
+	// rays crossing the grid's stair steps. The rules keep the exact map.
+	float fogEaseSeconds = 0.06f;
+	visibility::PolarMap drawnView;
+
+	// Circles of sight this frame, apart from the player's own: what the
+	// player's beam is burning (Beam lights).
+	std::vector<Reveal> revealed;
+	float beamLightRadius = 300.f;  // 0: the beam lights nothing
+
+	// How much of the reach past an edge a line in this direction gets: 1
+	// well inside the cone, 0 outside it, fading over coneSoftDegrees at its
+	// sides.
+	float coneWeight(glm::vec2 direction, const Look &look)
+	{
+		const float angle = std::acos(std::clamp(glm::dot(direction, look.facing), -1.f, 1.f));
+		const float soft = glm::radians(std::max(coneSoftDegrees, 0.f));
+		if (soft <= 0.f) { return angle <= look.halfAngle ? 1.f : 0.f; }
+		return std::clamp((look.halfAngle + soft * 0.5f - angle) / soft, 0.f, 1.f);
+	}
+
+	bool seesIn(const Look *look) { return look && look->seesIntoFields && lookIn != LookIn::Off && vision != Edges::Rocks; }
 
 	float nearer(float a, float b)
 	{
@@ -132,6 +225,78 @@ namespace
 		return at;
 	}
 
+	// edgeAlong for a line looking out of a field: the first crossing, if it
+	// leaves the paint, does not block -- the line sees on past it for
+	// reachPast -- and any crossing after it does.
+	float edgeLookingOut(glm::vec2 from, glm::vec2 to, float range, float weight)
+	{
+		float at = -1.f, exit = -1.f;
+		bool first = true;
+		int previous = -1;
+		region::march(asteroids::paintMask(), from, to, [&](float distance, int label)
+		{
+			const int side = fields == Fields::Continuous ? (label >= 0 ? 0 : -1) : label;
+			if (first)
+			{
+				first = false;
+				previous = side;
+				return true;
+			}
+			if (side == previous) { return true; }
+			if (exit < 0.f && previous >= 0 && side < 0)
+			{
+				exit = distance; // out of the field: seen past, for a while
+				previous = side;
+				return true;
+			}
+			at = distance;
+			return false;
+		});
+		if (exit >= 0.f)
+		{
+			const float limit = exit + weight * reachPast(exit, range);
+			if (limit < glm::distance(from, to)) { at = nearer(at, limit); }
+		}
+		return at;
+	}
+
+	// The first two edges a line from `from` to `to` crosses, and whether the
+	// first leaves the paint (the viewer is inside, this is the way out) or
+	// enters it (the viewer is outside, this is the way in).
+	struct Crossings
+	{
+		float first = -1.f, second = -1.f;
+		bool leaving = false, entering = false;
+	};
+	Crossings crossings(glm::vec2 from, glm::vec2 to)
+	{
+		Crossings c;
+		bool start = true;
+		int previous = -1;
+		region::march(asteroids::paintMask(), from, to, [&](float distance, int label)
+		{
+			const int side = fields == Fields::Continuous ? (label >= 0 ? 0 : -1) : label;
+			if (start)
+			{
+				start = false;
+				previous = side;
+				return true;
+			}
+			if (side == previous) { return true; }
+			if (c.first < 0.f)
+			{
+				c.first = distance;
+				c.leaving = previous >= 0 && side < 0;
+				c.entering = previous < 0 && side >= 0;
+				previous = side;
+				return true;
+			}
+			c.second = distance;
+			return false;
+		});
+		return c;
+	}
+
 	// The field rock a shot crossing an edge at `point` strikes, or -1.
 	int edgeRock(glm::vec2 point, float radius)
 	{
@@ -140,7 +305,7 @@ namespace
 	}
 }
 
-float blockedAt(glm::vec2 from, glm::vec2 to)
+float blockedAt(glm::vec2 from, glm::vec2 to, const Look *look)
 {
 	const glm::vec2 line = to - from;
 	const float length = glm::length(line);
@@ -155,10 +320,38 @@ float blockedAt(glm::vec2 from, glm::vec2 to)
 	if (length <= 0.f) { return -1.f; }
 	const float rock = asteroids::raycast(from, line / length, length, nullptr, which, under);
 	if (vision == Edges::Rocks) { return rock; }
-	return nearer(rock, edgeAlong(from, to, vision));
+	const glm::vec2 direction = line / length;
+	const float weight = look ? coneWeight(direction, *look) : 0.f;
+	if (weight > 0.f && (looksOut() || seesIn(look)))
+	{
+		// Measured along the viewer's whole sight, not only to the target,
+		// so the map and this agree.
+		const Crossings c = crossings(from, from + direction * look->range);
+		if (looksOut() && c.leaving && inConeBlocks == InCone::Nothing)
+		{
+			// Looking out: the whole cone is seen out to the reach past where
+			// its line leaves the field.
+			const float limit = std::min(look->range, c.first + weight * reachPast(c.first, look->range));
+			return length > limit ? limit : -1.f;
+		}
+		if (seesIn(look) && c.entering)
+		{
+			// Looking in (the player): out to the reach past where it enters,
+			// the field's far edge, and the field's own rocks on the way.
+			float limit = std::min(look->range, c.first + weight * reachPast(c.first, look->range));
+			if (c.second >= 0.f) { limit = std::min(limit, c.second); }
+			// A field rock poking out past the paint, under the viewer, is
+			// looked out of, as a solid one is (S2).
+			const int underField = onRock == OnRock::SeeOut ? asteroids::hitCircle(from, 0.f, asteroids::Which::InPaint) : -1;
+			const float fieldRock = asteroids::raycast(from, direction, length, nullptr, asteroids::Which::InPaint, underField);
+			return nearer(nearer(rock, fieldRock), length > limit ? limit : -1.f);
+		}
+	}
+	const bool lookingOut = weight > 0.f && looksOut();
+	return nearer(rock, lookingOut ? edgeLookingOut(from, to, look->range, weight) : edgeAlong(from, to, vision));
 }
 
-bool clear(glm::vec2 from, glm::vec2 to) { return blockedAt(from, to) < 0.f; }
+bool clear(glm::vec2 from, glm::vec2 to, const Look *look) { return blockedAt(from, to, look) < 0.f; }
 
 Stop shot(glm::vec2 from, glm::vec2 to, float radius, bool missile)
 {
@@ -217,7 +410,11 @@ namespace
 	// so whether it blocks -- any change of side, or only one into a field --
 	// is decided by which of the two cells that is. This is the same test
 	// edgeAlong makes walking a line, made once for every side at once.
-	void addEdges(visibility::PolarMap &map, glm::vec2 viewer, float range)
+	//
+	// `exits`, when given, takes the sides a line leaves a field by instead,
+	// for looking out: the caller decides, slice by slice, how far past them
+	// the line sees.
+	void addEdges(visibility::PolarMap &map, glm::vec2 viewer, float range, visibility::PolarMap *exits)
 	{
 		const region::Mask &mask = asteroids::paintMask();
 		if (mask.width <= 0) { return; }
@@ -252,9 +449,11 @@ namespace
 				{
 					const float line = left + mask.cell;
 					const bool viewerLeft = viewer.x < line;
-					if (blocks(viewerLeft ? here : right, viewerLeft ? right : here))
+					const int near = viewerLeft ? here : right, far = viewerLeft ? right : here;
+					if (blocks(near, far))
 					{
-						visibility::addSegment(map, {line, top - seal}, {line, top + mask.cell + seal});
+						const bool leaving = exits && near >= 0 && far < 0;
+						visibility::addSegment(leaving ? *exits : map, {line, top - seal}, {line, top + mask.cell + seal});
 						segmentCount++;
 					}
 				}
@@ -265,9 +464,11 @@ namespace
 				{
 					const float line = top + mask.cell;
 					const bool viewerAbove = viewer.y < line;
-					if (blocks(viewerAbove ? here : below, viewerAbove ? below : here))
+					const int near = viewerAbove ? here : below, far = viewerAbove ? below : here;
+					if (blocks(near, far))
 					{
-						visibility::addSegment(map, {left - seal, line}, {left + mask.cell + seal, line});
+						const bool leaving = exits && near >= 0 && far < 0;
+						visibility::addSegment(leaving ? *exits : map, {left - seal, line}, {left + mask.cell + seal, line});
 						segmentCount++;
 					}
 				}
@@ -279,7 +480,7 @@ namespace
 namespace
 {
 	// Everything the rule says blocks, seen from `position`, into `view`.
-	void build(visibility::PolarMap &view, glm::vec2 position, float range)
+	void build(visibility::PolarMap &view, glm::vec2 position, float range, const Look *look)
 	{
 		visibility::begin(view, position, range, slices);
 
@@ -313,28 +514,169 @@ namespace
 				}
 				segmentCount += (int)outline.size();
 			});
-			if (vision != Edges::Rocks) { addEdges(view, position, range); }
+			if (vision != Edges::Rocks && !(look && (looksOut() || seesIn(look)))) { addEdges(view, position, range, nullptr); }
+			else if (vision != Edges::Rocks)
+			{
+				// Looking out: the edges go to maps of their own -- the sides a
+				// line leaves a field by, and every other side that blocks --
+				// so each slice can tell whether its first crossing is the way
+				// out. In the cone, if it is, the line sees past it for the
+				// reach: through everything, or still stopped by rocks and by
+				// paint it comes back into (In the cone). Otherwise the edges
+				// block as ever.
+				static visibility::PolarMap exits, others, fieldRocks;
+				visibility::begin(exits, position, range, (int)view.distance.size());
+				visibility::begin(others, position, range, (int)view.distance.size());
+				addEdges(others, position, range, &exits);
+
+				// Seeing in (the player, from outside the paint): the field's
+				// own rocks, which only cast shadows past the way in.
+				const region::Mask &mask = asteroids::paintMask();
+				const bool outside = region::labelAt(mask, position) < 0;
+				const bool lookingIn = outside && seesIn(look);
+				if (lookingIn)
+				{
+					visibility::begin(fieldRocks, position, range, (int)view.distance.size());
+					const int underField = onRock == OnRock::SeeOut ? asteroids::hitCircle(position, 0.f, asteroids::Which::InPaint) : -1;
+					asteroids::outlinesNear(position, range, asteroids::Which::InPaint,
+						[&](int rock, const std::vector<glm::vec2> &outline, glm::vec2, float)
+					{
+						if (rock == underField) { return; } // looked out of (S2)
+						for (size_t k = 0; k < outline.size(); k++)
+						{
+							visibility::addSegment(fieldRocks, outline[k], outline[(k + 1) % outline.size()]);
+						}
+						segmentCount += (int)outline.size();
+					});
+				}
+
+				for (int i = 0; i < (int)view.distance.size(); i++)
+				{
+					float &slice = view.distance[(size_t)i];
+					const float exit = exits.distance[(size_t)i];
+					const float other = others.distance[(size_t)i];
+					const float weight = coneWeight(visibility::direction(view, i), *look);
+					if (weight > 0.f && looksOut() && exit < range && exit < other)
+					{
+						const float limit = std::min(range, exit + weight * reachPast(exit, range));
+						slice = inConeBlocks == InCone::Nothing ? limit : std::min(slice, std::min(other, limit));
+					}
+					else if (weight > 0.f && lookingIn && other < range && other < exit)
+					{
+						// In through the edge (`other`, the way in), to the
+						// reach, the far edge (`exit`), and the field's rocks.
+						const float limit = std::min(range, other + weight * reachPast(other, range));
+						slice = std::min(std::min(slice, fieldRocks.distance[(size_t)i]), std::min(limit, exit));
+					}
+					else
+					{
+						slice = std::min(slice, std::min(exit, other));
+					}
+				}
+			}
 		}
 	}
 }
 
-void updatePlayer(glm::vec2 position, bool cloaked)
+void updatePlayer(glm::vec2 position, bool cloaked, glm::vec2 aim, float realDeltaTime)
 {
 	const auto started = std::chrono::steady_clock::now();
 	segmentCount = 0;
+	revealed.clear();
 	const float range = sightRange * (cloaked && cloakedSight == CloakedSight::Shorter ? cloakedRange : 1.f);
-	build(playerView, position, range);
+
+	// The cone turns toward the aim rather than snapping to it.
+	// By angle: blending the two directions and normalising would barely
+	// move a cone facing away from the aim, and not at all one facing exactly
+	// away; turning by a share of the angle between them eases any turn alike.
+	const glm::vec2 want = glm::length(aim) > 0.f ? glm::normalize(aim) : coneFacing;
+	const float follow = coneEaseSeconds > 0.f ? 1.f - std::exp(-realDeltaTime / coneEaseSeconds) : 1.f;
+	const float between = std::atan2(coneFacing.x * want.y - coneFacing.y * want.x, glm::dot(coneFacing, want));
+	const float turn = between * follow, c = std::cos(turn), sn = std::sin(turn);
+	coneFacing = glm::normalize(glm::vec2(coneFacing.x * c - coneFacing.y * sn, coneFacing.x * sn + coneFacing.y * c));
+
+	Look look;
+	look.facing = coneFacing;
+	look.halfAngle = glm::radians(playerConeDegrees * 0.5f);
+	look.range = range;
+	look.seesIntoFields = true;
+	build(playerView, position, range, &look);
+
+	// The drawn copy eases toward it -- or is it outright, after a jump.
+	if (drawnView.distance.size() != playerView.distance.size()
+		|| glm::distance(drawnView.origin, position) > 400.f || fogEaseSeconds <= 0.f)
+	{
+		drawnView = playerView;
+	}
+	else
+	{
+		const float ease = 1.f - std::exp(-realDeltaTime / fogEaseSeconds);
+		drawnView.origin = position;
+		drawnView.range = range;
+		for (size_t i = 0; i < drawnView.distance.size(); i++)
+		{
+			drawnView.distance[i] += (playerView.distance[i] - drawnView.distance[i]) * ease;
+		}
+	}
 	buildMillis = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
-bool playerSees(glm::vec2 point) { return visibility::sees(playerView, point); }
+bool playerSees(glm::vec2 point)
+{
+	if (visibility::sees(playerView, point)) { return true; }
+	for (const Reveal &r : revealed)
+	{
+		if (glm::distance(point, r.centre) <= r.radius) { return true; }
+	}
+	return false;
+}
 const visibility::PolarMap &playerMap() { return playerView; }
+const visibility::PolarMap &playerDrawnMap() { return drawnView; }
+
+void reveal(glm::vec2 centre, float radius)
+{
+	if (radius > 0.f) { revealed.push_back({centre, radius}); }
+}
+const std::vector<Reveal> &reveals() { return revealed; }
+float beamLight() { return beamLightRadius; }
 bool locksNeedSight() { return locks == Locks::SeenOnly; }
+
+bool playerSeesShip(glm::vec2 centre, float radius)
+{
+	if (playerSees(centre)) { return true; }
+	for (int k = 0; k < 8; k++)
+	{
+		const float a = 0.7853982f * (float)k;
+		if (playerSees(centre + glm::vec2(std::cos(a), std::sin(a)) * radius)) { return true; }
+	}
+	return false;
+}
+
+bool hidesUnseenEnemies() { return unseenEnemies == UnseenEnemies::Hidden; }
+
+bool explosionShown(glm::vec2 point)
+{
+	return unseenExplosions == UnseenExplosions::Greyed || playerSees(point);
+}
+
+float beamSeenFrom(glm::vec2 start, glm::vec2 end)
+{
+	// Sampled along it: the sight is a fan, so a line can pass into it and
+	// out again, and the first point in is what matters.
+	constexpr int steps = 64;
+	const float length = glm::distance(start, end);
+	for (int k = 0; k <= steps; k++)
+	{
+		const float t = (float)k / steps;
+		if (playerSees(start + (end - start) * t)) { return t * length; }
+	}
+	return -1.f;
+}
 
 bool warnsWhenSeen() { return outline == Outline::MintAmber; }
 glm::vec3 seenColour() { return warningColour; }
 
-void drawDebug(wgpu2d::Renderer2D &renderer, const std::vector<glm::vec2> &viewers, glm::vec2 target)
+void drawDebug(wgpu2d::Renderer2D &renderer, const std::vector<Viewer> &viewers, glm::vec2 target)
 {
 	const float zoom = std::max(renderer.currentCamera.zoom, 1e-4f);
 
@@ -389,9 +731,10 @@ void drawDebug(wgpu2d::Renderer2D &renderer, const std::vector<glm::vec2> &viewe
 	if (showLines)
 	{
 		const float width = 2.5f / zoom;
-		for (const glm::vec2 &from : viewers)
+		for (const Viewer &viewer : viewers)
 		{
-			const float blocked = blockedAt(from, target);
+			const glm::vec2 from = viewer.position;
+			const float blocked = blockedAt(from, target, &viewer.look);
 			if (blocked < 0.f)
 			{
 				renderer.renderLine(from, target, {0.3f, 1.f, 0.4f, 0.8f}, width);
@@ -428,6 +771,20 @@ const tuning::Group tunables("sight", {
 	{"locks", locks},
 	{"missiles", missiles},
 	{"showPolarMap", showPolarMap},
+	{"unseenEnemies", unseenEnemies},
+	{"lookOut", lookOut},
+	{"inCone", inConeBlocks},
+	{"lookIn", lookIn},
+	{"coneSoftDegrees", coneSoftDegrees},
+	{"coneEaseSeconds", coneEaseSeconds},
+	{"fogEaseSeconds", fogEaseSeconds},
+	{"beamLightRadius", beamLightRadius},
+	{"lookOutDistance", lookOutDistance},
+	{"peekDepth", peekDepth},
+	{"lookOutFraction", lookOutFraction},
+	{"lookOutRadius", lookOutRadius},
+	{"playerConeDegrees", playerConeDegrees},
+	{"unseenExplosions", unseenExplosions},
 });
 
 namespace
@@ -494,6 +851,45 @@ void debugUi()
 		tune::SliderFloat("Cloaked range", &cloakedRange, 0.1f, 1.f, "%.2f of the range");
 	}
 	choose("On a rock", onRock, {{"See out", OnRock::SeeOut}, {"Blind", OnRock::Blind}});
+	choose("Looking out of a field", lookOut, {
+		{"Off", LookOut::Off}, {"Arc round the ship", LookOut::Arc}, {"Distance past edge", LookOut::PastEdge},
+		{"Peeking", LookOut::Peeking}, {"Fraction of range", LookOut::Fraction}});
+	if (lookOut != LookOut::Off)
+	{
+		if (vision != Edges::BothWays) { ImGui::TextDisabled("  only with vision Both ways"); }
+		if (lookOut == LookOut::Arc)
+		{
+			tune::SliderFloat("Cone radius", &lookOutRadius, 200.f, 8000.f, "%.0f units from the ship");
+		}
+		if (lookOut == LookOut::PastEdge || lookOut == LookOut::Peeking)
+		{
+			tune::SliderFloat("Past the edge", &lookOutDistance, 0.f, 6000.f, "%.0f units");
+		}
+		if (lookOut == LookOut::Peeking)
+		{
+			tune::SliderFloat("Peek depth", &peekDepth, 100.f, 6000.f, "%.0f deep: nothing past the edge");
+		}
+		if (lookOut == LookOut::Fraction)
+		{
+			tune::SliderFloat("Looking-out range", &lookOutFraction, 0.05f, 1.f, "%.2f of the range");
+		}
+		choose("In the cone", inConeBlocks, {
+			{"Nothing blocks", InCone::Nothing}, {"Rocks and edges block", InCone::Blockers}});
+		tune::SliderFloat("Player's cone", &playerConeDegrees, 10.f, 360.f, "%.0f degrees round the aim");
+		tune::SliderFloat("Cone softness", &coneSoftDegrees, 0.f, 45.f, "%.0f degrees at each side");
+		tune::SliderFloat("Cone turn", &coneEaseSeconds, 0.f, 0.5f, "%.2f s behind the aim");
+		ImGui::TextDisabled("  an enemy's cone is its own sight cone");
+	}
+	choose("Looking into a field", lookIn, {
+		{"Off", LookIn::Off}, {"Rocks block, to the reach", LookIn::RocksBlock}});
+	ImGui::TextDisabled("  the player's cone only; enemies see the edge as a wall");
+	tune::SliderFloat("Fog smoothing", &fogEaseSeconds, 0.f, 0.3f, "%.2f s (0: exact)");
+	tune::SliderFloat("Beam lights", &beamLightRadius, 0.f, 1500.f, "%.0f units round what it burns");
+	choose("Unseen enemies", unseenEnemies, {
+		{"Hidden", UnseenEnemies::Hidden}, {"Greyed (debug)", UnseenEnemies::Greyed}});
+	choose("Unseen explosions", unseenExplosions, {
+		{"Greyed", UnseenExplosions::Greyed}, {"Hidden", UnseenExplosions::Hidden}});
+	ImGui::TextDisabled("The fog's look is under World grade.");
 	tune::Checkbox("Show polar map", &showPolarMap);
 	ImGui::TextDisabled("  built in %.2f ms from %d segments", buildMillis, segmentCount);
 

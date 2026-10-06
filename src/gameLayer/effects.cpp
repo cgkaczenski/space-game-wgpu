@@ -272,10 +272,11 @@ void ramTrail(glm::vec2 shipPos, glm::vec2 direction, float shipSize, glm::vec4 
 	}
 }
 
-void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet)
+void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet, const Shown &shown)
 {
 	for (const Ghost &g : ghosts)
 	{
+		if (shown && !shown(g.position)) { continue; }
 		const float fade = 1.f - g.age / ghostLife;
 		// Pale and cool, and fading fast: a trace of where it was, not a ship.
 		const glm::vec4 tint = {0.75f, 0.90f, 1.0f, 0.45f * fade};
@@ -414,10 +415,11 @@ void update(float gameDeltaTime)
 		[](const Streak &s) { return s.age >= streakLife; }), streaks.end());
 }
 
-void drawDebris(wgpu2d::Renderer2D &renderer)
+void drawDebris(wgpu2d::Renderer2D &renderer, const Shown &shown)
 {
 	for (const Piece &p : pieces)
 	{
+		if (shown && !shown(p.position)) { continue; }
 		// Burnt, and darkening as it settles, so a wreck field sits back in the
 		// scene instead of competing with live ships. Opaque unless it is one
 		// of the oldest being retired.
@@ -431,7 +433,7 @@ void drawDebris(wgpu2d::Renderer2D &renderer)
 	}
 }
 
-void drawGlow(wgpu2d::Renderer2D &renderer)
+void drawGlow(wgpu2d::Renderer2D &renderer, const Shown &blastShown, const Shown &traceShown)
 {
 	if (glow.id == 0) { return; }
 
@@ -439,6 +441,7 @@ void drawGlow(wgpu2d::Renderer2D &renderer)
 	// texture is round, so the quad's shape is the streak's.
 	for (const Streak &s : streaks)
 	{
+		if (traceShown && !traceShown(s.position)) { continue; }
 		const float fade = 1.f - s.age / streakLife;
 		glm::vec4 color = streakColor * (1.2f * fade);
 		color.a = 1.f;
@@ -448,6 +451,7 @@ void drawGlow(wgpu2d::Renderer2D &renderer)
 	}
 	for (const Blast &b : blasts)
 	{
+		if (blastShown && !blastShown(b.position)) { continue; }
 		const float t = b.age / blastLife;              // 0 .. 1
 		const float swell = 1.f - (1.f - t) * (1.f - t); // fast out, easing in
 		const float fade = (1.f - t) * (1.f - t);

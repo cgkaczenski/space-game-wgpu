@@ -1,4 +1,5 @@
-// The world graded grey and dim: paused, and outside the closing circle.
+// The world graded grey and dim: paused, outside the closing circle, and
+// unseen by the player (sight roadmap S3).
 //
 // A fragment stage only; the vertex stage is the sprite shader's. See the
 // contract in include/render/wgpu2d.h. It runs on one quad covering the view,
@@ -20,6 +21,7 @@ struct EffectUniforms {
     a: vec4f, // paused: x = desaturation 0..1, y = brightness multiplier
     b: vec4f, // the safe circle: xy = centre in pixels, z = radius, w = edge fade
     c: vec4f, // outside it: x = desaturation, y = brightness, z = 1 when on
+    d: vec4f, // unseen (sight roadmap S3): x = desaturation, y = brightness, z = how much applies
 };
 @group(2) @binding(0) var<uniform> effect: EffectUniforms;
 
@@ -46,6 +48,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let outside = smoothstep(0.0, effect.b.w, past);
         rgb = mix(rgb, grade(rgb, effect.c.x, effect.c.y), outside);
     }
+
+    // Unseen: what the player cannot see is drawn through this. The fog draws
+    // the whole view with it on, then the player's sight on top with it off,
+    // so it only shows where the sight is not.
+    rgb = mix(rgb, grade(rgb, effect.d.x, effect.d.y), clamp(effect.d.z, 0.0, 1.0));
 
     rgb = grade(rgb, effect.a.x, effect.a.y);
 

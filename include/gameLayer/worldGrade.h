@@ -20,10 +20,24 @@
 // the grade effect (F6's per-quad effects); the cloak then takes that batch
 // exactly as it would have taken the world.
 //
+// **The fog** (sight roadmap S3) is a third grade, "unseen", for what the
+// player cannot see. The whole view comes back through it, and then the
+// player's sight -- S2's polar map, a fan round the ship -- is drawn on top
+// from the same target without it. So inside the sight the world is in
+// colour and outside it is grey, with no mask texture: the fan's shape is
+// the mask. Each corner's texture coordinate is its pixel over the view's
+// size, and the target is the view's size, so inside the fan every pixel
+// samples the texel under it -- the same picture as no fog at all. A soft
+// edge is a ring of triangles past the fan, fading out. The world is already
+// in the target for the grade, so the fog costs the fan and nothing more --
+// but with it on, the world goes through the target every frame.
+//
 // The shader lives in resources/shaders/worldGrade.wgsl.
 
 #include <render/wgpu2d.h>
 #include <engine/closingZone.h>
+#include <engine/visibility.h>
+#include <vector>
 
 namespace worldGrade
 {
@@ -33,10 +47,19 @@ namespace worldGrade
 	// Call after the world is drawn and before it is flushed (before
 	// cloak::flushWorld). `pauseAmount` 0 .. 1 is how far into the paused look.
 	// `safe`, when given, greys everything outside it; a view wholly inside it
-	// is left alone. With neither, it does nothing and costs nothing -- the
-	// world is not sent through a target at all.
+	// is left alone. `sight`, when given and the fog is on, greys everything
+	// outside it (S3). With none of them, it does nothing and costs nothing --
+	// the world is not sent through a target at all.
+	// `reveals`, with the fog on, are circles of sight drawn in colour too
+	// (centre and radius, world units): what the player's beam lights.
+	struct Reveal { glm::vec2 centre; float radius; };
 	void apply(wgpu2d::Renderer2D &renderer, float pauseAmount, const zone::Circle *safe,
-		int width, int height);
+		int width, int height, const visibility::PolarMap *sight = nullptr,
+		const std::vector<Reveal> *reveals = nullptr);
+
+	// Whether the fog is on at all (S3): with it off, nothing is hidden for
+	// being out of sight either -- unseen would look the same as seen.
+	bool fogOn();
 
 	void debugUi();
 }

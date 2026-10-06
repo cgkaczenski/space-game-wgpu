@@ -49,6 +49,11 @@ namespace
 
 		int field = -1;                 // which field it belongs to; -1 a single rock
 		bool core = false;              // its field's core: immovable, never struck, solid to ships
+		// Knocked out of its field's paint (S1): then it is a rock on its own,
+		// solid to sight and shots. By the field's own stamps, exactly -- the
+		// grid's stair-step edge would call some rocks at rest outside --
+		// and checked as it moves, not on every query.
+		bool outOfField = false;
 
 		// A3: the beam's heat, 0 .. 1, and where it burns, in the rock's frame.
 		float heat = 0.f;
@@ -1036,8 +1041,7 @@ namespace
 	{
 		if (which == Which::All) { return true; }
 		if (which == Which::Cores) { return r.core; }
-		const bool fieldRock = r.field >= 0 && !r.core
-			&& region::labelAt(mask, r.placement.position) >= 0;
+		const bool fieldRock = r.field >= 0 && !r.core && !r.outOfField;
 		return which == Which::InPaint ? fieldRock : !fieldRock;
 	}
 }
@@ -1324,6 +1328,10 @@ void update(float dt)
 	{
 		if (!r.awake) { continue; }
 		place(r);
+		if (r.field >= 0 && !r.core && r.field < (int)fieldsCopy.size())
+		{
+			r.outOfField = !fieldsCopy[(size_t)r.field].contains(r.placement.position);
+		}
 		awakeCount++;
 		const bool still = glm::length(r.body.velocity) < 2.f && std::abs(r.body.spin) < 0.02f;
 		const bool home = !r.inField || glm::distance(r.body.position, r.home) < 2.f;

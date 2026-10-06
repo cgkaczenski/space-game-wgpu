@@ -308,7 +308,7 @@ std::vector<EnemyBeam> enemyBeams;
 // This frame's sight (sight roadmap S1): where each awake enemy looks from,
 // for the debug lines, and whether one engaged enemy can see the player in a
 // field, which turns the hidden outline amber.
-std::vector<glm::vec2> sightViewers;
+std::vector<sight::Viewer> sightViewers;
 bool playerSeenInField = false;
 // How far an enemy's beam reaches: the player's runs to the edge of the
 // player's view, which means nothing for an enemy -- this is about a sniper's
@@ -1154,7 +1154,7 @@ bool gameLogic(float deltaTime)
 	const bool trigger = controls && !stunnedNow && platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
 	// What the player can see from where the ship now is (sight roadmap S2):
 	// rebuilt once a frame, before anything asks -- a missile's lock first.
-	sight::updatePlayer(session.ship.position, energy::isCloaked(session.energy));
+	sight::updatePlayer(session.ship.position, energy::isCloaked(session.energy), session.aim, time.real);
 
 	// The mouse in the world, for a missile's target. The view rect is the
 	// world area on screen, so the pointer's fraction of the window is its
@@ -1230,6 +1230,9 @@ bool gameLogic(float deltaTime)
 		}
 
 		beamEnd = beam.origin + beam.direction * reach;
+		// What it burns, it lights: a circle of sight round the burn, so a
+		// rock being mined shows in colour under the fog.
+		if (rockHit >= 0 || target >= 0) { sight::reveal(beamEnd, sight::beamLight()); }
 		// A core is the one rock the beam cannot touch (A4): it glances off,
 		// and is drawn to, rather than burning.
 		glm::vec2 coreCentre;
@@ -1597,9 +1600,15 @@ bool gameLogic(float deltaTime)
 		// the same field sees the player and one outside does not (sight
 		// roadmap S1). A hit enemy that can't see is alerted as ever, turns,
 		// finds nothing, and comes to search.
-		sightViewers.push_back(session.enemies[i].body.position);
+		// Looking out of a field, it looks along its own sight cone.
+		sight::Viewer viewer;
+		viewer.position = session.enemies[i].body.position;
+		viewer.look.facing = session.enemies[i].body.facing;
+		viewer.look.halfAngle = session.enemies[i].sightHalfAngle;
+		viewer.look.range = session.enemies[i].sightRange;
+		sightViewers.push_back(viewer);
 		const bool hidden = energy::isCloaked(session.energy) || !gameState::playerPresent()
-			|| !sight::clear(session.enemies[i].body.position, session.ship.position);
+			|| !sight::clear(viewer.position, session.ship.position, &viewer.look);
 		Enemy &e = session.enemies[i];
 		enemyAi::Player seen;
 		seen.position = session.ship.position;
@@ -1842,14 +1851,41 @@ bool gameLogic(float deltaTime)
 	for (auto &e : session.enemies)
 	{
 		e.cloakLevel = cloak::ease(e.cloakLevel, energy::isCloaked(e.energy), time.game);
-		cloak::addField(e.body.position, e.size, e.cloakLevel);
 	}
 	auto hidden = [](const Enemy &e) { return e.cloakLevel > 0.5f; };
+
+	// What the fog hides (sight roadmap S3). Under it the world is greyed,
+	// and a grey enemy still says where it is, so an enemy the player cannot
+	// see is not drawn at all -- nor anything that gives it away: its cone,
+	// plume, shield, mark, lock box, burn flash, the world bending round it
+	// cloaked, its shots and its ram's trail. Its beam is drawn from where the
+	// player's sight first reaches it. Once any of its hull is in sight it is
+	// drawn whole, and the part still in the fog comes out grey. No fog in the
+	// editor, or with the fog off.
+	const bool fogged = !levelEditor::active() && worldGrade::fogOn();
+	const bool fogHides = fogged && sight::hidesUnseenEnemies();
+	static std::vector<char> enemyInSight;
+	enemyInSight.resize(session.enemies.size());
+	for (size_t i = 0; i < session.enemies.size(); i++)
+	{
+		const Enemy &e = session.enemies[i];
+		enemyInSight[i] = !fogHides || sight::playerSeesShip(e.body.position, e.getHitbox().radius);
+	}
+	auto inSight = [&](const Enemy &e) { return enemyInSight[(size_t)(&e - session.enemies.data())] != 0; };
+	const effects::Shown traceShown = fogHides
+		? effects::Shown([](glm::vec2 p) { return sight::playerSeesShip(p, 60.f); }) : effects::Shown();
+	const effects::Shown explosionShown = fogged
+		? effects::Shown([](glm::vec2 p) { return sight::explosionShown(p); }) : effects::Shown();
+
+	for (const auto &e : session.enemies)
+	{
+		if (inSight(e)) { cloak::addField(e.body.position, e.size, e.cloakLevel); }
+	}
 
 	if (enemyAi::showCones())
 	{
 		renderer.setBlendMode(wgpu2d::BlendMode::Additive);
-		for (const auto &e : session.enemies) { if (!hidden(e)) { effects::drawSight(renderer, e); } }
+		for (const auto &e : session.enemies) { if (!hidden(e) && inSight(e)) { effects::drawSight(renderer, e); } }
 		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 	}
 
@@ -1862,6 +1898,7 @@ bool gameLogic(float deltaTime)
 	{
 		const float forward = std::max(0.f, glm::dot(e.body.thrust, e.body.facing));
 		e.plume = thruster::ease(e.plume, forward, time.game);
+		if (!inSight(e)) { continue; }
 		thruster::drawPlume(renderer, e.body.position, e.size, e.body.facing, e.plume,
 			effectClock + (float)(e.id % 7u) * 0.13f, enemyPlumeColour);
 	}
@@ -1869,6 +1906,7 @@ bool gameLogic(float deltaTime)
 
 	for (auto &e : session.enemies)
 	{
+		if (!inSight(e)) { continue; }
 		// Darkened where a field rock's shadow falls on it (A3).
 		const float lit = 1.f - asteroids::shadowOn(e.body.position, e.getHitbox().radius);
 		// A boss's hull warmer, toward the enemies' red (B2), so it reads as
@@ -1885,17 +1923,17 @@ bool gameLogic(float deltaTime)
 	for (auto &e : session.enemies)
 	{
 		shield::setRam(e.energy.bubble, ram::barrierLevel(e.ram), ram::direction(e.ram));
-		if (e.energy.hasShield || ram::barrierUp(e.ram))
+		if (inSight(e) && (e.energy.hasShield || ram::barrierUp(e.ram)))
 		{
 			shield::draw(renderer, e.energy.bubble, e.body.position, e.size, time.game);
 		}
 	}
 
 	// What each knows: red engaged, amber searching.
-	for (const auto &e : session.enemies) { if (!hidden(e)) { effects::drawAwareness(renderer, e, effectClock); } }
+	for (const auto &e : session.enemies) { if (!hidden(e) && inSight(e)) { effects::drawAwareness(renderer, e, effectClock); } }
 
 	// Wrecks sit where ships sit: after them, under everything else.
-	effects::drawDebris(renderer);
+	effects::drawDebris(renderer, explosionShown);
 
 
 	// A missile's lock on its target: a dashed red box, until impact.
@@ -1904,7 +1942,7 @@ bool gameLogic(float deltaTime)
 		if (b.motion != BulletMotion::Missile || b.target == noShip) { continue; }
 		for (const auto &e : session.enemies)
 		{
-			if (e.id != b.target) { continue; }
+			if (e.id != b.target || !inSight(e)) { continue; }
 			effects::drawTargetBox(renderer, e.body.position, e.size * 1.3f, b.age);
 		}
 	}
@@ -1914,7 +1952,7 @@ bool gameLogic(float deltaTime)
 #pragma region render ship
 
 	// The ram's afterimages, under everything of the ship's own.
-	effects::drawAfterimages(renderer, shipSheet);
+	effects::drawAfterimages(renderer, shipSheet, traceShown);
 
 	// Dying, the ship is its debris, drawn with the wrecks.
 	if (gameState::current() != gameState::State::Dying)
@@ -1971,9 +2009,33 @@ bool gameLogic(float deltaTime)
 	// breaks a run wherever the blend mode changes, so doing it this way costs
 	// two run breaks a frame instead of two per bullet -- and it is the right
 	// layering anyway, since every glow belongs under every sprite.
+	// An enemy's shot is drawn once it is in the player's sight (S3): one
+	// coming out of the fog is a sniper's whole threat.
+	auto shotInSight = [&](const Bullet &b)
+	{
+		return !fogHides || !b.fromEnemy() || sight::playerSeesShip(b.position, bulletHitboxRadius * b.size);
+	};
+	// And its beam from where that sight first reaches it, so it does not
+	// point back at a shooter the player cannot see.
+	static std::vector<EnemyBeam> beamsInSight;
+	beamsInSight.clear();
+	for (EnemyBeam b : enemyBeams)
+	{
+		if (fogHides)
+		{
+			const float from = sight::beamSeenFrom(b.start, b.end);
+			if (from < 0.f) { continue; }
+			const glm::vec2 line = b.end - b.start;
+			const float length = glm::length(line);
+			if (length > 0.f) { b.start += line / length * from; }
+		}
+		beamsInSight.push_back(b);
+	}
+
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
 	for (auto &b : session.bullets)
 	{
+		if (!shotInSight(b)) { continue; }
 		if (b.motion == BulletMotion::Missile)
 		{
 			// The ship's plume, small and green: out while the missile is
@@ -1988,11 +2050,11 @@ bool gameLogic(float deltaTime)
 	{
 		bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamImpact, effectClock, beamSurface);
 	}
-	for (const EnemyBeam &b : enemyBeams)
+	for (const EnemyBeam &b : beamsInSight)
 	{
 		bulletLook::drawBeamGlow(renderer, b.start, b.end, b.impact, effectClock, b.surface, true);
 	}
-	effects::drawGlow(renderer);
+	effects::drawGlow(renderer, explosionShown, traceShown);
 	resources::drawGlow(renderer, effectClock);
 	arena::draw(renderer, renderer.currentCamera.zoom);
 	gate::draw(renderer, renderer.currentCamera.zoom);
@@ -2000,10 +2062,11 @@ bool gameLogic(float deltaTime)
 
 	for (auto &b : session.bullets)
 	{
+		if (!shotInSight(b)) { continue; }
 		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.fromEnemy(), b.style, b.size);
 	}
 	if (beam.firing) { bulletLook::drawBeamCore(renderer, beam.origin, beamEnd, effectClock); }
-	for (const EnemyBeam &b : enemyBeams) { bulletLook::drawBeamCore(renderer, b.start, b.end, effectClock, true); }
+	for (const EnemyBeam &b : beamsInSight) { bulletLook::drawBeamCore(renderer, b.start, b.end, effectClock, true); }
 
 #pragma endregion
 
@@ -2033,13 +2096,22 @@ bool gameLogic(float deltaTime)
 	// And outside the closing circle -- or the edge, if nothing closes -- the
 	// world is grey, so being out there is seen wherever the ring is.
 	const zone::Circle safe = arena::safeZone();
-	worldGrade::apply(renderer, gameState::pauseLook(), arena::radius() > 0.f ? &safe : nullptr, w, h);
+	// And what the player cannot see is fogged (sight roadmap S3): greyed,
+	// with the player's sight drawn over it in colour. Not in the editor.
+	// The fog is drawn from the eased map, so its edge does not jitter, and
+	// with what the player's beam lights (S3 playtest).
+	static std::vector<worldGrade::Reveal> lit;
+	lit.clear();
+	for (const sight::Reveal &r : sight::reveals()) { lit.push_back({r.centre, r.radius}); }
+	worldGrade::apply(renderer, gameState::pauseLook(), arena::radius() > 0.f ? &safe : nullptr, w, h,
+		fogged ? &sight::playerDrawnMap() : nullptr, fogged ? &lit : nullptr);
 
 	// Burn ticks flash hulls red, drawn over the grade so the red survives it.
 	// Still in the world's batch, so the cloak bends them with the rest.
 	renderer.setBlendMode(wgpu2d::BlendMode::Additive);
 	for (const Enemy &e : session.enemies)
 	{
+		if (!inSight(e)) { continue; }
 		arena::drawBurnFlash(renderer, e.burnFlash, e.body.position, e.size,
 			shipSheet, shipAtlas.get(e.type.x, e.type.y), e.body.facing);
 	}

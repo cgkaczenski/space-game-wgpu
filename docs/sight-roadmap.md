@@ -175,7 +175,7 @@ that only makes sense after a later item does not appear before that item.
 | Shots at edges  | **Into fields only** (a weapon fired inside flies out; one fired outside stops at the field) · **Both ways** · **Rocks** (today: every field rock stops every shot)                                                  | Into fields only |
 | Wall            | **Edge** · **Band**, with a **Band depth** slider (100–1000 units) that shows only when Band is chosen                                                                                                               | Edge            |
 | Shot stops      | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks)                                                 | On an edge rock |
-| Beam            | **Like a shot** (the shot rule: field rocks inside paint do not stop it) · **Mining tool** (stops at the edge and at any rock it touches) · **Rocks** (today)                                                         | Like a shot     |
+| Beam            | _(default back to Mining tool after the S3b playtest)_ **Like a shot** (the shot rule: field rocks inside paint do not stop it) · **Mining tool** (stops at the edge and at any rock it touches) · **Rocks** (today)                                                         | Like a shot     |
 | Missile locks _(built with S2)_ | **Seen only** (locks only onto a ship its shooter sees; once locked, chases it seen or not) · **Any target** | Seen only |
 | Hidden outline  | **Mint** (today) · **Mint, amber when seen** (when an enemy inside the same paint has sight of you)                                                                                                                  | Mint, amber     |
 | Mask cell       | slider, 25–200 units                                                                                                                                                                                                 | 50              |
@@ -203,7 +203,7 @@ stays one click away for comparison.
 | Fog               | **Off** · **Grey** · **Grey and dim** · **Black** (classic fog of war, for comparison)       | Grey    |
 | Grey and dim      | a desaturation slider and a brightness slider, used by Grey and by Grey and dim              | to tune |
 | Edge              | **Hard** · **Soft**, with a width slider                                                     | Soft    |
-| Unseen enemies    | **Hidden** · **Greyed** · **Shown** (the last two are debug views; they give away positions) | Hidden  |
+| Unseen enemies    | **Hidden** · **Greyed** (debug) _(Shown dropped: anything drawn in the world is graded)_ | Hidden  |
 | Unseen explosions | **Greyed** · **Hidden**                                                                      | Greyed  |
 
 ### Ghosts: a **Last known** section (S4)
@@ -518,7 +518,7 @@ compared with `blockedAt` along that slice's centre line.
 **Where it landed:** engine (`visibility`); game (`sight`, plus the
 `asteroids`, `weapons` and `effects` changes and the call sites).
 
-### S3. The fog: greying what can't be seen
+### S3. The fog: greying what can't be seen — _built_
 
 **Asked:** grey out what the player's rays can't see.
 
@@ -568,8 +568,209 @@ because field rocks draw over ships. Not the first version.
 **Open questions:** how grey, given the world has to stay readable? Does
 unseen space also dim? Fog is off in the editor, presumably.
 
-**Where it lands:** game (`worldGrade` grows the fog, and the game decides
-which things hide). No library change.
+**Decided**
+
+- **The fog follows the wreck while dying or extracting.** It is off in the
+  level editor, and with **Fog** set to Off nothing is hidden for being out
+  of sight either.
+- **A missile's lock box** on an enemy the player cannot see is not drawn.
+  The lock still holds.
+- **An unseen enemy's beam** is drawn from where the player's sight first
+  reaches it.
+- **The look starts at Grey**: 85% desaturation, 70% brightness, a soft edge
+  of 60 px.
+- **The look's selections live under World grade** (a **Fog** block). The
+  "unseen" rules live under Sight.
+
+**What was built**
+
+- **`worldGrade.wgsl`:** a third grade, unseen, in `d` (desaturation,
+  brightness, how much).
+- **`worldGrade::apply`** takes the player's polar map. The whole view comes
+  back with the unseen grade, then the fan comes back without it, from the
+  same target, in screen pixels. Each corner's texture coordinate is its
+  pixel over the view size. The soft edge is a ring of triangles past the
+  corners, its vertex colour going from (1,1,1,1) to (0,0,0,0), which scales
+  the premultiplied colour.
+- **The Fog block:** Off · Grey · Grey and dim · Black, sliders for the two
+  greys, and Hard or Soft with a width.
+- **`sight`:**
+  - `playerSeesShip`: the centre, or eight points round the hull.
+  - `hidesUnseenEnemies`: **Unseen enemies**, Hidden or Greyed (debug).
+  - `explosionShown`: **Unseen explosions**, Greyed or Hidden.
+  - `beamSeenFrom`: 64 samples along the beam.
+- **`gameLayer`** works out once a frame which enemies are in sight. An
+  enemy out of sight draws nothing: no hull, cone, plume, shield, awareness
+  mark, lock box, burn flash, or cloak field (the world bending round a
+  cloaked enemy would give it away). Enemy shots and beams follow the same
+  rule. Ram afterimages and streaks follow the enemies' rule, and explosions
+  and wrecks the explosions' rule (through a `Shown` test the `effects` draws
+  now take).
+
+_(Choices made while building — to confirm:)_
+
+- **Unseen enemies has two options, not three.** Anything drawn in the world
+  goes through the grade, so "Shown" (drawn and not greyed) would need a
+  different layer. **Greyed** is the debug view.
+- **The player's own ram afterimages** follow the same test. One behind a
+  rock's shadow is not drawn.
+
+**Verified**
+
+- **Captures:** frames read back from the GPU at 2560×1440, with fog off,
+  Grey with a hard edge, and Grey with a soft edge.
+  - With the ship inside `level3`'s field, the field is in colour and
+    everything outside the paint is grey.
+  - The core casts a grey shadow.
+  - The hard edge follows the grid's stair steps.
+- **Alignment:** a 4× crop across the edge shows the nebula's pixel blocks
+  and a rock straddling the edge continuous from grey into colour. There is
+  no shifted or doubled copy, so the texture coordinates line up.
+- **No pixel-by-pixel comparison.** Two runs of the same settings differ in
+  12% of pixels (the shaders' time, the enemy), so frames from different runs
+  cannot be compared.
+- **Cost:** no slow frames in 20 s at 2560×1440, fog on or off. The adapter
+  has no GPU timers, so that is a lower bound.
+- **Hiding enemies has not been seen yet.** It wants playing against
+  enemies; the one in `level3` was not in the captures.
+
+**Where it landed:** game (`worldGrade` and its shader, `sight`, `effects`'
+`Shown` tests, the draw loops). No library change.
+
+### S3b. Looking out of a field — _built, to playtest_
+
+**Asked:** from inside a field, the player and enemies see a cone outside it,
+the way they look. Looking out is still reduced, but less than looking in
+from outside.
+
+**Decided**
+
+- **The look-out cone.** Within the viewer's cone, a line that leaves the
+  field is not stopped at the edge. It sees on past it for the reduction,
+  and anything after that still blocks: another field's edge, a rock.
+  Outside the cone the edge is a wall, and from outside looking in it is a
+  wall as ever. This applies only with vision **Both ways**: **Into fields
+  only** already sees out everywhere.
+- **The player's cone follows the mouse aim**, 90° wide by default. An
+  enemy's cone is its own sight cone (rushers 90°, snipers 60°).
+- **The reduction first defaulted to a distance past the edge:** 1,500
+  units. It is now **Arc round the ship** (see the second playtest below).
+  The alternatives are selections:
+  - **Peeking:** the full distance at the edge, less the deeper inside, none
+    at the peek depth.
+  - **Fraction of range:** the whole range cut to a fraction, measured from
+    the viewer.
+- **Full colour.** The looked-out area is drawn like any other sight; only
+  its shorter reach shows it's reduced.
+- **Shots are unchanged.**
+
+**What was built**
+
+- **`sight::Look`** holds the facing, half-angle and range.
+- **`blockedAt` and `clear`** take an optional look. Inside the cone they walk
+  with `edgeLookingOut`: the first crossing, if it leaves the paint, sees on
+  for the reduction, and any crossing after it blocks.
+- **The player's map** sends the sides a line leaves a field by into a second
+  map. Slice by slice, it takes the leaving point plus the reach inside the
+  cone, and the leaving point alone outside it.
+- **Enemies'** sight of the player passes their own look. The debug sight
+  lines carry each enemy's look, so they show the same rule.
+- **Selections** in the Sight section, under **Looking out of a field**: Off ·
+  Distance past edge · Peeking · Fraction of range, with **Past the edge**,
+  **Peek depth**, **Looking-out range** and **Player's cone**.
+
+**Verified** (temporary check, removed): from random points over `level3`'s
+field, facing random ways with random cone widths, in each reduction mode,
+the player's map was compared with `blockedAt` along every slice. They
+disagreed on 8 of 6.9 million slices. That's the rate of S2's grid-corner
+cases, though these were not inspected one by one. **Not yet seen in play.**
+
+**A consequence worth watching:** shots fired inside a field already fly
+out, so with sight out as well, a field is a place to ambush from, limited
+by the cone and the reach.
+
+**After the first playtest: the whole cone is seen.** Fog wedges showed in
+the cone where it was "blocked by asteroids". There were two causes:
+
+1. **The field coming back.** `level3`'s field has lobes and holes, so a line
+   leaving one lobe soon enters another inside the reach, and the rule made
+   that re-entry a wall. The fog began where that lobe's rocks began.
+2. **Edge rocks counted as outside their field.** 10 of `level3`'s 1,557
+   field rocks were, because the grid cell under them is on the unpainted
+   side of the stair step. They counted as solid, cast shadows, and could
+   stop a shot flying out.
+
+**Decided:** within the cone, if a line's first crossing leaves the field,
+nothing blocks it out to the reach: no rocks, no cores, no paint it comes back
+into. The earlier rule is the selection **In the cone: Rocks and edges
+block**. A field rock is out of its field when its own field's stamps say so,
+checked as it moves, not by the grid cell under it.
+
+**Verified:**
+
+- The temporary check again, in both In the cone modes: the map and
+  `blockedAt` disagreed on 8 of 7.3 million slices, the same corner cases.
+- A 2560×1440 capture with the ship inside `level3`'s field shows the cone
+  wedge in full colour out past the edge, with no fog in it. The core still
+  shadows outside the cone.
+
+**After the second playtest: the cone ends in an arc.** With "Distance past
+edge" each line's reach was measured from where *it* left the field, so the
+cone's far end was the field's ragged edge pushed outward. **Decided:** a new
+default, **Arc round the ship**. In the cone, a line that leaves the field
+sees out to a fixed radius from the ship (**Cone radius**, 2,500 by default),
+so the far end is an arc whatever shape the field is. Deep inside a field,
+with the edge beyond that radius, the cone shows nothing outside: looking out
+means coming near the edge. Distance past edge, Peeking and Fraction of range
+stay as selections. Arc is appended to the list, so a saved set's numbers
+mean what they did.
+
+**After the third playtest: jitter, seeing in, and the beam.**
+
+- **Fog jitter.** The likeliest cause is the fixed slice rays crossing the
+  grid's stair steps as the ship moves, and the cone's sides switching whole
+  slices as the mouse moves. **Decided:**
+  - The fog is drawn from an eased copy of the map: each slice eases to
+    where it now is (**Fog smoothing**, 0.06 s, real time). The rules keep
+    the exact map, so the drawing trails them by a few frames.
+  - The cone turns toward the aim (**Cone turn**, 0.08 s). It eases by
+    angle: blending the two directions, as first built, left a cone facing
+    away from the aim stuck for many frames, and a capture caught it
+    pointing the wrong way.
+  - The cone's sides taper (**Cone softness**, 8°): a slice near a side gets
+    part of the reach.
+- **Seeing into a field (player only).** **Decided:** in the player's cone, a
+  line whose first crossing enters a field sees on to the same reach. The
+  field's own rocks cast shadows there, and it stops at the field's far edge,
+  so destroying rocks opens sight deeper in. Outside the cone, and for
+  enemies, the edge is a wall. **Looking into a field**: Off · Rocks block,
+  to the reach. A field rock under the viewer is looked out of, as a solid
+  one is (S2's See out).
+- **The beam's mining was lost.** There were two causes:
+  1. The beam's default was **Like a shot**, which passes field rocks inside
+     the paint, so it mined nothing from inside a field, and from outside
+     only a rock within 60 units of where it crossed the edge.
+  2. The fog greyed the rock being mined.
+
+  **Decided:**
+  - The beam defaults to **Mining tool** again.
+  - **Beam lights:** a circle of sight (300 units, a slider) round what the
+    player's beam burns. `sight::reveal` holds it for the frame; the fog
+    draws it in colour and the hiding rules count it as seen. Later items
+    (a flare, a sensor ping) can reuse it.
+
+**Verified** (temporary checks, removed):
+
+- **Map against walk:** looks with and without seeing in were compared, from
+  random points in and out of the fields, in every reduction mode.
+  - A first run disagreed on 884 slices. The cause was a viewer standing
+    over a field rock poking past the paint: the map saw its far side, the
+    walk blocked at 0. Ignoring that rock, as See out does, brought it back
+    to 10 of 6.9 million, the grid-corner cases.
+- **Capture:** with the aim forced left for a capture, the cone is full colour
+  out to its arc, with tapered sides.
+- **Not captured:** seeing in, and the beam lighting what it burns. Both need
+  the ship outside a field or firing, which a hidden run cannot do.
 
 ### S4. Last known positions
 

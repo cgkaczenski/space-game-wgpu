@@ -12,6 +12,7 @@
 //
 // Restart clears it: an explosion is something that happened, not a setting.
 
+#include <functional>
 #include <render/wgpu2d.h>
 #include <enemy.h>
 
@@ -44,13 +45,19 @@ namespace effects
 	// Game time.
 	void update(float gameDeltaTime);
 
+	// Whether something at a point is drawn at all: what the player cannot
+	// see is left out rather than greyed (sight roadmap S3). Empty: all of it.
+	using Shown = std::function<bool(glm::vec2)>;
+
 	// The debris, under alpha; each piece knows its own texture. Draw with
-	// the enemies, so a wreck sits where ships sit.
-	void drawDebris(wgpu2d::Renderer2D &renderer);
+	// the enemies, so a wreck sits where ships sit. `shown` decides each piece.
+	void drawDebris(wgpu2d::Renderer2D &renderer, const Shown &shown = nullptr);
 
 	// The fireballs. **The caller must have set `BlendMode::Additive`**, as for
-	// bullet glows: they go in that same pass.
-	void drawGlow(wgpu2d::Renderer2D &renderer);
+	// bullet glows: they go in that same pass. `blastShown` decides each
+	// fireball; `traceShown` each ram streak, the trace of a ship.
+	void drawGlow(wgpu2d::Renderer2D &renderer, const Shown &blastShown = nullptr,
+		const Shown &traceShown = nullptr);
 
 	// A missile's lock: a dashed red box round the target, its dashes marching
 	// and pulsing, so it reads as live. `size` is the box's side; `time` drives
@@ -66,7 +73,7 @@ namespace effects
 
 	// The afterimages, under alpha. Draw before the ship, so it sits on top of
 	// its own ghosts. (The streaks go in drawGlow.)
-	void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet);
+	void drawAfterimages(wgpu2d::Renderer2D &renderer, wgpu2d::Texture shipSheet, const Shown &shown = nullptr);
 
 	// An enemy's sight (gameplay roadmap C5): a faint wedge from its nose, out
 	// to its range and as wide as its cone, tinted by what it knows -- grey

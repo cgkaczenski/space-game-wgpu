@@ -43,13 +43,39 @@
 
 namespace sight
 {
+	// Which way a viewer looks: for seeing out of a field. From inside a
+	// field, a line within this cone is not stopped where it leaves the paint
+	// -- it sees on past the edge, a shorter way than in the open (the Looking
+	// out selections). Outside the cone, and from outside looking in, the edge
+	// is a wall as ever. The player's cone follows the aim; an enemy's is its
+	// own sight cone. `range` is the viewer's sight range, for "Fraction of
+	// range".
+	struct Look
+	{
+		glm::vec2 facing = {1.f, 0.f}; // unit
+		float halfAngle = 0.f;         // radians
+		float range = 0.f;
+		// The player's cone also sees into a field from outside, to the same
+		// reach, with the field's own rocks casting shadows there: destroying
+		// them opens sight deeper in. Enemies see a field's edge as a wall.
+		bool seesIntoFields = false;
+	};
+
+	// A circle of sight this frame, apart from the player's own: what the
+	// player's beam is burning.
+	struct Reveal
+	{
+		glm::vec2 centre = {};
+		float radius = 0.f;
+	};
+
 	// `from` can see `to`. Cones, range and hearing are the enemy AI's, on
-	// top of this.
-	bool clear(glm::vec2 from, glm::vec2 to);
+	// top of this. `look`, when given, is how `from` looks out of a field.
+	bool clear(glm::vec2 from, glm::vec2 to, const Look *look = nullptr);
 
 	// How far from `from` toward `to` the line is blocked, or -1 if it is
 	// clear all the way.
-	float blockedAt(glm::vec2 from, glm::vec2 to);
+	float blockedAt(glm::vec2 from, glm::vec2 to, const Look *look = nullptr);
 
 	// One frame of a shot's flight, from where it was checked last to where
 	// it is now. A shot is first checked from its shooter's position, so a
@@ -76,16 +102,59 @@ namespace sight
 	// ---- What the player sees (sight roadmap S2) ----
 
 	// Rebuilds the player's polar map. Once a frame, after the player has
-	// moved and before anything asks `playerSees`.
-	void updatePlayer(glm::vec2 position, bool cloaked);
+	// moved and before anything asks `playerSees`. `aim` (unit) is where the
+	// player looks out of, and into, a field; the cone turns toward it over a
+	// moment. Clears this frame's reveals. Real time, like the camera.
+	void updatePlayer(glm::vec2 position, bool cloaked, glm::vec2 aim, float realDeltaTime);
 
-	// Inside the player's polar map's fan: what the player can see now.
+	// Inside the player's polar map's fan, or a reveal: what the player can
+	// see now.
 	bool playerSees(glm::vec2 point);
 	const visibility::PolarMap &playerMap();
+
+	// What the fog draws: the player's map eased slice by slice over a moment,
+	// so rays crossing the grid's stair steps do not make the fog's edge
+	// jitter. The rules use the exact map.
+	const visibility::PolarMap &playerDrawnMap();
+
+	// A circle of sight for this frame (until the next updatePlayer), and the
+	// list of them for the fog to draw.
+	void reveal(glm::vec2 centre, float radius);
+	const std::vector<Reveal> &reveals();
+
+	// How far round what the player's beam burns it lights (Beam lights); 0
+	// for not at all.
+	float beamLight();
 
 	// Whether a missile may only lock onto a ship its shooter can see. A lock,
 	// once made, holds whatever happens to the sight after.
 	bool locksNeedSight();
+
+	// ---- What the fog hides (sight roadmap S3) ----
+	//
+	// Under the fog the world is greyed, and a grey enemy still says where it
+	// is, so what is information is not drawn at all where the player cannot
+	// see it. These answer for the player's sight; the caller asks only while
+	// there is fog.
+
+	// A ship at `centre`, of hull `radius`, is in sight: its centre or any of
+	// eight points round its hull. Once drawn, the part still in the fog
+	// comes out grey -- its nose shows first.
+	bool playerSeesShip(glm::vec2 centre, float radius);
+
+	// Whether unseen enemies -- hulls and everything that gives one away --
+	// are left out (the default) or drawn and greyed (a debug view).
+	bool hidesUnseenEnemies();
+
+	// Whether an explosion or a wreck at `point` is drawn: greyed by the fog
+	// (the default -- it is how the player learns something died out there),
+	// or left out where unseen.
+	bool explosionShown(glm::vec2 point);
+
+	// How far along a beam from `start` to `end` the player's sight first
+	// reaches it, or -1 if it never does: an unseen ship's beam is drawn from
+	// there, so it does not point back at the shooter.
+	float beamSeenFrom(glm::vec2 start, glm::vec2 end);
 
 	// The hidden outline: whether it turns to `seenColour` while an enemy can
 	// see the player in a field.
@@ -96,7 +165,12 @@ namespace sight
 	// from each of `viewers` to `target` -- green while it can see, red past
 	// where it is blocked -- and the player's polar map. Call with the world's
 	// camera.
-	void drawDebug(wgpu2d::Renderer2D &renderer, const std::vector<glm::vec2> &viewers, glm::vec2 target);
+	struct Viewer
+	{
+		glm::vec2 position = {};
+		Look look;
+	};
+	void drawDebug(wgpu2d::Renderer2D &renderer, const std::vector<Viewer> &viewers, glm::vec2 target);
 
 	void debugUi();
 }
