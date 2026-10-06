@@ -98,6 +98,8 @@ add_library(engine STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/scatter.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/rigidBody.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/regionMask.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/gridWalk.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/engine/spatialGrid.cpp"
 )
 set_property(TARGET engine PROPERTY CXX_STANDARD 17)
 target_include_directories(engine PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/")

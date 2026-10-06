@@ -5,6 +5,7 @@
 #include <engine/rigidBody.h>
 #include <engine/scatter.h>
 #include <engine/regionMask.h>
+#include <engine/spatialGrid.h>
 #include <effects.h>
 #include <resources.h>
 #include "imgui.h"
@@ -15,7 +16,6 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
-#include <unordered_map>
 
 namespace asteroids
 {
@@ -190,6 +190,58 @@ namespace
 			for (const level::FieldStamp &s : f.stamps) { layer.push_back({s.position, s.radius, s.erase}); }
 		}
 		mask = region::build(layers, maskCell);
+	}
+
+	// The rocks in buckets (sight roadmap S1b): what every hit test, the
+	// rocks' bumping and the drawing look in, instead of at every rock.
+	//
+	// Each rock is listed under one circle round its centre of mass, big
+	// enough for both of its shapes -- the outline, round a frame that orbits
+	// the centre as the rock turns, and the equal-area circle it bumps with --
+	// plus some **slack**. So the buckets stay true until a rock has moved
+	// further than the slack, and only then are they rebuilt: a field rock
+	// springing home, or one turning in place, costs nothing. Every query
+	// still ends in the exact test, so the slack changes how often the
+	// buckets are rebuilt, never an answer. Rebuilt lazily, the first time
+	// they are asked for after that, or after rocks broke or were grown.
+	spatial::Grid rockGrid;
+	bool rockGridDirty = true;
+	float rockGridCell = 400.f;     // world units per bucket
+	float rockGridSlack = 100.f;    // how far a rock may move before the buckets are rebuilt
+	std::vector<glm::vec2> listedAt; // each rock's centre when the buckets were built
+
+	const spatial::Grid &rockIndex()
+	{
+		if (rockGridDirty)
+		{
+			static std::vector<collision::Circle> circles;
+			circles.resize(rocks.size());
+			listedAt.resize(rocks.size());
+			for (size_t i = 0; i < rocks.size(); i++)
+			{
+				const Rock &r = rocks[i];
+				const float offset = glm::distance(r.body.position, r.placement.position);
+				circles[i] = {r.body.position, std::max(offset + r.bound, r.collideRadius) + rockGridSlack};
+				listedAt[i] = r.body.position;
+			}
+			spatial::build(rockGrid, circles, rockGridCell);
+			rockGridDirty = false;
+		}
+		return rockGrid;
+	}
+
+	// After rocks moved: the buckets go stale once any rock is further than
+	// the slack from where it was listed. Only awake rocks move.
+	void checkListed()
+	{
+		if (rockGridDirty || listedAt.size() != rocks.size()) { rockGridDirty = true; return; }
+		const float slack2 = rockGridSlack * rockGridSlack;
+		for (size_t i = 0; i < rocks.size(); i++)
+		{
+			if (!rocks[i].awake) { continue; }
+			const glm::vec2 d = rocks[i].body.position - listedAt[i];
+			if (glm::dot(d, d) > slack2) { rockGridDirty = true; return; }
+		}
 	}
 
 	// Fields (A1b). A field's own numbers are its max rock size and the room
@@ -802,6 +854,7 @@ namespace
 			{
 				breakInto(rocks[i]);
 				rocks.erase(rocks.begin() + (long)i);
+				rockGridDirty = true; // the rocks after it are renumbered
 			}
 			else { i++; }
 		}
@@ -929,6 +982,7 @@ void reset(const std::vector<level::Asteroid> &placed, const std::vector<level::
 	rocks.clear();
 	for (const level::Asteroid &a : placed) { rocks.push_back(grow(a)); }
 	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, rocks); }
+	rockGridDirty = true;
 	shards.clear();
 	orbsThrown = 0;
 
@@ -987,42 +1041,56 @@ namespace
 	}
 }
 
+// The lowest-numbered rock the circle touches -- the one the loop over
+// every rock used to find first -- so a shot touching two rocks strikes
+// the same one it always did. That means testing every candidate rather
+// than stopping at the first, which is a few more tests and no surprises.
 int hitCircle(glm::vec2 centre, float radius, Which which)
 {
-	for (int i = 0; i < (int)rocks.size(); i++)
+	int found = -1;
+	spatial::query(rockIndex(), centre - glm::vec2(radius), centre + glm::vec2(radius), [&](int i)
 	{
+		if (found >= 0 && i > found) { return true; }
 		const Rock &r = rocks[i];
 		// Broad phase: two circles that do not touch rule out the triangles.
-		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
-		if (!counts(r, which)) { continue; }
-		if (polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { return i; }
-	}
-	return -1;
+		if (glm::distance(centre, r.placement.position) > r.bound + radius) { return true; }
+		if (!counts(r, which)) { return true; }
+		if (polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { found = i; }
+		return true;
+	});
+	return found;
 }
 
+// The buckets along the ray, near to far, stopping at the first bucket that
+// begins past the nearest hit so far: anything nearer would contain that
+// nearer point, and be listed in a bucket entered before it. On an exact tie
+// the later rock wins, as it did in the loop over every rock.
 float raycast(glm::vec2 origin, glm::vec2 direction, float maxDistance, int *rock, Which which)
 {
 	float nearest = -1.f;
-	if (rock) { *rock = -1; }
-	for (int i = 0; i < (int)rocks.size(); i++)
+	int nearestRock = -1;
+	spatial::raycast(rockIndex(), origin, direction, maxDistance, [&](int i, float cellEntry)
 	{
+		if (nearest >= 0.f && cellEntry > nearest) { return false; }
 		const Rock &r = rocks[i];
 		// Broad phase: how close the ray's line passes the rock's centre.
 		const glm::vec2 toCentre = r.placement.position - origin;
 		const float along = glm::dot(toCentre, direction);
 		const float miss = glm::length(toCentre - direction * along);
-		if (miss > r.bound || along < -r.bound || along > maxDistance + r.bound) { continue; }
-		if (!counts(r, which)) { continue; }
+		if (miss > r.bound || along < -r.bound || along > maxDistance + r.bound) { return true; }
+		if (!counts(r, which)) { return true; }
 
 		const float reach = nearest >= 0.f ? nearest : maxDistance;
 		const float t = polygon::raycast(r.outline, polygon::toLocal(r.placement, origin),
 			polygon::directionToLocal(r.placement, direction), reach);
-		if (t >= 0.f)
+		if (t >= 0.f && (nearest < 0.f || t < nearest || i > nearestRock))
 		{
 			nearest = t;
-			if (rock) { *rock = i; }
+			nearestRock = i;
 		}
-	}
+		return true;
+	});
+	if (rock) { *rock = nearestRock; }
 	return nearest;
 }
 
@@ -1097,33 +1165,39 @@ void beam(int rock, glm::vec2 point, glm::vec2 direction, float damagePerSecond,
 
 void blast(glm::vec2 at, float strength)
 {
-	for (Rock &r : rocks)
+	// Each rock on its own, so the order the buckets hand them out in does
+	// not matter. Any rock whose near side is within reach is listed in a
+	// bucket the reach's square covers.
+	spatial::query(rockIndex(), at - glm::vec2(blastReach), at + glm::vec2(blastReach), [&](int i)
 	{
-		if (r.core) { continue; }
+		Rock &r = rocks[i];
+		if (r.core) { return true; }
 		const glm::vec2 away = r.body.position - at;
 		const float distance = glm::length(away);
 		// Measured to the rock's near side, so a big rock beside a blast is
 		// not spared because its centre is far off.
 		const float edge = std::max(distance - r.collideRadius, 0.f);
-		if (edge >= blastReach || distance < 1e-3f) { continue; }
+		if (edge >= blastReach || distance < 1e-3f) { return true; }
 		// Through the centre: a blast shoves, it does not spin.
 		const float falloff = 1.f - edge / blastReach;
 		rigid::applyImpulse(r.body, r.body.position, away / distance * (blastPush * strength * falloff));
 		clampMotion(r);
 		wake(r);
 		hurt(r, blastDamage * strength * falloff); // (A4) broken below, after the loop
-	}
+		return true;
+	});
 	processBreaks();
 }
 
 void ram(glm::vec2 centre, float radius, glm::vec2 direction, unsigned ramSerial)
 {
-	for (Rock &r : rocks)
+	spatial::query(rockIndex(), centre - glm::vec2(radius), centre + glm::vec2(radius), [&](int i)
 	{
-		if (r.core || r.ramHitOn == ramSerial) { continue; } // a core is the ship's problem, not the core's
-		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
+		Rock &r = rocks[i];
+		if (r.core || r.ramHitOn == ramSerial) { return true; } // a core is the ship's problem, not the core's
+		if (glm::distance(centre, r.placement.position) > r.bound + radius) { return true; }
 		const glm::vec2 local = polygon::toLocal(r.placement, centre);
-		if (!polygon::overlapsCircle(r.outline, local, radius)) { continue; }
+		if (!polygon::overlapsCircle(r.outline, local, radius)) { return true; }
 		// Outward from the prow, plus some of the ram's own way, applied on the
 		// rock's near side: the part along the ram, off the line through the
 		// rock's centre, is what spins it.
@@ -1137,7 +1211,8 @@ void ram(glm::vec2 centre, float radius, glm::vec2 direction, unsigned ramSerial
 		wake(r);
 		r.ramHitOn = ramSerial;
 		hurt(r, ramDamage); // (A4) broken below, after the loop
-	}
+		return true;
+	});
 	processBreaks();
 }
 
@@ -1182,62 +1257,45 @@ void update(float dt)
 	if (!anyAwake) { return; }
 
 	// Rock against rock, as circles of the same area: only pairs where one
-	// is moving. Every rock goes in a spatial hash -- a big one in every cell
-	// its circle covers -- and each moving rock checks the cells round it.
-	const float cell = 600.f;
-	auto key = [](int x, int y) { return ((uint64_t)(uint32_t)x << 32) | (uint32_t)y; };
-	static std::unordered_map<uint64_t, std::vector<int>> grid;
-	grid.clear();
-	for (int i = 0; i < (int)rocks.size(); i++)
-	{
-		const Rock &r = rocks[i];
-		const int x0 = (int)std::floor((r.body.position.x - r.collideRadius) / cell);
-		const int x1 = (int)std::floor((r.body.position.x + r.collideRadius) / cell);
-		const int y0 = (int)std::floor((r.body.position.y - r.collideRadius) / cell);
-		const int y1 = (int)std::floor((r.body.position.y + r.collideRadius) / cell);
-		for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) { grid[key(x, y)].push_back(i); }
-	}
+	// is moving. The buckets are rebuilt first if any has moved past the
+	// slack; then each moving rock takes the rocks in the buckets round it,
+	// in index order -- each pair is met once a frame, the lower index first.
+	checkListed();
+	const spatial::Grid &index = rockIndex();
+	static std::vector<int> nearby;
 	for (int i = 0; i < (int)rocks.size(); i++)
 	{
 		Rock &a = rocks[i];
 		if (!a.awake) { continue; }
-		const int x0 = (int)std::floor((a.body.position.x - a.collideRadius) / cell);
-		const int x1 = (int)std::floor((a.body.position.x + a.collideRadius) / cell);
-		const int y0 = (int)std::floor((a.body.position.y - a.collideRadius) / cell);
-		const int y1 = (int)std::floor((a.body.position.y + a.collideRadius) / cell);
-		for (int y = y0; y <= y1; y++)
+		nearby.clear();
+		spatial::query(index, a.body.position - glm::vec2(a.collideRadius), a.body.position + glm::vec2(a.collideRadius),
+			[&](int j) { nearby.push_back(j); return true; });
+		std::sort(nearby.begin(), nearby.end());
+		for (int j : nearby)
 		{
-			for (int x = x0; x <= x1; x++)
+			// Each pair once: two awake rocks by the lower index only.
+			if (j == i || (rocks[j].awake && j < i)) { continue; }
+			Rock &b = rocks[j];
+			// A field rock on its way home only meets rocks still loose.
+			// Its home lies through a crowd; colliding there, the return
+			// became a jam -- rocks pushed by their springs into the
+			// settled ones in their way, still 500 out after 14 s.
+			// A core, though, is always solid.
+			if (!a.core && !b.core
+				&& ((returning(a) && !loose(b)) || (returning(b) && !loose(a)))) { continue; }
+			if (rigid::collideCircles(a.body, a.collideRadius, b.body, b.collideRadius,
+				restitution, friction, restingSpeed))
 			{
-				const auto found = grid.find(key(x, y));
-				if (found == grid.end()) { continue; }
-				for (int j : found->second)
-				{
-					// Each pair once: two awake rocks by the lower index only.
-					if (j == i || (rocks[j].awake && j < i)) { continue; }
-					Rock &b = rocks[j];
-					// A field rock on its way home only meets rocks still loose.
-					// Its home lies through a crowd; colliding there, the return
-					// became a jam -- rocks pushed by their springs into the
-					// settled ones in their way, still 500 out after 14 s.
-					// A core, though, is always solid.
-					if (!a.core && !b.core
-						&& ((returning(a) && !loose(b)) || (returning(b) && !loose(a)))) { continue; }
-					if (rigid::collideCircles(a.body, a.collideRadius, b.body, b.collideRadius,
-						restitution, friction, restingSpeed))
-					{
-						if (a.core || b.core) { continue; } // a core neither wakes nor loosens
-						// Looseness spreads with the original clock: a rock knocked
-						// by a loose one is loose until that one's spring returns,
-						// so a whole ram's chain comes home together. A rock
-						// already on its way home loosens nothing it passes --
-						// when every bump restarted the clock, returning rocks
-						// knocked the settled ones loose and the field churned on.
-						const float clock = std::min(a.sinceStruck, b.sinceStruck);
-						a.awake = b.awake = true;
-						if (clock < springDelay) { a.sinceStruck = b.sinceStruck = clock; }
-					}
-				}
+				if (a.core || b.core) { continue; } // a core neither wakes nor loosens
+				// Looseness spreads with the original clock: a rock knocked
+				// by a loose one is loose until that one's spring returns,
+				// so a whole ram's chain comes home together. A rock
+				// already on its way home loosens nothing it passes --
+				// when every bump restarted the clock, returning rocks
+				// knocked the settled ones loose and the field churned on.
+				const float clock = std::min(a.sinceStruck, b.sinceStruck);
+				a.awake = b.awake = true;
+				if (clock < springDelay) { a.sinceStruck = b.sinceStruck = clock; }
 			}
 		}
 	}
@@ -1253,6 +1311,7 @@ void update(float dt)
 		const bool home = !r.inField || glm::distance(r.body.position, r.home) < 2.f;
 		if (still && home) { r.awake = false; }
 	}
+	checkListed(); // where the bumps left them
 }
 
 const CoreRules &coreRules() { return rules; }
@@ -1273,26 +1332,42 @@ float coreRadius(const level::AsteroidField &f)
 	return growCore(f).bound;
 }
 
+namespace
+{
+	// The lowest-numbered core the circle touches, or -1: the one the loop
+	// over every rock found first.
+	int touchedCore(glm::vec2 centre, float radius)
+	{
+		int found = -1;
+		spatial::query(rockIndex(), centre - glm::vec2(radius), centre + glm::vec2(radius), [&](int i)
+		{
+			if (found >= 0 && i > found) { return true; }
+			const Rock &r = rocks[i];
+			if (!r.core) { return true; }
+			if (glm::distance(centre, r.placement.position) > r.bound + radius) { return true; }
+			if (polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { found = i; }
+			return true;
+		});
+		return found;
+	}
+}
+
 bool coreContact(glm::vec2 centre, float radius, CoreContact &out)
 {
-	for (const Rock &r : rocks)
-	{
-		if (!r.core) { continue; }
-		if (glm::distance(centre, r.placement.position) > r.bound + radius) { continue; }
-		if (!polygon::overlapsCircle(r.outline, polygon::toLocal(r.placement, centre), radius)) { continue; }
+	const int core = touchedCore(centre, radius);
+	if (core < 0) { return false; }
 
-		const glm::vec2 fromCore = centre - r.body.position;
-		const float d = glm::length(fromCore);
-		out.outward = d > 1e-3f ? fromCore / d : glm::vec2(1.f, 0.f);
-		// The core's surface along that line: a ray from outside, back in.
-		const glm::vec2 start = r.body.position + out.outward * (r.bound + radius + 10.f);
-		const float t = polygon::raycast(r.outline, polygon::toLocal(r.placement, start),
-			polygon::directionToLocal(r.placement, -out.outward), 2.f * (r.bound + radius + 10.f));
-		const glm::vec2 surface = t >= 0.f ? start - out.outward * t : r.body.position + out.outward * r.bound;
-		out.pushTo = surface + out.outward * radius;
-		return true;
-	}
-	return false;
+	const Rock &r = rocks[core];
+	const glm::vec2 fromCore = centre - r.body.position;
+	const float d = glm::length(fromCore);
+	out.outward = d > 1e-3f ? fromCore / d : glm::vec2(1.f, 0.f);
+	// The core's surface along that line: a ray from outside, back in.
+	const glm::vec2 start = r.body.position + out.outward * (r.bound + radius + 10.f);
+	const float t = polygon::raycast(r.outline, polygon::toLocal(r.placement, start),
+		polygon::directionToLocal(r.placement, -out.outward), 2.f * (r.bound + radius + 10.f));
+	const glm::vec2 surface = t >= 0.f ? start - out.outward * t : r.body.position + out.outward * r.bound;
+	out.pushTo = surface + out.outward * radius;
+	return true;
 }
 
 namespace
@@ -1303,14 +1378,24 @@ namespace
 		// Off screen, skip it: the batch would draw it anyway.
 		// Cores first, in their own stone: under their fields' rocks, as they
 		// were when every rock was one draw.
+		// The buckets the view covers give the candidates; sorted, they draw
+		// in the order the rocks are stored, as they did when every rock was
+		// looked at, so overlapping rocks keep which one is on top.
 		const glm::vec4 view = renderer.getViewRect();
+		static std::vector<int> visible;
+		visible.clear();
+		spatial::query(rockIndex(), {view.x, view.y}, {view.x + view.z, view.y + view.w}, [&](int i)
+		{
+			if (rocks[i].inField == fieldLayer && onScreen(view, rocks[i])) { visible.push_back(i); }
+			return true;
+		});
+		std::sort(visible.begin(), visible.end());
 		for (const bool cores : {true, false})
 		{
 			beginRocks(renderer, cores ? coreStone : stone);
-			for (const Rock &r : rocks)
+			for (const int i : visible)
 			{
-				if (r.core != cores || r.inField != fieldLayer || !onScreen(view, r)) { continue; }
-				drawRock(renderer, r);
+				if (rocks[i].core == cores) { drawRock(renderer, rocks[i]); }
 			}
 			endRocks(renderer);
 		}
@@ -1319,22 +1404,16 @@ namespace
 		// glowing where the beam is shedding ore.
 		const float px = 1.f / std::max(renderer.currentCamera.zoom, 0.001f);
 		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
-		for (const Rock &r : rocks)
-		{
-			if (r.inField == fieldLayer && onScreen(view, r)) { drawCracks(renderer, r, px, false); }
-		}
+		for (const int i : visible) { drawCracks(renderer, rocks[i], px, false); }
 		renderer.setBlendMode(wgpu2d::BlendMode::Additive);
-		for (const Rock &r : rocks)
+		for (const int i : visible)
 		{
-			if (r.inField == fieldLayer && r.heat > 0.f && onScreen(view, r)) { drawCracks(renderer, r, px, true); }
+			if (rocks[i].heat > 0.f) { drawCracks(renderer, rocks[i], px, true); }
 		}
 		renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 		if (showOutlines)
 		{
-			for (const Rock &r : rocks)
-			{
-				if (r.inField == fieldLayer && onScreen(view, r)) { drawOutline(renderer, r); }
-			}
+			for (const int i : visible) { drawOutline(renderer, rocks[i]); }
 		}
 	}
 }
@@ -1356,21 +1435,25 @@ float shadowOn(glm::vec2 centre, float radius)
 		{0.f, 0.f}, {1.f, 0.f}, {-1.f, 0.f}, {0.f, 1.f}, {0.f, -1.f},
 		{0.7071f, 0.7071f}, {-0.7071f, 0.7071f}, {0.7071f, -0.7071f}, {-0.7071f, -0.7071f}};
 	const glm::vec2 away = lightFlat() * shadowDistance;
+	// A rock's shadow is the rock moved by `away`, so the rocks that can
+	// shade the hull are the ones listed near the hull moved back by it.
+	const glm::vec2 near = centre + away;
 	float darkest = 0.f;
-	for (const Rock &r : rocks)
+	spatial::query(rockIndex(), near - glm::vec2(radius), near + glm::vec2(radius), [&](int i)
 	{
-		if (!r.inField) { continue; } // single rocks lie under the ships
+		const Rock &r = rocks[i];
+		if (!r.inField) { return true; } // single rocks lie under the ships
 		polygon::Placement cast = r.placement;
 		cast.position -= away;
-		if (glm::distance(centre, cast.position) > r.bound + radius) { continue; }
+		if (glm::distance(centre, cast.position) > r.bound + radius) { return true; }
 		int covered = 0;
 		for (const glm::vec2 &s : spots)
 		{
 			if (polygon::contains(r.outline, polygon::toLocal(cast, centre + s * (radius * 0.66f)))) { covered++; }
 		}
 		darkest = std::max(darkest, covered / 9.f);
-		if (darkest >= 1.f) { break; }
-	}
+		return darkest < 1.f;
+	});
 	return darkest * shadowAlpha;
 }
 
@@ -1510,6 +1593,8 @@ const tuning::Group tunables("asteroids", {
 	{"areaDotSpacingPixels", areaDotSpacingPixels},
 	{"shadeInField", shadeInField},
 	{"maskCell", maskCell},
+	{"rockGridCell", rockGridCell},
+	{"rockGridSlack", rockGridSlack},
 	{"textureWorldSize", textureWorldSize},
 	{"brightness", brightness},
 	{"showOutlines", showOutlines},
@@ -1633,6 +1718,12 @@ void debugUi()
 	// the grid is rebuilt; the rocks stay where they are.
 	if (tune::SliderFloat("Mask cell", &maskCell, 25.f, 200.f, "%.0f units")) { buildMask(); }
 	ImGui::TextDisabled("  %d x %d cells", mask.width, mask.height);
+	// The rocks' buckets (S1b): what the hit tests, the bumping and the
+	// drawing look in. Only the buckets are rebuilt.
+	if (tune::SliderFloat("Rock buckets", &rockGridCell, 100.f, 1600.f, "%.0f units")) { rockGridDirty = true; }
+	if (tune::SliderFloat("Bucket slack", &rockGridSlack, 0.f, 500.f, "%.0f units a rock moves before a rebuild")) { rockGridDirty = true; }
+	ImGui::TextDisabled("  %d x %d buckets, %d listings for %d rocks", rockGrid.frame.width, rockGrid.frame.height,
+		(int)rockGrid.items.size(), (int)rocks.size());
 	if (regrow) { reset(placedCopy, fieldsCopy); }
 	tune::SliderFloat("Area dots", &areaDotSpacingPixels, 4.f, 60.f, "%.0f px apart (editor)");
 	tune::SliderFloat("Hidden shade", &shadeInField, 0.f, 1.f, "%.2f of the light");

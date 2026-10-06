@@ -312,12 +312,80 @@ _(Choices made while building — to confirm:)_
 `asteroids`, `outline` and `Bullet` changes, and the call sites in
 `gameLayer.cpp`).
 
-### S1b. A rock index
+### S1b. A rock index — _built_
 
-`asteroids::update` already builds a spatial hash for rocks bumping into each
-other. The plan is to move it into `engine/` and use it in `hitCircle` and
-`raycast`, which today loop over every rock. It changes no behaviour, so it is
-measured rather than played. W1 needs it.
+Every question about rocks used to loop over all of them. Now they look in
+buckets.
+
+**Decided:**
+
+- One cell walk, shared between the mask and the buckets.
+- A full rebuild, with slack added once the measurements called for it.
+- Exact equivalence with the old loop.
+- The bucket size is a slider.
+- A temporary 80% level for measuring, then deleted.
+
+**What was built**
+
+- **engine, `gridWalk`:** the DDA, moved out of `region::march`, which is now
+  a thin wrapper over it.
+- **engine, `spatialGrid`:** circles in buckets.
+  - Two flat arrays, rebuilt by a counting sort.
+  - A stamp per item, so a query hands each item out once.
+  - Box queries, and ray queries walking near to far.
+  - Bounds come from the items, and the cells grow rather than the grid
+    passing about 4 million.
+- **asteroids:** one index serves `hitCircle`, `raycast`, `coreContact`,
+  `shadowOn`, `blast`, `ram`, the bumping in `update`, and the drawing. The
+  `unordered_map` hash in `update` is gone.
+  - Each rock is listed under a circle round its centre of mass that holds
+    both its outline (whatever its turn) and its bump circle, plus **slack**
+    (100 units).
+  - The buckets are rebuilt only when a rock has moved further than the slack,
+    or rocks broke or were grown.
+  - **Rock buckets** (400) and **Bucket slack** are sliders with the field
+    sliders.
+
+**Unchanged on purpose:**
+
+- `hitCircle` returns the lowest-numbered rock touched, as the loop did.
+- `raycast` gives an exact tie to the later rock, as the loop did.
+- Drawing sorts what is visible, so overlapping rocks keep their order.
+
+**One behaviour change:** in the bumping, each pair now meets once a frame,
+in index order. The old hash could meet a pair once per cell they shared.
+
+**Verified:**
+
+- **Engine** (a temporary program, deleted afterwards):
+  - `march` after the refactor matched S1's exact reference on all three
+    levels;
+  - the grid handed out every item a box or ray could touch, exactly once,
+    near to far, on 20,000 random circles at three bucket sizes.
+- **In the game** (a temporary brute-force mode, removed): every query and
+  300 random ones a frame ran both ways. Mismatches were zero, including
+  with rocks moving, breaking and being renumbered. Results on `level3` and
+  on the 80% level (unoptimised, the default build):
+
+| level | rocks | hit tests vs every rock | rebuild |
+| --- | --- | --- | --- |
+| `level3` | 1,558 | 6–21× faster | 0.19 ms |
+| 80% field | **65,224** | 50–320× faster (`raycast` 1.85 ms → 0.006 ms) | 8.9 ms |
+
+**What the measuring found:**
+
+- **A rebuild is 8.9 ms unoptimised against 0.6 ms at -O2.** The game builds
+  with no optimisation (an empty `CMAKE_BUILD_TYPE`), so the unoptimised
+  number is the one played.
+- **Slack cut the rebuilds by about two thirds** under a strength-2 blast
+  every second. With nothing moving, the 80% level ran 30 s with no slow
+  frames.
+- **What is left for W1**, open: on a mostly-field level, a frame where many
+  rocks fly is a rebuild. The ways to cut that:
+  - build the `engine` target optimised even in the default build (a CMake
+    change, and harder to step through);
+  - re-list only the rocks that moved (a structure that can update one item);
+  - stable rock ids, so a break does not renumber everything after it.
 
 ### S1c. _(Deferred)_ The wall as a band
 
@@ -491,16 +559,13 @@ preparation for procedural generation.
 
 **What breaks at that size today:**
 
-- **Rock count.** `level3`'s density (max size 90, gap 40) over 80% of a
-  20000-radius arena covers roughly a billion square units. A back-of-envelope
-  estimate puts that between tens of thousands of rocks and more than a
-  hundred thousand, each with its own outline, mesh and body. **Measure it
-  first:** paint one level and read the count in the Asteroids panel.
-- **Every hit test loops over every rock.** `hitCircle` and `raycast` check
-  all of them. Every bullet calls `hitCircle` every frame, and every enemy's
-  sight calls `raycast`. Drawing is already culled to the view; the queries
-  are not. S1's spatial hash fixes this.
-- **`inField` checks every stamp of every field.** S1's mask fixes this.
+- **Rock count: measured at 65,224** (S1b). That's one stamp covering 80% of
+  a 20000-radius arena, at `level3`'s density (max size 90, gap 40). Each rock
+  has its own outline, mesh and body.
+- ~~**Every hit test loops over every rock.**~~ S1b's buckets fixed it: 50 to
+  320 times faster at that count. What remains is the rebuild while rocks
+  fly (see S1b).
+- ~~**`inField` checks every stamp of every field.**~~ S1's mask fixed it.
 - **Painting 80% of a level with a brush is tedious.**
 
 **Proposed steps:**

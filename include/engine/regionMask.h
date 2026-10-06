@@ -13,15 +13,10 @@
 // the truth: its edges are stair steps a cell wide, and everything that asks
 // agrees on them.
 //
-// **Walking a line (a DDA).** A straight line crosses the vertical grid lines
-// at evenly spaced distances along itself, and the horizontal ones likewise,
-// and it changes cell exactly at those crossings. So `march` keeps the
-// distance to the next crossing of each kind, steps across whichever is
-// nearer, and adds that kind's spacing to it -- a merge of two arithmetic
-// sequences (Amanatides & Woo, 1987). Every cell the line touches is visited
-// once, in order, corner clips included, with the distance at which the line
-// entered it; the cost is the number of cells, not the line's length over some
-// sampling step. What a change of label *means* is the caller's.
+// **Walking a line.** `march` reports every cell a segment touches, in order,
+// with the distance at which the segment entered it -- engine/gridWalk's DDA,
+// shared with the rock buckets. What a change of label *means* is the
+// caller's.
 //
 // Plain numbers, like closingZone and scatter: no drawing, no clock.
 
