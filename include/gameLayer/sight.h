@@ -104,11 +104,12 @@ namespace sight
 	// bursts on (S2): it chases what it locked onto through a field.
 	Stop shot(glm::vec2 from, glm::vec2 to, float radius, bool missile = false);
 
-	// How far a beam from `origin` (unit `direction`) reaches before a rock or
-	// an edge on the way into paint stops it, or -1 if nothing does within
-	// `reach`. A beam fired inside flies out. `rock` is set to the rock it
-	// burns there, or -1. The player's beam mines that rock; enemies' beams
-	// follow the same rule.
+	// How far a beam from `origin` (unit `direction`) reaches before what
+	// stops it, or -1 if nothing does within `reach`. As a mining tool (the
+	// default) that is the first rock on its line, in a field or out -- field
+	// edges do not stop it; "Like a shot" follows the shot rule instead.
+	// `rock` is set to the rock it burns there, or -1. The player's beam
+	// mines that rock; enemies' beams follow the same rule.
 	float beam(glm::vec2 origin, glm::vec2 direction, float reach, int *rock);
 
 	// ---- What the player sees (sight roadmap S2) ----

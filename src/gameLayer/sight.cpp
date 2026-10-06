@@ -41,9 +41,9 @@ namespace
 
 	enum class Beam
 	{
-		MiningTool,   // the edges as a shot has them, and every rock it touches
+		MiningTool,   // the first rock it touches, in a field or out; field edges do not stop it
 		LikeShot,     // exactly a shot's rule: inside a field it passes the rocks
-		Rocks,        // every rock, and no edges
+		Rocks,        // the same as MiningTool since the edges were taken off it; kept for saved sets
 	};
 
 	enum class Outline
@@ -392,10 +392,13 @@ Stop shot(glm::vec2 from, glm::vec2 to, float radius, bool missile)
 float beam(glm::vec2 origin, glm::vec2 direction, float reach, int *rock)
 {
 	*rock = -1;
-	if (beamRule == Beam::Rocks) { return asteroids::raycast(origin, direction, reach, rock); }
+	// A mining tool: the first rock on its line, in a field or out, and no
+	// field edge -- an edge in front of the rocks stopped it short in empty
+	// space, burning whichever rock lay near the crossing instead of the one
+	// aimed at. "Rocks" is the same since.
+	if (beamRule != Beam::LikeShot) { return asteroids::raycast(origin, direction, reach, rock); }
 
-	const asteroids::Which which = beamRule == Beam::MiningTool ? asteroids::Which::All : asteroids::Which::Solid;
-	float t = asteroids::raycast(origin, direction, reach, rock, which);
+	float t = asteroids::raycast(origin, direction, reach, rock, asteroids::Which::Solid);
 	const float edge = edgeAlong(origin, origin + direction * reach, shots);
 	if (edge >= 0.f && (t < 0.f || edge < t))
 	{
@@ -872,8 +875,9 @@ void debugUi()
 			tune::SliderFloat("Edge rock reach", &edgeRockReach, 0.f, 300.f, "%.0f units past the shot");
 		}
 	}
+	if (beamRule == Beam::Rocks) { beamRule = Beam::MiningTool; } // the same thing now
 	choose("Beam", beamRule, {
-		{"Like a shot", Beam::LikeShot}, {"Mining tool", Beam::MiningTool}, {"Rocks", Beam::Rocks}});
+		{"Mining tool", Beam::MiningTool}, {"Like a shot", Beam::LikeShot}});
 	choose("Missiles", missiles, {
 		{"Cores only", Missiles::CoresOnly}, {"Like a shot", Missiles::LikeShot}});
 	choose("Missile locks", locks, {

@@ -175,7 +175,7 @@ that only makes sense after a later item does not appear before that item.
 | Shots at edges  | **Into fields only** (a weapon fired inside flies out; one fired outside stops at the field) · **Both ways** · **Rocks** (today: every field rock stops every shot)                                                  | Into fields only |
 | Wall            | **Edge** · **Band**, with a **Band depth** slider (100–1000 units) that shows only when Band is chosen                                                                                                               | Edge            |
 | Shot stops      | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks)                                                 | On an edge rock |
-| Beam            | _(default back to Mining tool after the S3b playtest)_ **Like a shot** (the shot rule: field rocks inside paint do not stop it) · **Mining tool** (stops at the edge and at any rock it touches) · **Rocks** (today)                                                         | Like a shot     |
+| Beam            | **Mining tool** (the first rock on its line; field edges do not stop it — fixed before S6) · **Like a shot** _(Rocks folded into Mining tool)_ | Mining tool |
 | Missile locks _(built with S2)_ | **Seen only** (locks only onto a ship its shooter sees; once locked, chases it seen or not) · **Any target** | Seen only |
 | Hidden outline  | **Mint** (today) · **Mint, amber when seen** (when an enemy inside the same paint has sight of you)                                                                                                                  | Mint, amber     |
 | Mask cell       | slider, 25–200 units                                                                                                                                                                                                 | 50              |
@@ -1011,6 +1011,34 @@ into a field something the player can read.
 player 600 units right and facing up (temporary, removed), a 2560×1440
 capture shows the pale outline of the player's hull there, facing up.
 **Not yet seen in play** with an enemy really losing the player.
+
+### Fix before S6: mining from outside a field
+
+**Reported:** from outside a field the beam would not mine; it stopped at the
+field's edge.
+
+**Causes found:**
+
+1. The beam's default, **Mining tool**, stopped at every rock but also took
+   the shots' edge rule. Shots are Into fields only, so from outside the
+   beam stopped where it entered the paint, and the paint's stair-step edge
+   lies in front of the rocks inside it.
+2. At that edge it burned a field rock within 60 units of the crossing: one
+   *beside* the line, not the rock aimed at.
+
+A probe (temporary, removed) fired a beam from outside into `level3`'s field:
+the edge was at 800, the first rock on the line at 1,268, and the beam
+stopped at 800, burning another rock.
+
+**Fixed:** as a mining tool the beam stops at the first rock on its line, in
+a field or out; field edges do not stop it. The same probe now stops at
+1,268, burning the rock on the line. "Rocks" behaves the same as Mining tool
+now and is folded into it (a saved set that chose it still works); "Like a
+shot" remains.
+
+**A consequence:** a beam fired from outside can reach an enemy inside a field
+through a gap between rocks, and an enemy's beam the player. Field rocks are
+dense, so this should be rare.
 
 ### S6. _(Suggestion)_ Cones that stop at rocks
 
