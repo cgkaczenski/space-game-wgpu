@@ -1,6 +1,6 @@
 #pragma once
 
-// Line of sight, and what stops a shot (sight roadmap S1): one rule for
+// Line of sight, and what stops a shot (sight roadmap S1, M1): one rule for
 // everyone, the player and every enemy alike.
 //
 // **The rule.** A line is blocked by any single rock, any core, and the edge of
@@ -11,15 +11,16 @@
 // between a ship inside and one outside. A field rock knocked out of its paint
 // is a rock on its own, solid like any other, until its spring brings it home.
 //
-// Shots follow the same rule along the path they flew this frame, so one can't
-// slip through a gap in the rocks at the edge: it stops where it crosses, on
-// the field rock there if there is one.
+// **Weapons do not follow it** (M1). Field edges are for sight alone: shots,
+// missiles and beams pass every rock and every edge and stop only at a core --
+// except a beam fired in flight mode, which stops at the first rock on its
+// line and mines it (shipMode).
 //
-// **Every part of it is a selection** in the debug panel's Sight section, so
-// the alternatives can be played against each other: today's rules ("Rocks")
-// stay one click away, and "Into fields only" is the first proposal, where
-// a field hides you but you can see and shoot out of it. The defaults are the
-// rule above.
+// **Every part of the sight rule is a selection** in the debug panel's Sight
+// section, so the alternatives can be played against each other: today's
+// rules ("Rocks") stay one click away, and "Into fields only" is the first
+// proposal, where a field hides you but you can see out of it. The defaults
+// are the rule above.
 //
 // The painted area is a grid (asteroids::paintMask, engine/regionMask); this
 // walks lines through it and decides what a change of field means.
@@ -32,8 +33,8 @@
 // asks the same fan, so what is drawn and what the rules say agree.
 //
 // A ship over a single rock looks out of it, by default: the rock under it
-// does not block its own view, though it still hides the ship and stops its
-// shots. "Blind" is the alternative.
+// does not block its own view, though it still hides the ship. "Blind" is
+// the alternative.
 
 #include <render/wgpu2d.h>
 #include <engine/visibility.h>
@@ -89,28 +90,21 @@ namespace sight
 	// clear all the way.
 	float blockedAt(glm::vec2 from, glm::vec2 to, const Look *look = nullptr);
 
-	// One frame of a shot's flight, from where it was checked last to where
-	// it is now. A shot is first checked from its shooter's position, so a
-	// ship outside a field cannot fire in by poking its nose across the edge.
-	// One fired inside flies out. `radius` is its hitbox's.
+	// A shot, missile or not, whose hitbox is at `at` with `radius`: whether
+	// it stops there. Only a core stops it (M1); `rock` is that core.
 	struct Stop
 	{
 		bool stopped = false;
 		glm::vec2 point = {};  // where it stops
-		int rock = -1;         // the rock it strikes there, or -1: it bursts on nothing
+		int rock = -1;         // the rock it strikes there, or -1
 	};
-	//
-	// A missile, by default, passes every rock but a field's core, which it
-	// bursts on (S2): it chases what it locked onto through a field.
-	Stop shot(glm::vec2 from, glm::vec2 to, float radius, bool missile = false);
+	Stop shot(glm::vec2 at, float radius);
 
 	// How far a beam from `origin` (unit `direction`) reaches before what
-	// stops it, or -1 if nothing does within `reach`. As a mining tool (the
-	// default) that is the first rock on its line, in a field or out -- field
-	// edges do not stop it; "Like a shot" follows the shot rule instead.
-	// `rock` is set to the rock it burns there, or -1. The player's beam
-	// mines that rock; enemies' beams follow the same rule.
-	float beam(glm::vec2 origin, glm::vec2 direction, float reach, int *rock);
+	// stops it, or -1 if nothing does within `reach`. `mines` is the flight
+	// mode's beam: the first rock on its line, in a field or out. Otherwise
+	// only a core stops it. `rock` is set to the rock it ends on, or -1.
+	float beam(glm::vec2 origin, glm::vec2 direction, float reach, bool mines, int *rock);
 
 	// What one viewer at `position` sees with `look`, as a polar map over its
 	// cone's bounds: the shape of the rule `clear` applies, for drawing an

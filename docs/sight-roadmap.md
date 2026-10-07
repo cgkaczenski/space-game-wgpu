@@ -16,9 +16,9 @@ Each item has two kinds of note, kept apart:
 - **Engine ideas:** suggestions based on what `wgpu2d` and `engine/` already
   make cheap.
 
-Items carry a letter and a number: **S** for sight, **W** for the world
-(levels that are bigger and mostly field, and getting across them). Numbers
-are never reused.
+Items carry a letter and a number: **S** for sight, **M** for the ship's
+modes (fight and flight), **W** for the world (levels that are bigger and
+mostly field, and getting across them). Numbers are never reused.
 
 ---
 
@@ -53,6 +53,10 @@ field's rocks getting in the way. The field's core still blocks.
 **Asked (refined): inside a field, vision inverts.** Inside a field, the
 field is open space and its edge is the wall. Inside paint, you can't see
 out. Outside, you can't see in.
+
+**Replaced by M1:** field edges no longer decide anything for weapons. The
+ship's mode does. The weapon paragraphs below are kept as history. Sight
+still follows the rule.
 
 **Asked: a weapon fired inside does not stop at the edge.** Bullets, missiles
 and beams fired in the paint fly out through it. One fired outside still
@@ -95,7 +99,7 @@ that block are cores and single rocks, which number in the tens rather than
 the thousands. The edge itself is found with a grid lookup. Sight never needs
 to test a field rock.
 
-**Shots leave, they do not enter.** A shot stops where it crosses into paint.
+**Shots leave, they do not enter** _(replaced by M1)_. A shot stops where it crosses into paint.
 One fired inside flies out: the edge does not stop it, and the field's rocks
 do not either. Single rocks and cores always stop it. This holds for the
 player's shots and for enemy shots alike.
@@ -108,7 +112,7 @@ player's shots and for enemy shots alike.
 - **Missiles** follow the same rule. One fired inside can chase a target out
   of the field. One fired outside cannot chase a target in.
 
-**Beams, the same rule.** A beam is not blocked by a field's rocks, and one
+**Beams, the same rule** _(replaced by M1)_. A beam is not blocked by a field's rocks, and one
 fired inside flies out through the edge. One fired outside stops at the
 edge, and at a single rock or a core. This holds for the player's beam and
 for enemy beams. A field rock is mined where an inbound beam meets it at
@@ -172,10 +176,10 @@ that only makes sense after a later item does not appear before that item.
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | Fields are      | **Continuous paint** (touching fields are one) · **Each field** (an edge between touching fields is a wall)                                                                                                          | Continuous      |
 | Vision at edges | **Both ways** (rooms: the inverted rule) · **Into fields only** (the first proposal: inside, you see out) · **Rocks** (today: every rock blocks sight on its own outline; A1b's inside-is-hidden rule still applies) | Both ways       |
-| Shots at edges  | **Into fields only** (a weapon fired inside flies out; one fired outside stops at the field) · **Both ways** · **Rocks** (today: every field rock stops every shot)                                                  | Into fields only |
+| Shots at edges _(goes away with M1)_ | **Into fields only** (a weapon fired inside flies out; one fired outside stops at the field) · **Both ways** · **Rocks** (today: every field rock stops every shot)                                                  | Into fields only |
 | Wall            | **Edge** · **Band**, with a **Band depth** slider (100–1000 units) that shows only when Band is chosen                                                                                                               | Edge            |
-| Shot stops      | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks)                                                 | On an edge rock |
-| Beam            | **Mining tool** (the first rock on its line; field edges do not stop it — fixed before S6) · **Like a shot** _(Rocks folded into Mining tool)_ | Mining tool |
+| Shot stops _(goes away with M1)_ | **On an edge rock** (strikes the rock at the crossing if there is one, otherwise bursts at the edge) · **At the edge** (always bursts there, and never pushes rocks)                                                 | On an edge rock |
+| Beam            | **Mining tool** (the first rock on its line; field edges do not stop it — fixed before S6) · **Like a shot** _(Rocks folded into Mining tool; goes away with M1: the mode decides)_ | Mining tool |
 | Missile locks _(built with S2)_ | **Seen only** (locks only onto a ship its shooter sees; once locked, chases it seen or not) · **Any target** | Seen only |
 | Hidden outline  | **Mint** (today) · **Mint, amber when seen** (when an enemy inside the same paint has sight of you)                                                                                                                  | Mint, amber     |
 | Mask cell       | slider, 25–200 units                                                                                                                                                                                                 | 50              |
@@ -194,7 +198,7 @@ stays one click away for comparison.
 | Cloaked sight    | **Unchanged** · **Shorter**, with a multiplier slider                                                                       | Unchanged   |
 | Show polar map   | checkbox: draws each slice's end point as a debug overlay                                                                   | off         |
 | On a rock _(added)_ | **See out** (the rock under a ship does not block its own view) · **Blind** | See out |
-| Missiles _(added)_ | **Cores only** (through every rock and edge; bursts on a core) · **Like a shot** | Cores only |
+| Missiles _(added; goes away with M1, which makes Cores only the fight rule)_ | **Cores only** (through every rock and edge; bursts on a core) · **Like a shot** | Cores only |
 
 ### The fog: a **Fog** section, beside the grade's (S3)
 
@@ -218,6 +222,10 @@ stays one click away for comparison.
 ### Later items
 
 These are listed now so the shape is known. Each one arrives with its item.
+
+- **M1, fight and flight:** a new **Flight** section with two speed
+  multipliers. It removes **Shots at edges**, **Shot stops**, **Edge rock
+  reach**, **Beam**, and the missiles' row.
 
 - **W2, interior movement:** **Normal** · **Speed cap**, with a multiplier
   slider · **Cap and drag**, with both sliders. Default: **Speed cap**.
@@ -246,6 +254,8 @@ A shot that starts inside and leaves the paint keeps going.
 - **The band is deferred** (S1c). The Wall selection waits until it exists.
 - **The rock spatial hash is split out** (S1b). It changes no behaviour, and
   W1 is where it matters.
+- _(Both weapon bullets below are replaced by M1: edges don't affect
+  weapons, and the mode decides.)_
 - **Beams follow the shot rule.** The default is **Like a shot**: inside
   paint, field rocks do not stop a beam. **Mining tool** stays selectable.
   Enemy beams use the same selection as the player's.
@@ -1084,6 +1094,155 @@ _Mark of the Ninja_ or _Commandos_.
 
 ---
 
+## Next: fight and flight
+
+### M1. Fight and flight — _built, to playtest_
+
+**Asked:** Tab switches the player's ship between two modes.
+
+- **Fight:** shield up, normal speed. The beam does not hit rocks.
+- **Flight:** faster, with no shield. The beam hits rocks.
+- **Enemies stay in fight mode** for now. That changes with the W items.
+
+**Why:** running away should be a real option. The rules for weapons and
+rocks should also be simple. Today they are four debug selections (**Shots
+at edges**, **Shot stops**, **Beam**, and the missiles' row), with a fix on
+top (**Fix before S6**), all built on field edges. No single sentence says
+when a shot stops or when the beam mines. With M1, the mode is the rule, and
+field edges are only about sight.
+
+**Decided**
+
+- **Field edges never affect weapons.** Shots, missiles and beams don't
+  test the paint at all: no edge stops them, in either direction, and no
+  edge rock is struck. Edges are only for sight.
+- **In fight mode, weapons go through rocks.** Shots, missiles and the beam
+  pass through every rock, single rocks and field rocks alike, and stop only
+  at a core. They don't push or burn rocks on the way. In a fight, every
+  weapon follows one rule: _a core stops it, nothing else does._
+- **In flight mode, only the beam changes.** Guns and missiles follow the
+  fight rule. The beam stops at the first rock on its line, in a field or
+  out, and burns it (today's **Mining tool**).
+- **The flight beam still hurts ships.** Flight mode is fight mode with more
+  speed, no shield, and a beam that stops at rocks.
+- **The rule in one sentence:** _weapons stop only at cores, except the
+  flight-mode beam, which stops at the first rock and mines it._
+- **Switching to fight mode starts the shield empty.** Energy goes to Down,
+  and the shield comes back when the bar refills, as it does after a break.
+  Tab can't raise a shield just before a hit lands.
+- **Switching to flight mode keeps the bar.** The shield's break plays, and
+  the bar keeps its level. From a full bar, the player can cloak straight
+  away.
+- **Flight speed is two multipliers:** one on top speed and one on
+  acceleration, each a debug slider.
+- **The cloak and the ram work in flight mode.** With no shield, the bar
+  still fills, so the cloak can be used when the bar is full. The ram works
+  at flight speed.
+- **Showing the mode:**
+  - **A HUD slot:** the shield's rim icon (`shield::drawIcon`, as in the
+    ram's slot), lit in fight mode and dimmed in flight mode.
+  - **The switch:** going to flight mode plays the shield's break. Going to
+    fight mode starts the bar empty, so the shield eases back in as it
+    refills.
+  - **A beam colour for each mode**, so the player can see whether the beam
+    will stop at a rock.
+
+**What this means:**
+
+- **Rocks are cover from sight, not from fire.** Enemies are in fight mode,
+  so their shots and beams pass through rocks too. Sight is unchanged:
+  rocks and field edges still hide the player. An enemy that can't see the
+  player doesn't aim at the player, so hiding still works. Staying behind a
+  rock in plain view doesn't. Only a core is a real wall.
+- **Mining is a flight-mode activity.** To mine, the player drops the
+  shield.
+- **A fight leaves the rocks alone.** Shots stop pushing rocks around (A2)
+  and wearing them down (A4) during fights. Flight mode's beam still does
+  both.
+- **A shot from outside can hit a ship inside a field**, and the other way
+  round, as long as no core is in the way. To aim, though, the shooter has
+  to see the target, and the edge still blocks sight.
+- **Several debug selections go away:** **Shots at edges**, **Shot stops**,
+  **Edge rock reach**, **Beam**, and the missiles' row. The mode replaces
+  all of them. Weapon code no longer reads the mask.
+
+**What exists already:**
+
+- **A ship with energy and no shield** is a state `energy` already supports
+  (B1). The bar fills and empties by the same rules, and nothing blocks.
+  Flight mode is the player's `Energy` with `hasShield` off, switched during
+  play. Fight mode's empty shield is energy's Down state.
+- **Lowering a visible shield breaks it.** It dissolves in patches with a
+  burning edge. Raising a shield eases it in (`shield::setActive`), so the
+  switch already has a look.
+- **Speed is `movement::Options`** (`maxSpeed`, `acceleration`, drag). The
+  player's momentum top speed is 2000. Flight mode multiplies two of those
+  fields. W2 proposes the same for field interiors, and W4 for lanes.
+- **Tab** is already read by the platform (`Button::Tab`), and the game does
+  not use it yet. The game should ignore it while ImGui has the keyboard,
+  because ImGui uses Tab to move between its fields.
+- **Missiles' Cores only** (S2) is already the fight-mode rule, written once
+  for one weapon. Shots and the beam can use the same test.
+
+**Open questions:** none left before building. Tuning the two speed
+sliders is a playtest.
+
+**What was built**
+
+- **game, `shipMode`:** the mode, Tab's toggle, the two flight multipliers
+  (`flight.topSpeed` 1.6×, `flight.acceleration` 1.5×) and a **Flight**
+  debug section with a Switch button. Each ship keeps its own mode: the
+  player's is in the session (a new round starts in fight mode), and each
+  enemy's is on its `Enemy`, always fight mode for now.
+- **`energy::setShield`:** taking the shield away drops it and keeps the
+  bar. Giving it back empties the bar into Down, and uncloaks if cloaked.
+- **`sight::shot(at, radius)`** stops only at a core. **`sight::beam`**
+  takes `mines`: all rocks when mining, otherwise cores only. Weapons no
+  longer read the mask, and `Bullet::sweptFrom` only feeds shot noticing.
+  The **Shots at edges**, **Shot stops**, **Edge rock reach**, **Beam** and
+  **Missiles** selections are gone. Saved sets that name them have those
+  keys skipped.
+- **`playerMove::update`** takes the mode and applies
+  `shipMode::movementFor` to the tuned options.
+- **HUD:** a mode slot to the right of the weapon row (`hud::showMode`). It
+  shows the shield icon in fight mode. In flight mode the icon is dimmed,
+  with two cyan chevrons over it.
+- **Beam colour:** the player's beam is amber in flight mode
+  (`bulletLook`'s `mining`), and cyan as before in fight mode.
+- **Verified:** it builds and runs with no validation errors. It has not
+  been played.
+
+**Debug selections**, in a new **Flight** section:
+
+| Selection            | Options                   | Default |
+| -------------------- | ------------------------- | ------- |
+| Flight top speed     | multiplier slider, 1–3×   | to tune |
+| Flight acceleration  | multiplier slider, 1–3×   | to tune |
+
+The rest is decided, so it isn't a selection.
+
+**Engine ideas** (suggestions, not in M1):
+
+- **Speed looks:** the warp stretch and the ram's afterimages on the ship,
+  and `camera::Zoom` easing out as speed rises. W4 lists the same ideas for
+  lanes, so flight mode would try them first.
+- **Shots through rocks** could show it: a short spark on the rock's far
+  side as a shot passes through, so going through reads as deliberate and
+  not a missed collision.
+
+**Later, with the W items:** enemies switch modes too. They can use flight
+mode to cross a lane (W4), to flee, or to chase, and fight mode inside
+fields (W2). An enemy in flight mode has no shield, which gives the player
+an opening. For that, the mode is kept on each ship, as `Energy` is: the
+player's in the session, and each enemy's on its `Enemy`.
+
+**Where it lands:** the game. A new `gameLayer` module holds the mode, its
+tuning and the switch rule, kept on each ship as `energy` is. The weapon
+rule goes in `gameLayer/sight` beside `sight::beam`, which takes the mode.
+Nothing in `render/` or `engine/` changes.
+
+---
+
 ## Next: levels that are mostly field
 
 ### W1. Levels that are 80% asteroid field
@@ -1291,9 +1450,12 @@ and four is where the roadmap says a shared helper "stops being speculative"
 
 ## Suggested order
 
-**S1 → S2 → S3 → S4 → W1 → W2 → W4 / W5 → W3 → W6.** The suggestions can go
+**S1 → S2 → S3 → S4 → M1 → W1 → W2 → W4 / W5 → W3 → W6.** The suggestions can go
 anywhere along the way.
 
 - **S1** changes the rules and can be tested without anything new on screen.
 - **S2** is the structure that everything after it reads.
+- **M1** comes before the W items. It settles the beam's rules before the
+  levels fill with field, and W2's interior speed and W4's lanes are tuned
+  against flight speed.
 - **W1**'s spatial hash already arrives with S1.

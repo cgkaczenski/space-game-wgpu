@@ -9,6 +9,7 @@
 // simply faces the mouse and the two are the same vector.
 
 #include <engine/movement.h>
+#include <shipMode.h>
 #include <glm/vec2.hpp>
 
 namespace playerMove
@@ -40,7 +41,11 @@ namespace playerMove
 	// something they control. The hull still turns as the control scheme says,
 	// so the player can line up a shot. The chosen falloff applies again the
 	// moment drifting ends.
-	glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting);
+	//
+	// `mode` is fight or flight (sight roadmap M1): flight scales the tuned
+	// speed by its own multipliers.
+	glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting,
+		shipMode::Mode mode);
 
 	void debugUi();
 }

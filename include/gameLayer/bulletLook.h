@@ -77,10 +77,13 @@ namespace bulletLook
 	enum class BeamImpact { None, Burn, Deflect };
 	// `isEnemy`: an enemy's beam (B1), in the enemies' colour, as their shots
 	// are -- so a beam on the player reads as theirs, not the player's own.
+	// `mining`: the player's beam in flight mode (sight roadmap M1), the one
+	// that stops at rocks, in amber rather than cyan.
 	void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-		BeamImpact impact, float time, glm::vec2 surfaceNormal = {}, bool isEnemy = false);
+		BeamImpact impact, float time, glm::vec2 surfaceNormal = {}, bool isEnemy = false,
+		bool mining = false);
 	void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-		float time, bool isEnemy = false);
+		float time, bool isEnemy = false, bool mining = false);
 
 	// One shot of `style`, pointing up and centred in a box `height` tall: a
 	// HUD icon. Sets its own blend modes, glow then sprite, and leaves Alpha

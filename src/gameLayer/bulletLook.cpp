@@ -41,6 +41,7 @@ namespace
 
 	const glm::vec4 playerColor = {1.00f, 0.30f, 0.85f, 1.f}; // plasma
 	const glm::vec4 enemyColor = {0.35f, 0.70f, 1.00f, 1.f};  // ice
+	const glm::vec4 miningColor = {1.00f, 0.70f, 0.20f, 1.f}; // amber: the flight-mode beam (M1)
 
 	struct Look
 	{
@@ -175,7 +176,7 @@ namespace
 }
 
 void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
-	BeamImpact impact, float time, glm::vec2 surfaceNormal, bool isEnemy)
+	BeamImpact impact, float time, glm::vec2 surfaceNormal, bool isEnemy, bool mining)
 {
 	if (capsule.id == 0) { return; }
 	const glm::vec2 along = end - start;
@@ -185,7 +186,8 @@ void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
 
 	// As drawGlow: the capsule's long axis is +x, rotated in flipped space.
 	const float rotation = glm::degrees(std::atan2(-direction.y, direction.x));
-	const glm::vec4 color = lookFor(BulletStyle::Laser, isEnemy).glow * intensity;
+	const glm::vec4 color = (mining && !isEnemy ? miningColor : lookFor(BulletStyle::Laser, isEnemy).glow)
+		* intensity;
 	const glm::vec2 centre = (start + end) * 0.5f;
 
 	// A little longer than the beam, so its rounded ends do not stop short.
@@ -241,7 +243,8 @@ void drawBeamGlow(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end,
 	}
 }
 
-void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end, float time, bool isEnemy)
+void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end, float time, bool isEnemy,
+	bool mining)
 {
 	if (sheet.id == 0) { return; }
 	const glm::vec2 along = end - start;
@@ -261,9 +264,11 @@ void drawBeamCore(wgpu2d::Renderer2D &renderer, glm::vec2 start, glm::vec2 end, 
 	for (float d = -offset; d < length; d += tile)
 	{
 		const glm::vec2 centre = start + direction * (d + tile * 0.5f);
-		// The laser's own art either way; an enemy's is tinted to its colour.
+		// The laser's own art either way; an enemy's is tinted to its
+		// colour, and a mining beam to amber.
+		const glm::vec4 tint = isEnemy ? enemyColor : mining ? miningColor : glm::vec4(Colors_White);
 		renderer.renderRectangle({centre - glm::vec2(tile * 0.5f), tile, tile},
-			sheet, isEnemy ? enemyColor : Colors_White, {}, angle, textureCoords);
+			sheet, tint, {}, angle, textureCoords);
 	}
 }
 

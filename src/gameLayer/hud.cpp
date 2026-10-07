@@ -51,6 +51,13 @@ namespace
 		renderer.renderRectangle(fillRect, fill, Colors_White, {}, {}, fillCoords);
 	}
 
+	// ---- The mode slot (M1) ---------------------------------------------
+
+	bool modeShown = false;
+	bool modeFlight = false;
+	const glm::vec4 modeFlightShade = {0.f, 0.f, 0.f, 0.6f};
+	const glm::vec4 modeFlightChevron = {0.55f, 0.95f, 1.f, 1.f};
+
 	// ---- The gate's arrow -----------------------------------------------
 
 	bool pointerShown = false;
@@ -153,6 +160,32 @@ namespace
 			if (ramReady < 1.f)
 			{
 				renderer.renderRectangle(glm::vec4{x, top, size, size * (1.f - ramReady)}, cooldownShade);
+			}
+		}
+
+		// The mode, set apart to the right, mirroring the ram: not a weapon
+		// either, a stance the ship is in.
+		if (modeShown)
+		{
+			const float x = left + total + gap * 3.f;
+			const float border = size * 0.035f;
+			renderer.renderRectangle(glm::vec4{x - border, top - border,
+				size + 2.f * border, size + 2.f * border}, slotFrame);
+			renderer.renderRectangle(glm::vec4{x, top, size, size}, slotBackground);
+			shield::drawIcon(renderer, {x + size * 0.5f, top + size * 0.5f}, size * 0.8f);
+			if (modeFlight)
+			{
+				// The shield put away, and the ship going somewhere: two
+				// chevrons pointing up the screen, over the dimmed icon.
+				renderer.renderRectangle(glm::vec4{x, top, size, size}, modeFlightShade);
+				const float arm = size * 0.28f;
+				const float stroke = std::max(2.f, size * 0.07f);
+				for (int k = 0; k < 2; k++)
+				{
+					const glm::vec2 tip = {x + size * 0.5f, top + size * (0.3f + 0.24f * k)};
+					renderer.renderLine(tip, tip + glm::vec2{-arm, arm * 0.8f}, modeFlightChevron, stroke);
+					renderer.renderLine(tip, tip + glm::vec2{arm, arm * 0.8f}, modeFlightChevron, stroke);
+				}
 			}
 		}
 
@@ -319,6 +352,12 @@ void pointTo(bool shown, glm::vec2 target, float pulse, glm::vec3 colour)
 	pointerColour = colour;
 }
 
+void showMode(bool flight)
+{
+	modeShown = true;
+	modeFlight = flight;
+}
+
 void markOffScreen(glm::vec2 target, glm::vec4 colour, float scale)
 {
 	markers.push_back({target, colour, scale});
@@ -350,6 +389,7 @@ void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 		drawSlots(renderer, slots, slotCount, ramReady, width, height);
 		drawPointer(renderer, width, height);
 		pointerShown = false; // for one draw; the game says so every frame
+		modeShown = false;
 		markers.clear();
 	}
 	renderer.popCamera();

@@ -65,6 +65,13 @@ namespace energy
 	// while it does. Cloaked, it passes through.
 	HitResult onBeam(Energy &energy, glm::vec2 offsetFromShip, float gameDeltaTime);
 
+	// Gives the ship a shield or takes it away during play (sight roadmap
+	// M1). Taking it drops a raised shield -- the break plays -- and keeps the
+	// bar's level; a shield mid-break goes down. Giving it starts the bar
+	// empty, Down: the shield rises when the bar has refilled, never at once.
+	// Cloaked, giving it uncloaks into that.
+	void setShield(Energy &energy, bool hasShield);
+
 	// E, for the player. Does nothing unless the ship can cloak and its bar
 	// is full.
 	void cloak(Energy &energy);

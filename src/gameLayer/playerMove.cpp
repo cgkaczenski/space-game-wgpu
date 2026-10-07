@@ -45,7 +45,8 @@ namespace
 	}
 }
 
-glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting)
+glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting,
+	shipMode::Mode mode)
 {
 	using platform::Button;
 	const float right = held(Button::D, Button::Right) - held(Button::A, Button::Left);
@@ -86,7 +87,7 @@ glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDelta
 		break;
 	}
 
-	ship.move = useMomentum ? momentumOptions : instantOptions;
+	ship.move = shipMode::movementFor(mode, useMomentum ? momentumOptions : instantOptions);
 	movement::step(ship, intent, gameDeltaTime);
 	return mouseDirection;
 }

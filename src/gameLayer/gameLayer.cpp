@@ -33,6 +33,7 @@
 #include <gameClock.h>
 #include <playerMove.h>
 #include <energy.h>
+#include <shipMode.h>
 #include <gate.h>
 #include <asteroids.h>
 #include <outline.h>
@@ -84,6 +85,10 @@ struct Session
 	// The player's energy, and with it the shield it raises (gameplay roadmap
 	// B1: every ship's is its own). A new round starts it full, shield up.
 	energy::Energy energy;
+
+	// Fight or flight (sight roadmap M1): Tab switches. A new round starts in
+	// fight mode, shield up.
+	shipMode::Mode mode = shipMode::Mode::Fight;
 
 	// The player's ram, as every ship that rams has one (B1).
 	ram::Ram ram;
@@ -739,6 +744,7 @@ void debugPanelUi()
 	debugPanel::section("Clock", gameClock::debugUi);
 	debugPanel::section("Player", playerMove::debugUi);
 	debugPanel::section("Energy", [] { energy::debugUi(session.energy); });
+	debugPanel::section("Flight", [] { shipMode::debugUi(session.mode, session.energy); });
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); });
@@ -938,6 +944,13 @@ bool gameLogic(float deltaTime)
 	{
 		energy::cloak(session.energy);
 	}
+	// Tab: fight or flight (M1). Into flight the shield drops; into fight the
+	// bar starts empty, so the shield comes back only once it has refilled.
+	if (controls && !stunnedNow && !ImGui::GetIO().WantCaptureKeyboard
+		&& platform::isButtonPressedOn(platform::Button::Tab))
+	{
+		shipMode::toggle(session.mode, session.energy);
+	}
 	energy::update(session.energy, time.game);
 	// The world bending round the cloaked ship follows the player's energy:
 	// the look is the cloak module's, whether to show it is energy's.
@@ -1024,7 +1037,7 @@ bool gameLogic(float deltaTime)
 		// Scoped (S4b), no thrust -- the ship drifts as if cloaked -- and it
 		// brakes to a stop, still turning to the aim.
 		session.aim = playerMove::update(session.ship, mouseDirection, time.game,
-			energy::isCloaked(session.energy) || scope::held());
+			energy::isCloaked(session.energy) || scope::held(), session.mode);
 		if (scope::held()) { session.ship.velocity *= scope::brake(time.game); }
 	}
 
@@ -1272,13 +1285,12 @@ bool gameLogic(float deltaTime)
 			if (t >= 0.f && t < reach) { reach = t; target = e; }
 		}
 
-		// A rock stops it (gameplay roadmap A1): nothing behind a rock is
-		// burned, and from on top of one it goes nowhere. Burning a rock is
-		// how ore is mined (A4) -- asteroids replaced the deposits. A field's
-		// edge stops it on the way in. One fired inside flies out. Which rocks
-		// count is the Beam selection (sight roadmap S1).
+		// In fight mode only a core stops it, as every weapon. In flight mode
+		// it stops at the first rock on its line, in a field or out, and burns
+		// it: that is how ore is mined (A4, sight roadmap M1).
 		int rockHit = -1;
-		const float rock = sight::beam(beam.origin, beam.direction, reach, &rockHit);
+		const float rock = sight::beam(beam.origin, beam.direction, reach,
+			shipMode::beamMines(session.mode), &rockHit);
 		if (rock >= 0.f)
 		{
 			reach = rock;
@@ -1355,17 +1367,15 @@ bool gameLogic(float deltaTime)
 			continue;
 		}
 
-		// A rock stops any shot, anyone's, missiles too (gameplay roadmap A1),
-		// and is pushed by it where it landed (A2). A field's edge stops a
-		// shot that crosses into the paint, not one fired inside and leaving,
-		// and inside a field its own rocks let shots by (sight roadmap S1).
-		// A shot that stops on an edge with no rock there just ends.
+		// Only a core stops a shot, anyone's, missiles too: every other rock
+		// and every field edge it passes (sight roadmap M1). Rocks are cover
+		// from sight, not from fire.
 		{
 			Bullet &b = session.bullets[i];
 			const collision::Circle hitbox = b.getHitbox();
 			const glm::vec2 flewFrom = b.sweptFrom;
 			const bool missile = b.motion == BulletMotion::Missile;
-			const sight::Stop stop = sight::shot(flewFrom, hitbox.center, hitbox.radius, missile);
+			const sight::Stop stop = sight::shot(hitbox.center, hitbox.radius);
 			b.sweptFrom = hitbox.center;
 			// A shot of the player's that crosses an enemy's cone wakes it,
 			// even when the shot goes on to miss or to stop on a rock. The
@@ -1708,10 +1718,9 @@ bool gameLogic(float deltaTime)
 			}
 
 			// Its beam, if it rolled the laser: traced from the nose, stopped by
-			// a rock, a field's edge on the way in (as the player's beam is,
-			// S1) or by the player, never past enemyBeamRange. It does not
-			// push or mine the rock it stops on -- that is the player's beam's
-			// job. On the player, energy decides (onBeam): a shield holds it
+			// what its mode says (M1: in fight mode, only a core) or by the
+			// player, never past enemyBeamRange. It does not push or mine the
+			// rock it stops on -- that is the player's beam's job. On the player, energy decides (onBeam): a shield holds it
 			// and is not broken, and it splashes off; with the shield down it
 			// burns the hull for the weapon's damage per second; cloaked, it
 			// passes through.
@@ -1723,7 +1732,8 @@ bool gameLogic(float deltaTime)
 				drawn.start = eb.origin;
 				float reach = enemyBeamRange;
 				int rock = -1;
-				const float toRock = sight::beam(eb.origin, eb.direction, reach, &rock);
+				const float toRock = sight::beam(eb.origin, eb.direction, reach,
+					shipMode::beamMines(e.mode), &rock);
 				if (toRock >= 0.f)
 				{
 					reach = toRock;
@@ -2129,7 +2139,8 @@ bool gameLogic(float deltaTime)
 	}
 	if (beam.firing)
 	{
-		bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamImpact, effectClock, beamSurface);
+		bulletLook::drawBeamGlow(renderer, beam.origin, beamEnd, beamImpact, effectClock, beamSurface,
+			false, shipMode::beamMines(session.mode));
 	}
 	for (const EnemyBeam &b : beamsInSight)
 	{
@@ -2146,7 +2157,11 @@ bool gameLogic(float deltaTime)
 		if (!shotInSight(b)) { continue; }
 		bulletLook::drawSprite(renderer, b.position, b.fireDirection, b.fromEnemy(), b.style, b.size);
 	}
-	if (beam.firing) { bulletLook::drawBeamCore(renderer, beam.origin, beamEnd, effectClock); }
+	if (beam.firing)
+	{
+		bulletLook::drawBeamCore(renderer, beam.origin, beamEnd, effectClock, false,
+			shipMode::beamMines(session.mode));
+	}
 	for (const EnemyBeam &b : beamsInSight) { bulletLook::drawBeamCore(renderer, b.start, b.end, effectClock, true); }
 
 #pragma endregion
@@ -2259,6 +2274,7 @@ bool gameLogic(float deltaTime)
 		slots[s] = {v.style, v.ready, v.ammo, v.maxAmmo, v.selected, v.usable};
 	}
 
+	hud::showMode(session.mode == shipMode::Mode::Flight);
 	// Flushes the world, then the HUD.
 	hud::draw(renderer, session.health, energy::level(session.energy), slots, weapons::slotCount,
 		ram::ready(session.ram), w, h);

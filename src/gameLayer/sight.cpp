@@ -24,26 +24,12 @@ namespace
 		EachField,    // which field: two that touch have a wall between them
 	};
 
-	// What an edge does to a line crossing it.
+	// What an edge does to a line of sight crossing it.
 	enum class Edges
 	{
 		BothWays,     // a wall from either side: rooms
-		IntoFields,   // only going in: from inside you see and shoot out
+		IntoFields,   // only going in: from inside you see out
 		Rocks,        // no edges: every rock blocks on its own outline (A1, A1b)
-	};
-
-	// Where a shot that crosses an edge ends.
-	enum class ShotStop
-	{
-		EdgeRock,     // on the field rock at the crossing, pushed and hurt, if there is one
-		Edge,         // at the edge, always, touching nothing
-	};
-
-	enum class Beam
-	{
-		MiningTool,   // the first rock it touches, in a field or out; field edges do not stop it
-		LikeShot,     // exactly a shot's rule: inside a field it passes the rocks
-		Rocks,        // the same as MiningTool since the edges were taken off it; kept for saved sets
 	};
 
 	enum class Outline
@@ -54,16 +40,8 @@ namespace
 
 	Fields fields = Fields::Continuous;
 	Edges vision = Edges::BothWays;
-	Edges shots = Edges::IntoFields;
-	ShotStop shotStop = ShotStop::EdgeRock;
-	Beam beamRule = Beam::MiningTool;
 	Outline outline = Outline::MintAmber;
 	glm::vec3 warningColour = {1.f, 0.66f, 0.22f};
-
-	// How far round a shot's crossing it looks for the edge rock to strike,
-	// beyond its own radius. The crossing is on a cell's side, and the rocks
-	// along the edge sit within about a cell of it.
-	float edgeRockReach = 60.f;
 
 	bool showMask = false;
 	bool showLines = false;
@@ -79,8 +57,6 @@ namespace
 	enum class OnRock { SeeOut, Blind };
 	// What a missile may lock onto: anything, or only what its shooter sees.
 	enum class Locks { AnyTarget, SeenOnly };
-	// What stops a missile: only a field's core, or the shot rule.
-	enum class Missiles { CoresOnly, LikeShot };
 
 	float sightRange = 4000.f;
 	int slices = 720;
@@ -89,7 +65,6 @@ namespace
 	float cloakedRange = 0.6f;      // of the range, while cloaked and Shorter
 	OnRock onRock = OnRock::SeeOut;
 	Locks locks = Locks::SeenOnly;
-	Missiles missiles = Missiles::CoresOnly;
 	bool showPolarMap = false;
 
 	// ---- What the fog hides (S3) ----
@@ -299,13 +274,6 @@ namespace
 		});
 		return c;
 	}
-
-	// The field rock a shot crossing an edge at `point` strikes, or -1.
-	int edgeRock(glm::vec2 point, float radius)
-	{
-		if (shotStop != ShotStop::EdgeRock) { return -1; }
-		return asteroids::hitCircle(point, radius + edgeRockReach, asteroids::Which::InPaint);
-	}
 }
 
 float blockedAt(glm::vec2 from, glm::vec2 to, const Look *look)
@@ -356,56 +324,22 @@ float blockedAt(glm::vec2 from, glm::vec2 to, const Look *look)
 
 bool clear(glm::vec2 from, glm::vec2 to, const Look *look) { return blockedAt(from, to, look) < 0.f; }
 
-Stop shot(glm::vec2 from, glm::vec2 to, float radius, bool missile)
+Stop shot(glm::vec2 at, float radius)
 {
+	// Through every rock and every field edge; a core is the one thing in a
+	// weapon's way (M1).
 	Stop stop;
-	if (missile && missiles == Missiles::CoresOnly)
-	{
-		// Through every rock and edge to what it chases; a core is the one
-		// thing in its way (S2).
-		const int core = asteroids::hitCircle(to, radius, asteroids::Which::Cores);
-		if (core >= 0) { stop = {true, to, core}; }
-		return stop;
-	}
-	if (shots == Edges::Rocks)
-	{
-		// The rule before S1: any rock it touches now.
-		const int rock = asteroids::hitCircle(to, radius);
-		if (rock >= 0) { stop = {true, to, rock}; }
-		return stop;
-	}
-
-	// The edge first: it is somewhere along the way, before where it is now.
-	const float edge = edgeAlong(from, to, shots);
-	if (edge >= 0.f)
-	{
-		stop.stopped = true;
-		stop.point = from + glm::normalize(to - from) * edge;
-		stop.rock = edgeRock(stop.point, radius);
-		return stop;
-	}
-	const int rock = asteroids::hitCircle(to, radius, asteroids::Which::Solid);
-	if (rock >= 0) { stop = {true, to, rock}; }
+	const int core = asteroids::hitCircle(at, radius, asteroids::Which::Cores);
+	if (core >= 0) { stop = {true, at, core}; }
 	return stop;
 }
 
-float beam(glm::vec2 origin, glm::vec2 direction, float reach, int *rock)
+float beam(glm::vec2 origin, glm::vec2 direction, float reach, bool mines, int *rock)
 {
-	*rock = -1;
-	// A mining tool: the first rock on its line, in a field or out, and no
-	// field edge -- an edge in front of the rocks stopped it short in empty
-	// space, burning whichever rock lay near the crossing instead of the one
-	// aimed at. "Rocks" is the same since.
-	if (beamRule != Beam::LikeShot) { return asteroids::raycast(origin, direction, reach, rock); }
-
-	float t = asteroids::raycast(origin, direction, reach, rock, asteroids::Which::Solid);
-	const float edge = edgeAlong(origin, origin + direction * reach, shots);
-	if (edge >= 0.f && (t < 0.f || edge < t))
-	{
-		t = edge;
-		*rock = edgeRock(origin + direction * edge, 0.f);
-	}
-	return t;
+	// Mining (flight mode): the first rock on its line, in a field or out.
+	// Otherwise as every other weapon: only a core stops it (M1).
+	return asteroids::raycast(origin, direction, reach, rock,
+		mines ? asteroids::Which::All : asteroids::Which::Cores);
 }
 
 namespace
@@ -819,12 +753,8 @@ void drawDebug(wgpu2d::Renderer2D &renderer, const std::vector<Viewer> &viewers,
 const tuning::Group tunables("sight", {
 	{"fields", fields},
 	{"vision", vision},
-	{"shots", shots},
-	{"shotStop", shotStop},
-	{"beam", beamRule},
 	{"outline", outline},
 	{"seenColour", warningColour},
-	{"edgeRockReach", edgeRockReach},
 	{"showMask", showMask},
 	{"showLines", showLines},
 	{"sightRange", sightRange},
@@ -834,7 +764,6 @@ const tuning::Group tunables("sight", {
 	{"cloakedRange", cloakedRange},
 	{"onRock", onRock},
 	{"locks", locks},
-	{"missiles", missiles},
 	{"showPolarMap", showPolarMap},
 	{"unseenEnemies", unseenEnemies},
 	{"lookOut", lookOut},
@@ -883,22 +812,7 @@ void debugUi()
 		{"Continuous paint", Fields::Continuous}, {"Each field", Fields::EachField}});
 	choose("Vision at edges", vision, {
 		{"Both ways", Edges::BothWays}, {"Into fields only", Edges::IntoFields}, {"Rocks", Edges::Rocks}});
-	choose("Shots at edges", shots, {
-		{"Into fields only", Edges::IntoFields}, {"Both ways", Edges::BothWays}, {"Rocks", Edges::Rocks}});
-	if (shots != Edges::Rocks)
-	{
-		choose("Shot stops", shotStop, {
-			{"On an edge rock", ShotStop::EdgeRock}, {"At the edge", ShotStop::Edge}});
-		if (shotStop == ShotStop::EdgeRock)
-		{
-			tune::SliderFloat("Edge rock reach", &edgeRockReach, 0.f, 300.f, "%.0f units past the shot");
-		}
-	}
-	if (beamRule == Beam::Rocks) { beamRule = Beam::MiningTool; } // the same thing now
-	choose("Beam", beamRule, {
-		{"Mining tool", Beam::MiningTool}, {"Like a shot", Beam::LikeShot}});
-	choose("Missiles", missiles, {
-		{"Cores only", Missiles::CoresOnly}, {"Like a shot", Missiles::LikeShot}});
+	ImGui::TextDisabled("  Weapons and rocks: the ship's mode decides (Flight)");
 	choose("Missile locks", locks, {
 		{"Seen only", Locks::SeenOnly}, {"Any target", Locks::AnyTarget}});
 	choose("Hidden outline", outline, {

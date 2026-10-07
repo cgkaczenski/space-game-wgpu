@@ -53,6 +53,12 @@ namespace hud
 	// roadmap S4). Any number; the gate's is drawn over them.
 	void markOffScreen(glm::vec2 target, glm::vec4 colour, float scale = 0.75f);
 
+	// The ship's mode (sight roadmap M1), for the next draw: a slot set apart
+	// to the right of the weapon row, as the ram's is to the left. Fight is
+	// the shield's icon, lit; flight is the same icon dimmed, with a pair of
+	// chevrons over it pointing ahead. Not called, no slot.
+	void showMode(bool flight);
+
 	// Draws the HUD and puts it on screen.
 	//
 	// Flushes whatever the renderer has pending first, on purpose: the HUD is

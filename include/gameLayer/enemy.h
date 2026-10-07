@@ -9,6 +9,7 @@
 #include <shipHitbox.h>
 #include <weapons.h>
 #include <energy.h>
+#include <shipMode.h>
 #include <ram.h>
 
 constexpr float enemyShipSize = 250.f;
@@ -72,6 +73,9 @@ struct Enemy
 	// whether a full one raises a shield, or can be spent on a cloak, is a
 	// placement's choice or rolled at spawn, and so is whether it can ram.
 	energy::Energy energy;
+	// Fight or flight (sight roadmap M1). Enemies stay in fight mode for now:
+	// it decides what stops their beam.
+	shipMode::Mode mode = shipMode::Mode::Fight;
 	bool canRam = false;
 	ram::Ram ram;                 // the same ram as the player's, when it can
 	float cloakLevel = 0.f;       // its cloak, eased: how faint the hull, how strong the bending

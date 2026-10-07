@@ -124,6 +124,20 @@ HitResult onBeam(Energy &e, glm::vec2 offsetFromShip, float gameDeltaTime)
 	return HitResult::Damaged;
 }
 
+void setShield(Energy &e, bool hasShield)
+{
+	if (e.hasShield == hasShield) { return; }
+	e.hasShield = hasShield;
+	e.breakTimer = 0.f;
+	if (hasShield)
+	{
+		empty(e);
+		return;
+	}
+	shield::setActive(e.bubble, false);
+	if (e.state == State::Breaking) { e.state = State::Down; } // the bar is already empty
+}
+
 void cloak(Energy &e)
 {
 	// Only from a full bar: the cloak spends everything, so there has to be
