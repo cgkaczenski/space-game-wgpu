@@ -15,6 +15,20 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Release>:Release>")
 
 project(spaceGame)
 
+# The default build is optimised, with debug symbols (sight roadmap W1).
+# Unoptimised, a level that is 80% asteroid field spent 30 ms a frame building
+# rock meshes at 2560x1440; at -O2, 3 ms. Asserts stay on: no NDEBUG. A
+# debugger steps less faithfully through optimised code, so for that,
+# configure a second build directory with -DCMAKE_BUILD_TYPE=Debug.
+get_property(SPACEGAME_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT SPACEGAME_MULTI_CONFIG AND NOT CMAKE_BUILD_TYPE)
+	set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type: RelWithDebInfo (default), Debug, Release" FORCE)
+endif()
+if(NOT MSVC)
+	set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g" CACHE STRING "" FORCE)
+	set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g" CACHE STRING "" FORCE)
+endif()
+
 # Set C++ standard globally
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

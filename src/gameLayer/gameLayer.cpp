@@ -450,7 +450,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	// What there is to mine this round (gameplay roadmap L3). Points banked by
 	// extracting are not a round's and survive.
 	resources::reset();
-	asteroids::reset(currentLevel.asteroids, currentLevel.fields); // gameplay roadmap A1, A1b
+	asteroids::reset(currentLevel.asteroids, level::fieldsAsPlayed(currentLevel, gate::clearingRadius())); // A1, A1b; the gate's clearing (W1)
 	lastKnown::reset(); // a new round's ghosts (sight roadmap S4)
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.

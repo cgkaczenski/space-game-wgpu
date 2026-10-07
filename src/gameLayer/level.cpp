@@ -170,11 +170,10 @@ namespace
 		}
 		if (word == "core")
 		{
-			// The field above it, its core dragged away from the middle.
+			// One of the field above it's cores, placed by hand.
 			glm::vec2 at;
 			if (out.fields.empty() || !(in >> at.x >> at.y)) { return false; }
-			out.fields.back().coreMoved = true;
-			out.fields.back().core = at;
+			out.fields.back().cores.push_back(at);
 			return true;
 		}
 		if (word == "scenery")
@@ -284,7 +283,7 @@ bool save(const char *path, const Level &level)
 	for (const AsteroidField &f : level.fields)
 	{
 		file << "field " << f.seed << " " << f.maxSize << " " << f.maxGap << "\n";
-		if (f.coreMoved) { file << "core " << f.core.x << " " << f.core.y << "\n"; }
+		for (const glm::vec2 &c : f.cores) { file << "core " << c.x << " " << c.y << "\n"; }
 		for (const FieldStamp &s : f.stamps)
 		{
 			file << (s.erase ? "erase " : "paint ") << s.position.x << " " << s.position.y << " " << s.radius << "\n";
@@ -297,6 +296,20 @@ bool save(const char *path, const Level &level)
 			<< s.size << " " << s.depth << "\n";
 	}
 	return (bool)file;
+}
+
+std::vector<AsteroidField> fieldsAsPlayed(const Level &level, float gateClearing)
+{
+	std::vector<AsteroidField> fields = level.fields;
+	if (gateClearing <= 0.f) { return fields; }
+	for (AsteroidField &f : fields)
+	{
+		for (const Marker &m : level.markers)
+		{
+			if (m.kind == Marker::Kind::Gate) { f.stamps.push_back({m.position, gateClearing, true}); }
+		}
+	}
+	return fields;
 }
 
 }

@@ -629,7 +629,21 @@ namespace
 		return nearest;
 	}
 
-	uint32_t coreSeed(const level::AsteroidField &f) { return mix(f.seed ^ 0xc0e0c0e0U); }
+	// The first core's seed is what the field's only core always had, so a
+	// level from before W1 keeps its core's shape.
+	uint32_t coreSeed(const level::AsteroidField &f, int core)
+	{
+		const uint32_t first = mix(f.seed ^ 0xc0e0c0e0U);
+		return core == 0 ? first : mix(first ^ (0x9e3779b9U * (uint32_t)core));
+	}
+
+	// Where each of a field's cores is: where the designer placed them, or,
+	// with none placed, one at the painted area's middle.
+	std::vector<glm::vec2> coresOf(const level::AsteroidField &f)
+	{
+		if (!f.cores.empty()) { return f.cores; }
+		return {autoCore(f)};
+	}
 
 	// A field: its core first, then its rocks -- layers of grids, one rock per
 	// cell, the big rocks first and smaller ones filling between them, never
@@ -643,7 +657,7 @@ namespace
 	//
 	// Painted, not erased: a clearing erased round the core is the core's
 	// room, not the field's edge (level2 has one), so erasers don't count.
-	Rock growCore(const level::AsteroidField &f)
+	Rock growCore(const level::AsteroidField &f, glm::vec2 at, int index)
 	{
 		auto painted = [&](glm::vec2 p)
 		{
@@ -653,7 +667,7 @@ namespace
 			}
 			return false;
 		};
-		const level::Asteroid full = {f.coreMoved ? f.core : autoCore(f), f.maxSize * coreScale, coreSeed(f)};
+		const level::Asteroid full = {at, f.maxSize * coreScale, coreSeed(f, index)};
 		const Rock probe = grow(full);
 		const float step = std::max(f.maxSize * 0.02f, 5.f);
 		float shrink = 1.f;
@@ -680,19 +694,21 @@ namespace
 		glm::vec2 lo, hi;
 		if (!fieldBounds(f, lo, hi)) { return; }
 
-		Rock core = growCore(f);
-		core.inField = true;
-		core.core = true;
-		core.field = index;
-		core.body.inverseMass = 0.f;     // immovable: nothing can push it
-		core.body.inverseInertia = 0.f;
-		core.ore = core.oreFull = 0.f;   // and it holds nothing to mine (A4)
-		const float coreBound = core.bound;
-		const glm::vec2 coreCentre = core.placement.position;
-		out.push_back(std::move(core));
-
 		scatter::Params params;
-		params.keepOut.push_back({coreCentre, coreBound});
+		const std::vector<glm::vec2> cores = coresOf(f);
+		for (int c = 0; c < (int)cores.size(); c++)
+		{
+			Rock core = growCore(f, cores[(size_t)c], c);
+			core.inField = true;
+			core.core = true;
+			core.field = index;
+			core.body.inverseMass = 0.f;     // immovable: nothing can push it
+			core.body.inverseInertia = 0.f;
+			core.ore = core.oreFull = 0.f;   // and it holds nothing to mine (A4)
+			params.keepOut.push_back({core.placement.position, core.bound});
+			out.push_back(std::move(core));
+		}
+
 		params.seed = f.seed;
 		params.maxRadius = f.maxSize;
 		params.minRadius = f.maxSize * fieldMinFraction;
@@ -1364,13 +1380,20 @@ bool isCore(int rock, glm::vec2 *centre)
 	return true;
 }
 
-glm::vec2 fieldCore(const level::AsteroidField &f) { return f.coreMoved ? f.core : autoCore(f); }
+std::vector<glm::vec2> fieldCores(const level::AsteroidField &f)
+{
+	glm::vec2 lo, hi;
+	if (!fieldBounds(f, lo, hi)) { return {}; }
+	return coresOf(f);
+}
 
-float coreRadius(const level::AsteroidField &f)
+float coreRadius(const level::AsteroidField &f, int core)
 {
 	glm::vec2 lo, hi;
 	if (!fieldBounds(f, lo, hi)) { return 0.f; }
-	return growCore(f).bound;
+	const std::vector<glm::vec2> cores = coresOf(f);
+	if (core < 0 || core >= (int)cores.size()) { return 0.f; }
+	return growCore(f, cores[(size_t)core], core).bound;
 }
 
 namespace
@@ -1518,29 +1541,84 @@ void drawForeground(wgpu2d::Renderer2D &renderer)
 	endRocks(renderer);
 }
 
+namespace
+{
+	bool same(const level::Asteroid &a, const level::Asteroid &b)
+	{
+		return a.position == b.position && a.radius == b.radius && a.seed == b.seed;
+	}
+
+	bool same(const level::AsteroidField &a, const level::AsteroidField &b)
+	{
+		if (a.seed != b.seed || a.maxSize != b.maxSize || a.maxGap != b.maxGap
+			|| a.cores != b.cores || a.stamps.size() != b.stamps.size()) { return false; }
+		for (size_t i = 0; i < a.stamps.size(); i++)
+		{
+			const level::FieldStamp &s = a.stamps[i], &t = b.stamps[i];
+			if (s.position != t.position || s.radius != t.radius || s.erase != t.erase) { return false; }
+		}
+		return true;
+	}
+
+	template <class T>
+	bool same(const std::vector<T> &a, const std::vector<T> &b)
+	{
+		if (a.size() != b.size()) { return false; }
+		for (size_t i = 0; i < a.size(); i++) { if (!same(a[i], b[i])) { return false; } }
+		return true;
+	}
+
+	// The editor's rocks, kept until the placements change: a level that is
+	// mostly field is tens of thousands of rocks, too many to grow each frame
+	// (W1). A field is regrown only when it is the one that changed.
+	std::vector<level::Asteroid> previewPlaced;
+	std::vector<level::AsteroidField> previewFields;
+	std::vector<std::vector<Rock>> previewByField;
+	std::vector<Rock> previewSingles;
+}
+
 void drawPlacements(wgpu2d::Renderer2D &renderer, const std::vector<level::Asteroid> &placed,
 	const std::vector<level::AsteroidField> &fields)
 {
 	for (const level::AsteroidField &f : fields) { drawArea(renderer, f); }
 
-	std::vector<Rock> grown;
-	for (const level::Asteroid &a : placed) { grown.push_back(grow(a)); }
-	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, grown); }
+	if (!same(placed, previewPlaced))
+	{
+		previewSingles.clear();
+		for (const level::Asteroid &a : placed) { previewSingles.push_back(grow(a)); }
+		previewPlaced = placed;
+	}
+	if (previewFields.size() != fields.size())
+	{
+		// A new entry matches no real field (sizes are at least 40), so it
+		// grows; a deleted one shifts the rest, and those that moved regrow.
+		level::AsteroidField none;
+		none.maxSize = -1.f;
+		previewFields.resize(fields.size(), none);
+		previewByField.resize(fields.size());
+	}
+	for (int i = 0; i < (int)fields.size(); i++)
+	{
+		if (same(fields[(size_t)i], previewFields[(size_t)i])) { continue; }
+		previewByField[(size_t)i].clear();
+		growField(fields[(size_t)i], i, previewByField[(size_t)i]);
+		previewFields[(size_t)i] = fields[(size_t)i];
+	}
+
 	const glm::vec4 view = renderer.getViewRect();
+	auto forEachGrown = [&](auto &&visit)
+	{
+		for (const Rock &r : previewSingles) { visit(r); }
+		for (const std::vector<Rock> &field : previewByField) { for (const Rock &r : field) { visit(r); } }
+	};
 	for (const bool cores : {true, false})
 	{
 		beginRocks(renderer, cores ? coreStone : stone);
-		for (const Rock &r : grown)
-		{
-			if (r.core == cores && onScreen(view, r)) { drawRock(renderer, r); }
-		}
+		forEachGrown([&](const Rock &r) { if (r.core == cores && onScreen(view, r)) { drawRock(renderer, r); } });
 		endRocks(renderer);
 	}
-	for (const Rock &r : grown)
-	{
-		// A field's rocks are too many to outline.
-		if (!r.inField && onScreen(view, r)) { drawOutline(renderer, r); }
-	}
+	// A field's rocks are too many to outline.
+	forEachGrown([&](const Rock &r) { if (!r.inField && onScreen(view, r)) { drawOutline(renderer, r); } });
 }
 
 // The tunables this file offers (platform/tuning.h): registered at start-up,

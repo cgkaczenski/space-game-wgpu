@@ -18,6 +18,7 @@ namespace
 	State current = State::Closed;
 
 	float gateRadius = 600.f;    // matches the editor's marker
+	float clearing = 2500.f;     // open space round it in any field (W1)
 	float hoverSeconds = 3.f;    // inside, uncloaked, to start it
 	float chargeSeconds = 30.f;  // then it spins up on its own
 
@@ -104,6 +105,7 @@ void start(bool exists, glm::vec2 position)
 bool exists() { return present; }
 glm::vec2 position() { return at; }
 float radius() { return gateRadius; }
+float clearingRadius() { return clearing; }
 State state() { return current; }
 
 bool update(float dt, bool open, bool enemiesCleared, glm::vec2 playerPos, bool playerCanUse)
@@ -252,6 +254,7 @@ const tuning::Group tunables("gate", {
 	{"chargeStartHz", chargeStartHz},
 	{"chargeEndHz", chargeEndHz},
 	{"gateRadius", gateRadius},
+	{"clearing", clearing},
 	{"swirlReach", swirlReach},
 	{"bodyPerRadius", bodyPerRadius},
 	{"openSpin", openSpin},
@@ -260,6 +263,8 @@ const tuning::Group tunables("gate", {
 
 void debugUi()
 {
+	tune::SliderFloat("Clearing", &clearing, 0.f, 8000.f, "%.0f units round it, in any field");
+	ImGui::TextDisabled("  takes effect when the round restarts");
 	if (!present)
 	{
 		ImGui::TextDisabled("This level has no gate");

@@ -30,7 +30,9 @@
 //   field 77 400 300                        seed maxSize maxGap (A1b), then:
 //   paint 1200 -400 350                     x y radius: brush stamps adding
 //   erase 1300 -350 200                     ... and cutting the field's area
-//   core -5000 -1600                        x y: the field's core, if moved (A2)
+//   core -5000 -1600                        x y: one of the field's cores, placed
+//                                           by hand (A2); any number (W1). None:
+//                                           one, at the painted area's middle
 //
 // Deposits are gone (A4): asteroids are the ore now. A `resource x y amount`
 // line from before -- or the older `marker resource x y` -- still loads, as a
@@ -124,11 +126,11 @@ namespace level
 		float maxGap = 40.f;    // room between rocks, on top of their size
 		std::vector<FieldStamp> stamps;
 
-		// The core (A2): a big rock that holds the field together. It sits at
-		// the painted area's middle unless the designer has dragged it, in
-		// which case this is where they put it.
-		bool coreMoved = false;
-		glm::vec2 core = {};
+		// The cores (A2): big rocks that hold the field together. With none
+		// placed, the field has one, at the painted area's middle. Otherwise
+		// one at each of these, where the designer put them: a level that is
+		// mostly one field needs several (sight roadmap W1).
+		std::vector<glm::vec2> cores;
 
 		bool contains(glm::vec2 point) const
 		{
@@ -162,6 +164,12 @@ namespace level
 
 	// Writes `level` in the same format. False if the file cannot be written.
 	bool save(const char *path, const Level &level);
+
+	// The fields as they are played (sight roadmap W1): each with a clearing
+	// of `gateClearing` erased round every gate, last, so the gate sits in
+	// open space wherever it is put -- moving the gate moves its clearing.
+	// Not saved: the file keeps only what was painted.
+	std::vector<AsteroidField> fieldsAsPlayed(const Level &level, float gateClearing);
 
 	// The level files in `directory`: every `.txt`, by file name, sorted. Empty
 	// if the directory cannot be read.

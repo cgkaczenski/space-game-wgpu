@@ -96,7 +96,9 @@ is still only a rule is stated per-bullet below.
 
 ## Build and run
 
-One configuration. WebGPU is the only renderer.
+One configuration. WebGPU is the only renderer. The default build is
+optimised (`-O2 -g`, asserts on; sight roadmap W1). For stepping in a debugger,
+configure a separate directory with `-DCMAKE_BUILD_TYPE=Debug`.
 
 ```bash
 cmake -S . -B build

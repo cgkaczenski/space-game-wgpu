@@ -161,13 +161,15 @@ namespace asteroids
 	// the one rock the beam cannot touch -- and if so, its centre.
 	bool isCore(int rock, glm::vec2 *centre = nullptr);
 
-	// Where a field's core is: dragged there, or the painted area's middle.
-	glm::vec2 fieldCore(const level::AsteroidField &field);
+	// Where a field's cores are: where the designer placed them, or, with
+	// none placed, one at the painted area's middle (W1). None for a field
+	// with no paint.
+	std::vector<glm::vec2> fieldCores(const level::AsteroidField &field);
 
-	// How far a field's core reaches from its centre: `coreScale` times the
-	// field's max rock size, shrunk if needed so it lies inside the painted
-	// area. 0 for a field with no paint.
-	float coreRadius(const level::AsteroidField &field);
+	// How far a field's `core`th core reaches from its centre: `coreScale`
+	// times the field's max rock size, shrunk if needed so it lies inside the
+	// painted area. 0 for a field with no paint.
+	float coreRadius(const level::AsteroidField &field, int core);
 
 	// This round's single rocks, in the world, under the ships -- and under
 	// them, what broken rocks became: shards, out of play (A4).

@@ -1,6 +1,8 @@
 #include <levelEditor.h>
 
 #include <asteroids.h>
+#include <gate.h>
+#include <engine/regionMask.h>
 #include <enemyAi.h>
 #include <weapons.h>
 #include <scenery.h>
@@ -38,6 +40,7 @@ namespace
 	{
 		Kind kind = Kind::None;
 		int index = -1;
+		int core = -1;   // which of field `index`'s cores, for Kind::Core
 	};
 	Pick selected;
 
@@ -115,7 +118,11 @@ namespace
 			const auto &stamps = level.fields[p.index].stamps;
 			return stamps.empty() ? glm::vec2{} : stamps.front().position;
 		}
-		case Kind::Core: return asteroids::fieldCore(level.fields[p.index]);
+		case Kind::Core:
+		{
+			const std::vector<glm::vec2> cores = asteroids::fieldCores(level.fields[p.index]);
+			return p.core >= 0 && p.core < (int)cores.size() ? cores[(size_t)p.core] : glm::vec2{};
+		}
 		case Kind::Scenery: return drawnAt(level.scenery[p.index]);
 		default: return {};
 		}
@@ -136,14 +143,15 @@ namespace
 			if (f.stamps.empty()) { break; }
 			const glm::vec2 by = to - f.stamps.front().position;
 			for (level::FieldStamp &s : f.stamps) { s.position += by; }
-			if (f.coreMoved) { f.core += by; } // a dragged core comes along
+			for (glm::vec2 &c : f.cores) { c += by; } // placed cores come along
 			break;
 		}
 		case Kind::Core:
 		{
+			// The middle's core, dragged, becomes a placed one.
 			level::AsteroidField &f = level.fields[p.index];
-			f.core = to;
-			f.coreMoved = true;
+			if (f.cores.empty()) { f.cores = asteroids::fieldCores(f); }
+			if (p.core >= 0 && p.core < (int)f.cores.size()) { f.cores[(size_t)p.core] = to; }
 			break;
 		}
 		case Kind::Scenery:
@@ -191,11 +199,15 @@ namespace
 		}
 		if (best.kind != Kind::None) { return best; }
 
-		// A field's core, before the field it sits in.
+		// A field's cores, before the field they sit in.
 		for (int i = (int)level.fields.size() - 1; i >= 0; i--)
 		{
 			const level::AsteroidField &f = level.fields[i];
-			if (glm::distance(at, asteroids::fieldCore(f)) <= asteroids::coreRadius(f) * 0.5f) { return {Kind::Core, i}; }
+			const std::vector<glm::vec2> cores = asteroids::fieldCores(f);
+			for (int c = 0; c < (int)cores.size(); c++)
+			{
+				if (glm::distance(at, cores[(size_t)c]) <= asteroids::coreRadius(f, c) * 0.5f) { return {Kind::Core, i, c}; }
+			}
 		}
 		// The most recently made on top.
 		for (int i = (int)level.fields.size() - 1; i >= 0; i--)
@@ -218,10 +230,19 @@ namespace
 		case Kind::Marker: level.markers.erase(level.markers.begin() + p.index); break;
 		case Kind::Ring: level.rings.erase(level.rings.begin() + p.index); break;
 		case Kind::Asteroid: level.asteroids.erase(level.asteroids.begin() + p.index); break;
-		// A core is its field's: deleting it deletes the field. Only ever from
-		// the panel's button -- a right click on either only selects the field.
-		case Kind::Field:
-		case Kind::Core: level.fields.erase(level.fields.begin() + p.index); break;
+		// Only ever from the panel's buttons -- a right click on a field or a
+		// core only selects the field. A placed core goes, and the field is
+		// selected; the last one gone, the field has one at its middle again.
+		case Kind::Field: level.fields.erase(level.fields.begin() + p.index); break;
+		case Kind::Core:
+		{
+			std::vector<glm::vec2> &cores = level.fields[p.index].cores;
+			if (p.core >= 0 && p.core < (int)cores.size()) { cores.erase(cores.begin() + p.core); }
+			selected = {Kind::Field, p.index};
+			dragging = false;
+			edited = true;
+			return;
+		}
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
 		default: return; // the start stays: a level needs one
 		}
@@ -294,11 +315,43 @@ namespace
 		case Kind::Marker: return p.index >= 0 && p.index < (int)level.markers.size();
 		case Kind::Ring: return p.index >= 0 && p.index < (int)level.rings.size();
 		case Kind::Asteroid: return p.index >= 0 && p.index < (int)level.asteroids.size();
-		case Kind::Field:
-		case Kind::Core: return p.index >= 0 && p.index < (int)level.fields.size();
+		case Kind::Field: return p.index >= 0 && p.index < (int)level.fields.size();
+		case Kind::Core:
+			return p.index >= 0 && p.index < (int)level.fields.size() && p.core >= 0
+				&& p.core < std::max((int)level.fields[p.index].cores.size(), 1);
 		case Kind::Scenery: return p.index >= 0 && p.index < (int)level.scenery.size();
 		default: return false;
 		}
+	}
+
+	// How much of the arena circle the fields cover as played, gate
+	// clearings cut out: 0 .. 1 (sight roadmap W1). On a grid 300 cells
+	// across the arena, so about a third of a percent at worst.
+	float fieldShare(const level::Level &level)
+	{
+		const float r = level.arenaRadius;
+		if (r <= 0.f || level.fields.empty()) { return 0.f; }
+		constexpr int across = 300;
+		const float cell = 2.f * r / (float)across;
+		std::vector<std::vector<region::Stamp>> layers;
+		for (const level::AsteroidField &f : level::fieldsAsPlayed(level, gate::clearingRadius()))
+		{
+			std::vector<region::Stamp> &layer = layers.emplace_back();
+			for (const level::FieldStamp &s : f.stamps) { layer.push_back({s.position, s.radius, s.erase}); }
+		}
+		const region::Mask mask = region::build(layers, cell);
+		int inside = 0, painted = 0;
+		for (int y = 0; y < across; y++)
+		{
+			for (int x = 0; x < across; x++)
+			{
+				const glm::vec2 p = {-r + (x + 0.5f) * cell, -r + (y + 0.5f) * cell};
+				if (glm::dot(p, p) > r * r) { continue; }
+				inside++;
+				if (region::labelAt(mask, p) >= 0) { painted++; }
+			}
+		}
+		return inside > 0 ? (float)painted / (float)inside : 0.f;
 	}
 
 	// The sizes picking uses, kept from the last draw: the game lends them
@@ -520,7 +573,7 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 	// Rocks as they will be in play, textured, with their outline: the shape
 	// is what a shot hits, so it is shown. Fields show their painted area as
 	// dots under their scattered rocks.
-	asteroids::drawPlacements(renderer, level.asteroids, level.fields);
+	asteroids::drawPlacements(renderer, level.asteroids, level::fieldsAsPlayed(level, gate::clearingRadius()));
 
 	// The brush, where it would stamp: green painting, red with Shift.
 	if (tool == Tool::Paint)
@@ -568,13 +621,18 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		level::direction(level.startFacingDegrees));
 	renderer.renderCircleOutline(level.start, {0.3f, 1.f, 0.4f, 0.8f}, look.shipSize * 0.6f, 2.f * px, 32);
 
-	// A selected field's core: a handle, so it can be seen to be draggable.
+	// A selected field's cores: a handle on each, so they can be seen to be
+	// draggable. The selected one white.
 	if ((selected.kind == Kind::Field || selected.kind == Kind::Core) && validPick(level, selected))
 	{
 		const level::AsteroidField &f = level.fields[selected.index];
-		renderer.renderCircleOutline(asteroids::fieldCore(f),
-			selected.kind == Kind::Core ? glm::vec4(1.f) : glm::vec4(1.f, 0.8f, 0.3f, 0.9f),
-			asteroids::coreRadius(f) * 0.5f, 3.f * px, 48);
+		const std::vector<glm::vec2> cores = asteroids::fieldCores(f);
+		for (int c = 0; c < (int)cores.size(); c++)
+		{
+			const bool picked = selected.kind == Kind::Core && selected.core == c;
+			renderer.renderCircleOutline(cores[(size_t)c], picked ? glm::vec4(1.f) : glm::vec4(1.f, 0.8f, 0.3f, 0.9f),
+				asteroids::coreRadius(f, c) * 0.5f, 3.f * px, 48);
+		}
 	}
 
 	if (selected.kind != Kind::None && selected.kind != Kind::Field && selected.kind != Kind::Core
@@ -605,6 +663,9 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::TextDisabled("L: select/drag/place  R: delete (a field: select)  R-drag/WASD: pan  wheel: zoom");
 
 	if (ImGui::DragFloat("Arena radius", &level.arenaRadius, 50.f, 1000.f, 100000.f, "%.0f")) { edited = true; }
+	ImGui::Text("Fields cover %.0f%% of the arena", fieldShare(level) * 100.f);
+	ImGui::SameLine();
+	ImGui::TextDisabled("(gate clearings cut out)");
 
 	int t = (int)tool;
 	ImGui::RadioButton("Select", &t, (int)Tool::Select); ImGui::SameLine();
@@ -626,6 +687,27 @@ Request debugUi(level::Level &level, bool unsaved)
 		else if (ImGui::Button("Start a new field")) { paintNewField = true; selected = {}; }
 		ImGui::SameLine();
 		ImGui::TextDisabled("(even over another's paint)");
+
+		// W1: paint the clearings, not the field. One stamp the arena's size,
+		// first in the field's list, so what has been erased stays erased.
+		if (ImGui::Button("Fill the arena"))
+		{
+			int target = (selected.kind == Kind::Field || selected.kind == Kind::Core) ? selected.index : -1;
+			if (target < 0)
+			{
+				level::AsteroidField f;
+				f.seed = (uint32_t)std::rand();
+				level.fields.push_back(f);
+				target = (int)level.fields.size() - 1;
+			}
+			std::vector<level::FieldStamp> &stamps = level.fields[(size_t)target].stamps;
+			stamps.insert(stamps.begin(), {{0.f, 0.f}, level.arenaRadius, false});
+			selected = {Kind::Field, target};
+			paintNewField = false;
+			edited = true;
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("into the selected field, or a new one; then Shift+drag carves");
 	}
 	if (tool == Tool::Scenery)
 	{
@@ -775,16 +857,39 @@ Request debugUi(level::Level &level, bool unsaved)
 		// most of the slider's travel.
 		if (ImGui::SliderFloat("Max gap", &f.maxGap, 0.f, 1500.f, "%.0f", ImGuiSliderFlags_Logarithmic)) { edited = true; }
 		ImGui::TextDisabled("Select tool: drag inside it to move the whole field");
-		ImGui::TextDisabled("Its core (the ring) drags on its own");
-		ImGui::TextDisabled("Its core fits inside the paint: paint wider for a bigger one");
+		ImGui::TextDisabled("Its cores (the rings) drag on their own");
+		ImGui::TextDisabled("A core fits inside the paint: paint wider for a bigger one");
+
+		ImGui::SeparatorText("Cores");
+		if (f.cores.empty()) { ImGui::TextDisabled("One, at the painted area's middle"); }
+		else { ImGui::Text("%d placed by hand", (int)f.cores.size()); }
+		// A new core at the middle of the view: the middle's own, if there was
+		// only that, is kept where it was.
+		if (ImGui::Button("Add a core here"))
+		{
+			if (f.cores.empty()) { f.cores = asteroids::fieldCores(f); }
+			f.cores.push_back(centre);
+			selected = {Kind::Core, selected.index, (int)f.cores.size() - 1};
+			edited = true;
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("(at the middle of the view)");
+		if (!f.cores.empty() && ImGui::Button("Back to one at the middle")) { f.cores.clear(); edited = true; }
 		break;
 	}
 	case Kind::Core:
 	{
 		level::AsteroidField &f = level.fields[selected.index];
-		ImGui::Text("Core of field %d", selected.index);
-		ImGui::TextDisabled(f.coreMoved ? "Placed by hand" : "At the painted area's middle");
-		if (f.coreMoved && ImGui::Button("Back to the middle")) { f.coreMoved = false; edited = true; }
+		ImGui::Text("Core %d of field %d", selected.core + 1, selected.index);
+		if (f.cores.empty())
+		{
+			ImGui::TextDisabled("At the painted area's middle; drag it to place it by hand");
+			break;
+		}
+		ImGui::TextDisabled("Placed by hand; %d in this field", (int)f.cores.size());
+		if (ImGui::Button("Remove this core")) { remove(level, selected); break; }
+		ImGui::SameLine();
+		if (ImGui::Button("Back to one at the middle")) { f.cores.clear(); selected = {Kind::Field, selected.index}; edited = true; }
 		break;
 	}
 	case Kind::Scenery:
@@ -810,8 +915,8 @@ Request debugUi(level::Level &level, bool unsaved)
 	default: break;
 	}
 
-	const bool field = selected.kind == Kind::Field || selected.kind == Kind::Core;
-	if (selected.kind != Kind::Start && ImGui::Button(field ? "Delete field" : "Delete"))
+	if (validPick(level, selected) && selected.kind != Kind::Start && selected.kind != Kind::Core
+		&& ImGui::Button(selected.kind == Kind::Field ? "Delete field" : "Delete"))
 	{
 		remove(level, selected);
 	}

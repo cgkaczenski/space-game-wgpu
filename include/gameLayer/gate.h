@@ -42,6 +42,9 @@ namespace gate
 	bool exists();
 	glm::vec2 position();
 	float radius();
+	// How far round the gate every field is cleared (sight roadmap W1):
+	// level::fieldsAsPlayed's `gateClearing`.
+	float clearingRadius();
 	State state();
 
 	// Game time. `open` is whether the gate may be used yet; `enemiesCleared`

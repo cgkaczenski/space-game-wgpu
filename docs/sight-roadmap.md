@@ -388,7 +388,7 @@ in index order. The old hash could meet a pair once per cell they shared.
 
 - **A rebuild is 8.9 ms unoptimised against 0.6 ms at -O2.** The game builds
   with no optimisation (an empty `CMAKE_BUILD_TYPE`), so the unoptimised
-  number is the one played.
+  number is the one played. _(Since W1 the default build is `-O2`.)_
 - **Slack cut the rebuilds by about two thirds** under a strength-2 blast
   every second. With nothing moving, the 80% level ran 30 s with no slow
   frames.
@@ -1245,50 +1245,100 @@ Nothing in `render/` or `engine/` changes.
 
 ## Next: levels that are mostly field
 
-### W1. Levels that are 80% asteroid field
+### W1. Levels that are 80% asteroid field — _built, to playtest_
 
 **Asked:** levels where about 80% of the area is asteroid field, as
 preparation for procedural generation.
 
-**What breaks at that size today:**
+**Decided**
 
-- **Rock count: measured at 65,224** (S1b). That's one stamp covering 80% of
-  a 20000-radius arena, at `level3`'s density (max size 90, gap 40). Each rock
-  has its own outline, mesh and body.
-- ~~**Every hit test loops over every rock.**~~ S1b's buckets fixed it: 50 to
-  320 times faster at that count. What remains is the rebuild while rocks
-  fly (see S1b).
-- ~~**`inField` checks every stamp of every field.**~~ S1's mask fixed it.
-- **Painting 80% of a level with a brush is tedious.**
+- **The default build is optimised.** Measured on a level with one stamp over
+  80% of the arena, at `level3`'s density (67,424 rocks), at 2560×1440:
 
-**Proposed steps:**
+  | | `level3` | 80% field |
+  | --- | --- | --- |
+  | load, unoptimised | 45 ms | 280 ms |
+  | game logic a frame, unoptimised | 8 ms | **30 ms** |
+  | load, `-O2` | 5 ms | 49 ms |
+  | game logic a frame, `-O2` | 0.8 ms | **2.9 ms** |
 
-1. **The spatial hash and the mask**, both from S1. They come first.
-2. **Paint the clearings, not the field.** An editor action fills the arena
-   with one huge paint stamp, and the Shift-erase brush then carves out
-   clearings and lanes. The file format already supports this, because paint
-   and erase stamps are applied in order. Nothing changes in the file.
+  Three quarters of the unoptimised frame was building the visible rocks'
+  triangles on the CPU. At `-O2` that cost is gone, so **rocks only near the
+  camera** (step 3 below) is not needed yet. Moving many rocks at once and
+  GPU time were not measured.
+- **80% of the arena circle.** The editor shows how much of the arena the
+  fields cover, live.
+- **Cores are placed in the editor,** any number per field. A field with none
+  placed has one at its middle, as before.
+- **The gate sits in a clearing.** Nothing else is fixed to the clearings.
+
+**What was built**
+
+- **CMake:** with no build type given, the build is `RelWithDebInfo` with
+  `-O2 -g` and **no `NDEBUG`**, so the renderer's asserts stay on. Stepping in
+  a debugger is less faithful. For that, configure a second build directory
+  with `-DCMAKE_BUILD_TYPE=Debug`.
+- **Several cores:** `AsteroidField::cores`, one `core x y` line each in the
+  file. A level from before keeps its core: one placed core reads as one, and
+  the first core's seed is the old one, so its shape is unchanged.
+  `asteroids::fieldCores` and `coreRadius(field, core)` replace `fieldCore`
+  and `coreRadius(field)`. Scatter keeps every core clear.
+- **The gate's clearing:** `level::fieldsAsPlayed` adds an erase stamp of
+  **Clearing** (2,500 units, a Gate slider) round each gate to every field,
+  last, when a round starts and in the editor's view. It isn't saved, so
+  moving the gate moves its clearing. No existing level has paint within
+  2,500 units of its gate, so none changes.
+- **Editor:**
+  - **Fill the arena**, in the Paint tool: one stamp the arena's size,
+    inserted *first* in the selected field (or a new one), so what was
+    already erased stays erased. Then Shift+drag carves.
+  - **Fields cover N% of the arena**, under the arena radius: the fields as
+    played on a grid 300 cells across.
+  - **Cores:** every core of a selected field has a handle. Dragging the
+    middle's core places it. **Add a core here** adds one at the middle of
+    the view. A selected core can be removed (the last one gone, the field
+    is back to one at its middle). **Back to one at the middle** clears
+    them. A core's panel has no Delete: deleting the field is the field's.
+  - **The preview is cached:** a field's rocks are regrown only when that
+    field changes. Before, every rock of every field was grown every frame.
+
+**Verified** (temporary probes, removed):
+
+- A W1-shaped level: a fill stamp, 300 erase stamps in winding lanes, 6
+  placed cores and a gate. It loads in 95 ms and runs at about 2.5 ms of game
+  logic a frame at 2560×1440. All 6 cores were grown where placed, and no
+  rock lies within 2,300 units of the gate.
+- The three levels run with no validation errors.
+- **Not yet used:** the editor's new buttons have not been clicked by anyone.
+
+**Known costs:**
+
+- **Painting a big field hitches.** Each new stamp regrows its whole field in
+  the editor: about 95 ms on the 300-stamp level, and longer as stamps are
+  added, because each candidate rock checks every stamp. If it gets in the
+  way, the fix is to look stamps up in buckets (`spatialGrid` already does
+  circles) or to regrow when the stroke ends.
+- **Steps 3 and 4 are not built:** rocks only near the camera (unneeded at
+  `-O2`), and density-placed cores (placed by hand instead).
+
+**The plan this came from:**
+
+1. **The spatial hash and the mask**, both from S1. _Done._
+2. **Paint the clearings, not the field.** _Built as Fill the arena._
 3. **Rocks only near the camera.** `engine/scatter` was built for this. Each
    rock comes from its own cell's hash, and `scatter()` takes a bounds
    rectangle. So rocks can be made for the chunks near the view, dropped when
    the view moves away, and made again identically when it comes back.
+   _Not needed at `-O2`; kept for a bigger arena (W3)._
    - **What doesn't come back on its own:** rocks that were broken or mined
      (A4). A per-chunk record of which rock seeds are gone handles that.
-     Rocks that were only moved spring home anyway (A2).
    - **A caveat:** each layer checks its gaps against nearby rocks from
-     coarser layers. A chunk therefore has to be scattered with a margin,
-     keeping only the rocks that land inside it. Test that a chunk made alone
-     comes out the same as that chunk made together with its neighbours.
-4. **Cores:** each field has one core, at its middle, so one huge field would
-   have a single core. _Suggestion:_ let the level place several cores in a
-   field, or let density place them.
+     coarser layers. A chunk therefore has to be scattered with a margin.
+4. **Cores.** _Placed by hand, any number per field._
 
-**Open questions:** 80% of what: the arena circle? How big are the clearings?
-Do the clearings hold the resources and the gate? Does a huge field need
-several cores?
-
-**Where it lands:** engine (chunked scatter, the region mask); game (what
-persists); the editor (the fill action).
+**Where it landed:** the build (CMake); game (`level`, `asteroids`, `gate`,
+`levelEditor`, the round start in `gameLayer`). Nothing in `render/` or
+`engine/` changed.
 
 ### W2. The interior is slow
 
