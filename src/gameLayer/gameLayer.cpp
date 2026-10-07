@@ -45,6 +45,7 @@
 #include <effects.h>
 #include <ram.h>
 #include <ramPath.h>
+#include <interior.h>
 #include <gameState.h>
 #include <level.h>
 #include <arena.h>
@@ -749,6 +750,7 @@ void debugPanelUi()
 	debugPanel::section("Player", playerMove::debugUi);
 	debugPanel::section("Energy", [] { energy::debugUi(session.energy); });
 	debugPanel::section("Flight", [] { shipMode::debugUi(session.mode, session.energy); });
+	debugPanel::section("Interior", interior::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -1045,6 +1047,8 @@ bool gameLogic(float deltaTime)
 	{
 		// Scoped (S4b), no thrust -- the ship drifts as if cloaked -- and it
 		// brakes to a stop, still turning to the aim.
+		// Inside a field, slower (W2).
+		session.ship.medium = interior::at(session.ship.position);
 		// Shift brakes: no thrust, and quickly, not at once, to a stop.
 		const bool braking = !ImGui::GetIO().WantCaptureKeyboard && platform::isButtonHeld(platform::Button::Shift);
 		session.aim = playerMove::update(session.ship, mouseDirection, time.game,
@@ -1695,6 +1699,7 @@ bool gameLogic(float deltaTime)
 		seen.shielded = session.energy.hasShield && (session.energy.state == energy::State::Full
 			|| session.energy.state == energy::State::Breaking);
 		e.effectImmune = std::max(0.f, e.effectImmune - time.game);
+		e.body.medium = interior::at(e.body.position); // slower inside a field, as the player is (W2)
 		const enemyAi::Orders orders = enemyAi::update(e, time.game, seen, comingBack ? &wayIn : nullptr);
 		if (playerInField && !hidden && e.awareness == Enemy::Awareness::Engaged) { playerSeenInField = true; }
 		if (orders.phaseChanged)

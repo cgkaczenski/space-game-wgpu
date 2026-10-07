@@ -30,7 +30,25 @@ void step(Body &body, const Intent &intent, float deltaTime)
 	const float length = glm::length(thrust);
 	if (length > 1.f) { thrust /= length; }
 	body.thrust = thrust;
-	integrate(body.position, body.velocity, thrust, body.move, deltaTime);
+	integrate(body.position, body.velocity, thrust,
+		through(body.move, body.medium, glm::length(body.velocity), deltaTime), deltaTime);
+}
+
+Options through(const Options &options, const Medium &medium, float speed, float deltaTime)
+{
+	const float open = topSpeed(options);
+	if (medium.topSpeed >= 1.f || open <= 0.f) { return options; }
+	const float limit = open * std::max(medium.topSpeed, 0.f);
+	float allowed = limit;
+	if (medium.settleHalfLife > 0.f && speed > limit)
+	{
+		// What is left of the excess after this step.
+		allowed = limit + (speed - limit) * std::exp2(-deltaTime / medium.settleHalfLife);
+	}
+	Options o = options;
+	o.maxSpeed = o.maxSpeed > 0.f ? std::min(o.maxSpeed, allowed) : allowed;
+	if (o.mode == Mode::Instant) { o.maxSpeed = allowed; } // its speed is the cap
+	return o;
 }
 
 void push(Body &body, glm::vec2 impulse)

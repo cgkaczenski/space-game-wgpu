@@ -65,6 +65,28 @@ namespace movement
 	// drag (capped by maxSpeed if set) for Momentum. 0 when unbounded.
 	float topSpeed(const Options &options);
 
+	// What a body is flying through: thick space that slows it, or nothing.
+	// It scales the body's own top speed rather than replacing its Options,
+	// so whatever set those -- tuning, a roll at spawn, a mode -- still
+	// holds; the caller sets it each frame from wherever the body is.
+	//
+	// A body faster than the medium allows either snaps to the limit
+	// (`settleHalfLife` 0) or loses the excess over time: it halves every
+	// `settleHalfLife` seconds, so a fast body carries a little way in.
+	// Thrust never takes it above what is left of the excess.
+	//
+	// A body with no top speed (Momentum with no drag and no cap) is
+	// unbounded, and a medium cannot scale nothing: it flies on unchanged.
+	struct Medium
+	{
+		float topSpeed = 1.f;        // of the body's own top speed
+		float settleHalfLife = 0.f;  // seconds; 0 snaps
+	};
+
+	// `options` as they apply this step through `medium`, for a body moving
+	// at `speed` now.
+	Options through(const Options &options, const Medium &medium, float speed, float deltaTime);
+
 	// Advances one body by `deltaTime`. An intent longer than 1 is shortened
 	// to 1, so diagonal keys are not faster than straight ones.
 	//
@@ -100,6 +122,8 @@ namespace movement
 		// What `step` last pushed with, in the world's frame, length 0..1 --
 		// for whatever draws an engine.
 		glm::vec2 thrust = {};
+		// What it is flying through, for `step`. Set by the caller.
+		Medium medium;
 	};
 
 	struct Intent
@@ -114,7 +138,7 @@ namespace movement
 
 	// Turns toward `intent.face` -- by at most turnRate * deltaTime, or all
 	// the way when turnRate is 0 -- then thrusts and moves through
-	// `integrate`.
+	// `integrate`, with its Options through its medium.
 	void step(Body &body, const Intent &intent, float deltaTime);
 
 	// `facing` (unit) turned toward `want` (unit) by at most `maxRadians`,

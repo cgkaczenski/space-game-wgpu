@@ -227,8 +227,9 @@ These are listed now so the shape is known. Each one arrives with its item.
   multipliers. It removes **Shots at edges**, **Shot stops**, **Edge rock
   reach**, **Beam**, and the missiles' row.
 
-- **W2, interior movement:** **Normal** · **Speed cap**, with a multiplier
-  slider · **Cap and drag**, with both sliders. Default: **Speed cap**.
+- **W2, interior movement** _(built, in an **Interior** section)_: **Normal** ·
+  **Speed cap** · **Bleeds off**, with **Top speed in a field** and
+  **Slowing**. Default: **Bleeds off**.
 - **W4, lane behaviour:** **Current** (pushes along the lane) · **Rail**
   (steers along the lane). Plus a strength slider and a top-speed multiplier.
 - **W5, gate transit:** **Instant** · **Short transit**, with a seconds
@@ -1340,24 +1341,59 @@ preparation for procedural generation.
 `levelEditor`, the round start in `gameLayer`). Nothing in `render/` or
 `engine/` changed.
 
-### W2. The interior is slow
+### W2. The interior is slow — _built, to playtest_
 
 **Asked:** inside the fields, ships move slower and there is more combat.
 
-**Proposed:** paint carries a movement modifier. In paint, a ship's top speed
-is capped lower and its drag is higher; in the open it moves normally; in a
-lane (W4) it moves faster. `movement::Options` (mode, `maxSpeed`, drag) is
-already the setting for this, and the game picks a body's Options each frame
-from the mask. Enemies get the same treatment, so a chase into a field slows
-both sides.
+**Decided**
 
-**Open questions:** a speed cap only, or drag as well, so momentum carries a
-ship a little way in? Does the ram still work inside? (Bullets keep their
-speed.)
+- **Inside paint, every ship flies slower**: the player and each enemy, so a
+  chase into a field slows both sides. "Inside" is the ship's centre in a
+  field's paint as played, so lanes, clearings and the gate's clearing are
+  open space.
+- **A fast ship carries its speed a little way in.** By default the speed
+  above the field's limit halves every 0.15 s (**Bleeds off**). **Speed cap**,
+  where it snaps to the limit, is the other choice.
+- **Flight mode's boost stacks.** The field multiplies a ship's own top speed,
+  so at 0.5 in a field, flight is 0.8× open fight speed and fight is 0.5×.
+- **The ram bursts through.** The surge sets its speed outright, so fields
+  don't touch it and the red aim line stays exact. After it, the ship bleeds
+  down to the field's limit.
+- **Shots keep their speed.**
 
-**Engine idea:** rock shadows already darken ships (A3's `shadowOn`), and a
-foreground layer of debris already exists (`drawForeground`). Making the
-debris denser over fields would help sell "the interior".
+**What was built**
+
+- **engine, `movement::Medium`:** what a body flies through, as a fraction of
+  its own top speed and a half-life for losing the excess (0 snaps). It's on
+  each `Body`, and `step` applies it through `movement::through`, so the
+  body's own Options are never overwritten. Enemies keep their rolled and
+  enraged speeds, and the player keeps their tuning and flight multipliers.
+  A body with no top speed (a cloaked drift) is unbounded and flies on
+  unchanged.
+- **game, `interior`:** the policy. `interior::at(position)` reads the mask.
+  The game sets the player's medium before it flies, and each enemy's
+  before its AI steps it. An **Interior** section holds **Normal · Speed
+  cap · Bleeds off**, **Top speed in a field** (0.5 of a ship's own) and
+  **Slowing** (0.15 s for the excess to halve).
+
+**Verified**
+
+- **The mechanism** (a temporary program against `movement.cpp`, deleted):
+  - flight at 3,200 entering a 0.5 field fell to 2,400 at 0.15 s, 2,000 at
+    0.30 s and 1,616 at 1 s, the half-life curve to the unit;
+  - snap clamped to 1,600 in one step;
+  - from rest in a field, full thrust topped out at 1,000;
+  - back in the open, 2,000;
+  - Instant mode capped at 1,000;
+  - an unbounded drift was unchanged.
+- `level4` runs with no validation errors. **Not yet played.**
+
+**Not built:**
+
+- **Denser debris over fields** (the engine idea): `drawForeground` and
+  rock shadows still look the same inside and out.
+- **Enemy AI does not know about the slowdown.** Its chases and spacing use
+  its own top speed, and it only moves slower.
 
 ---
 
