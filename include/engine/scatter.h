@@ -94,4 +94,22 @@ namespace scatter
 	// `boundsMax` whose spot is `inside` the region.
 	std::vector<Item> scatter(glm::vec2 boundsMin, glm::vec2 boundsMax,
 		const std::function<bool(glm::vec2)> &inside, const Params &params);
+
+	// **A piece of a region, exactly as the whole would have it** (sight
+	// roadmap W3): the items whose position is in [partMin, partMax), the
+	// same ones, in size and place and seed, as scattering the whole region
+	// and keeping those. So a big region can be scattered a chunk at a time,
+	// dropped, and scattered again identically.
+	//
+	// A cell's own item depends on nothing but the cell; whether it is kept
+	// depends on the coarser layers' items within `dependencyReach` of it,
+	// and theirs on the layers above them. So the part is scattered with
+	// that margin round it, then cut to the part.
+	std::vector<Item> scatterPart(glm::vec2 partMin, glm::vec2 partMax,
+		const std::function<bool(glm::vec2)> &inside, const Params &params);
+
+	// How far round a part the scatter has to look so every item in it comes
+	// out as the whole region's would: one coarse cell -- the furthest a
+	// coarser item can reach a finer one -- for each layer of the chain.
+	float dependencyReach(const Params &params);
 }

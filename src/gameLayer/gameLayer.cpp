@@ -1214,6 +1214,9 @@ bool gameLogic(float deltaTime)
 	renderer.currentCamera.zoom = scope::zoom(zoomControl::update(time.real,
 		{(float)w, (float)h}, levelLoaded ? 0.f : enemyDespawnDistance));
 
+	// The field rocks round the view, now that it is placed (sight roadmap W3).
+	asteroids::stream(renderer.getViewRect());
+
 	background::draw(renderer);
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
 	gate::drawBody(renderer); // in the world, under the ships
@@ -2248,6 +2251,9 @@ bool gameLogic(float deltaTime)
 			shipSheet, shipAtlas.get(3, 0), shipSize);
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+
+	// What chunking is doing, when the Asteroids > Chunks views are on (W3).
+	asteroids::drawChunkDebug(renderer);
 
 	// The ram's aim, while the right button is held: where it will end. Over
 	// the grade, so the fog does not grey it.

@@ -1330,7 +1330,7 @@ preparation for procedural generation.
    rock comes from its own cell's hash, and `scatter()` takes a bounds
    rectangle. So rocks can be made for the chunks near the view, dropped when
    the view moves away, and made again identically when it comes back.
-   _Not needed at `-O2`; kept for a bigger arena (W3)._
+   _Not needed at `-O2` for W1; built in W3._
    - **What doesn't come back on its own:** rocks that were broken or mined
      (A4). A per-chunk record of which rock seeds are gone handles that.
    - **A caveat:** each layer checks its gaps against nearby rocks from
@@ -1399,20 +1399,110 @@ preparation for procedural generation.
 
 ## Then: bigger maps, and getting across them
 
-### W3. Bigger arenas
+### W3. Bigger arenas — _built, to playtest_
 
-**What already scales:** the arena radius is a single number, the closing
-circle uses rings, and enemies away from the view sleep (L2).
+**Asked:** levels big enough to need fast ways across them.
 
-**What doesn't:**
+**Decided**
 
-- the rocks (W1);
-- the HUD, which points only to the gate;
-- float precision. At 100 000 units from the origin, a float resolves about
-  0.008 of a unit, which is fine. At a million it starts to show, because
-  vertices are sent in world units and the camera is a matrix on the GPU.
+- **The target is 5× the radius:** 100,000, 25× the area.
+- **The closing circle stays per level.** Each level's rings decide where it
+  closes; the hold and speeds stay global tuning. `level5` has no rings.
+- **A playtest level, `level5`.**
 
-**Open question:** how big is the target: 2×, or 5×?
+**What it cost before**, measured on 80%-field levels at 2560×1440, `-O2`:
+
+| radius | rocks | load | game logic a frame | memory |
+| --- | --- | --- | --- | --- |
+| 20,000 (1×) | ~67k | 62 ms | 2.9 ms | 276 MB |
+| 40,000 (2×) | ~270k | 212 ms | 4.2 ms | ~430 MB |
+| 60,000 (3×) | ~605k | 428 ms | 6.9 ms | 691 MB |
+| 100,000 (5×), extrapolated | ~1.7M | ~1.3 s | ~15 ms | ~1.5 GB |
+
+The frame time grew with every rock in the level, moving or not, because
+the per-frame loops (heat, awake, sleep) walk them all.
+
+**What was built: field rocks made a chunk at a time** (W1's step 3)
+
+- **engine, `scatter::scatterPart`:** the items whose spot is in a rectangle,
+  exactly as scattering the whole region would place them. Scattered with
+  `dependencyReach` round it (one coarse cell per layer: how far a coarser
+  item can decide a finer one's fate, chained), then cut to the rectangle.
+- **game, `asteroids::stream(viewRect)`**, once a frame after the camera:
+  - each field is cut into **4,000-unit chunks**. Those within **one chunk**
+    of the view are made, nearest first, within **4 ms a frame**. The first
+    frame of a round makes everything in view at once;
+  - a chunk is dropped once it is two chunks clear of the view;
+  - **what happened is kept** by each rock's identity (its field and the
+    exact spot scatter gave it). A broken rock stays broken, and damage
+    (cracks included), ore mined and loose ore come back. Rocks that were only
+    knocked about spring home anyway;
+  - **cores and single rocks are made with the round** and always there.
+    Nothing in the rules needs a field rock out of sight: weapons stop only
+    at cores (M1), sight walks the paint mask (S1), and ships bump only cores.
+  - **Chunks (W3)** in the Asteroids section: chunks made, rocks in them,
+    rocks remembered, last frame's made / dropped / waiting and time, and
+    **Chunk size**, **Made past the view** and **Budget** sliders.
+  - **Debug views** in the same section, drawn over the fog:
+    - **Chunk grid**: every chunk's edges in view;
+    - **Chunk state**: made (green, outlined), waiting on the budget
+      (amber), and a flash as each is made (green) or dropped (red);
+    - **Stream rectangles**: the view streamed for (cyan), made within
+      (green), dropped outside (red);
+    - **Remembered rocks**: a red cross where a broken rock was, an amber
+      ring on a damaged or mined one;
+    - **Stream for** (0.1–1 of the view): streams for a smaller rectangle
+      round the view's middle, so the edges where chunks come and go are on
+      screen. **Cull drawing to it too** draws only rocks touching that
+      rectangle, to show what drawing culls.
+
+    A capture of `level4` (2,000-unit chunks, Stream for 0.6, Made past
+    0) shows field rocks only inside the made chunks, cut off at their
+    outer edges.
+- **A field's stamps in buckets** (`FieldArea`): "is this point in the paint"
+  looks only at nearby stamps, with the same answer as
+  `AsteroidField::contains`. `level5` has 1,411 stamps.
+- **The editor preview** makes only the chunks in view, cached per field,
+  12 ms a frame. Zoomed out past 120 chunks, it shows the paint's dots and
+  the cores only.
+
+**Verified** (temporary probes and programs, removed):
+
+- **The engine:** whole-region scatters against the union of their chunks,
+  in four settings (57,000–91,000 items; rock size 90 and 400; gap 41 and
+  300; 3 and 4 layers; chunks of 3,500–5,500), were identical item for item.
+  A control without the margin differed, so the test can fail.
+- **The stamp buckets:** 0 of 300,000 random points disagreed with
+  `contains` on `level5`.
+- **Remembering:** a rock damaged to 40% health with a quarter of its ore,
+  and another broken, then the view sent 300,000 units away and back. The
+  damaged one came back with exactly that health and ore, and the broken
+  one stayed gone.
+- **`level5`** (100,000 radius, 83% field): loads in 22 ms plus 29 ms for
+  the first view's rocks, then **2.3–2.9 ms of game logic a frame**, and a
+  **309 MB** footprint. Flying east at flight speed for 10 s, streaming
+  averaged 0.04 ms a frame, worst 4.6 ms, with at most 28,700 rocks made.
+- **Levels 1–5** load and run with no validation errors. **Not yet played**,
+  and the editor preview has not been used on `level5`.
+
+**Changed by it:** field rocks off the view no longer exist, so a blast or a
+ram off screen pushes nothing there. Draw order between rocks of different
+chunks follows which was made first, which only matters where rocks overlap.
+
+**`level5`**, generated by a script:
+- 6 open bays (12,000–16,000 radius) and 14 clearings, joined by 21 winding
+  roads 1,300 units wide;
+- 100 cores on a jittered grid through solid field;
+- 39 enemies: in the open places, 12 cloaked rushers lurking at the field's
+  edge, and a boss before the gate;
+- the start in the far west and the gate in the far east, 170,000 apart;
+- no rings.
+
+**Still open:**
+
+- **The HUD** points only to the gate. W6's explored map is the answer.
+- **Getting across** 170,000 units at a top speed of 2,000 to 3,200 takes
+  a minute or more. That's W4's job.
 
 ### W4. High-speed lanes
 

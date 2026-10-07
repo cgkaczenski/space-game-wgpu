@@ -12,10 +12,14 @@
 #include <platformTools.h>
 #include <glm/glm.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace asteroids
 {
@@ -49,6 +53,11 @@ namespace
 
 		int field = -1;                 // which field it belongs to; -1 a single rock
 		bool core = false;              // its field's core: immovable, never struck, solid to ships
+		// The chunk it was made for (W3), or -1: a single rock or a core,
+		// made with the round and kept all of it. And where scatter put it,
+		// which with its field is what it is: made again, it is the same rock.
+		long long chunk = -1;
+		glm::vec2 origin = {};
 		// Knocked out of its field's paint (S1): then it is a rock on its own,
 		// solid to sight and shots. By the field's own stamps, exactly -- the
 		// grid's stair-step edge would call some rocks at rest outside --
@@ -177,6 +186,125 @@ namespace
 	}
 	std::vector<level::Asteroid> placedCopy; // to regrow when a shape slider moves
 	std::vector<level::AsteroidField> fieldsCopy;
+
+	// A field's stamps in buckets (sight roadmap W3): whether a point is in
+	// its paint, looking only at the stamps near it. The same answer as
+	// AsteroidField::contains -- the last stamp covering the point decides --
+	// but a level that is mostly one field has hundreds of stamps, and
+	// scattering it asks millions of times.
+	struct FieldArea
+	{
+		std::vector<level::FieldStamp> stamps;
+		spatial::Grid grid;
+	};
+
+	FieldArea areaOf(const level::AsteroidField &f)
+	{
+		FieldArea a;
+		a.stamps = f.stamps;
+		std::vector<collision::Circle> circles;
+		circles.reserve(f.stamps.size());
+		for (const level::FieldStamp &s : f.stamps) { circles.push_back({s.position, s.radius}); }
+		spatial::build(a.grid, circles, 2000.f);
+		return a;
+	}
+
+	bool areaContains(const FieldArea &a, glm::vec2 p)
+	{
+		if (a.stamps.empty()) { return false; }
+		int last = -1;
+		spatial::query(a.grid, p, p, [&](int i)
+		{
+			const level::FieldStamp &s = a.stamps[(size_t)i];
+			const glm::vec2 d = p - s.position;
+			if (i > last && d.x * d.x + d.y * d.y <= s.radius * s.radius) { last = i; }
+			return true;
+		});
+		return last >= 0 && !a.stamps[(size_t)last].erase;
+	}
+
+	std::vector<FieldArea> areas;   // one per field this round, beside fieldsCopy
+
+	// ---- Chunks (sight roadmap W3) ----
+	//
+	// A field's rocks are made a square chunk at a time, for the chunks round
+	// the view, and dropped once the view is well away -- a level five times
+	// the size is twenty-five times the rocks, more than fit. engine/scatter's
+	// scatterPart makes each chunk exactly as the whole field would have it,
+	// so a chunk made again is the same rocks. What happened to them is kept
+	// by each rock's identity -- its field and where scatter put it: broken
+	// ones stay broken, and damage and ore taken stay taken. Rocks only
+	// knocked about spring home anyway.
+	//
+	// Nothing in the rules needs a field rock out of sight: weapons stop only
+	// at cores (M1), sight walks the paint mask (S1), and ships bump only
+	// cores. Cores and single rocks are made with the round and always there.
+	float chunkSize = 4000.f;       // world units, square
+	float chunkMargin = 1.f;        // chunks made past the view on every side
+	float chunkBudgetMs = 4.f;      // making rocks, per frame, once the round is under way
+
+	std::unordered_map<long long, int> loadedChunks; // key -> field
+	std::vector<glm::vec4> fieldBoxes;               // each field's painted bounds: lo x, lo y, hi x, hi y
+	std::vector<bool> fieldHasPaint;
+	std::vector<std::vector<scatter::Params::KeepOut>> fieldKeepOut; // its cores
+	bool streamedThisRound = false;
+
+	struct Kept { bool broken = false; float health = 0.f, ore = 0.f, oreLoose = 0.f; };
+	struct RockId
+	{
+		int field;
+		float x, y;
+		bool operator==(const RockId &o) const { return field == o.field && x == o.x && y == o.y; }
+	};
+	struct RockIdHash
+	{
+		size_t operator()(const RockId &id) const
+		{
+			uint32_t x, y;
+			std::memcpy(&x, &id.x, 4);
+			std::memcpy(&y, &id.y, 4);
+			return std::hash<uint64_t>()(((uint64_t)x << 32 | y) ^ ((uint64_t)(uint32_t)id.field * 0x9e3779b97f4a7c15ULL));
+		}
+	};
+	std::unordered_map<RockId, Kept, RockIdHash> kept;
+
+	// ---- Seeing the chunks (debug) ----
+	//
+	// The view is the screen, so the chunks being made and dropped at its
+	// edges are never seen. Streaming for a smaller rectangle round the view's
+	// middle -- **Stream for** below 1 -- brings those edges on screen, and
+	// drawing can be culled to the same rectangle to show what culling skips.
+	bool showChunkGrid = false;     // every chunk's edges, in view
+	bool showChunkState = false;    // made, flashed as made or dropped, waiting
+	bool showStreamRects = false;   // what streams, what is made, what is kept
+	bool showKept = false;          // the remembered rocks: broken, damaged
+	float streamViewScale = 1.f;    // of the real view, round its middle
+	bool cullDrawToStream = false;  // draw only rocks touching the streamed view
+	float chunkFlashSeconds = 0.8f;
+
+	glm::vec4 streamedView = {};    // the last rectangles stream used
+	glm::vec2 madeLo = {}, madeHi = {}, keptLo = {}, keptHi = {};
+	std::vector<long long> waiting; // wanted, and left for a later frame by the budget
+	struct ChunkEvent { long long key; bool made; double at; };
+	std::vector<ChunkEvent> chunkEvents;
+	int madeLastFrame = 0, droppedLastFrame = 0;
+	double streamMsLastFrame = 0.0;
+
+	double debugNow()
+	{
+		static const auto start = std::chrono::steady_clock::now();
+		return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+	}
+
+	long long chunkKey(int field, int x, int y)
+	{
+		return ((long long)field << 48) | ((long long)(uint32_t)(x & 0xffffff) << 24) | (long long)(uint32_t)(y & 0xffffff);
+	}
+	glm::ivec2 chunkCell(long long key)
+	{
+		auto unpack = [](long long v) { int i = (int)(v & 0xffffff); return (i & 0x800000) ? i - 0x1000000 : i; };
+		return {unpack(key >> 24), unpack(key)};
+	}
 
 	// The fields' painted area as a grid (sight roadmap S1): what inField
 	// answers from, and what sight walks along a line. Built from the stamps
@@ -689,12 +817,30 @@ namespace
 		return shrink < 1.f ? grow(full, shrink) : probe;
 	}
 
-	void growField(const level::AsteroidField &f, int index, std::vector<Rock> &out)
+	// How a field's rocks are spread: its own numbers and the shared field
+	// tuning. Every chunk of it, in play or in the editor, scatters with these.
+	scatter::Params fieldParams(const level::AsteroidField &f, const std::vector<scatter::Params::KeepOut> &keepOut)
 	{
+		scatter::Params params;
+		params.keepOut = keepOut;
+		params.seed = f.seed;
+		params.maxRadius = f.maxSize;
+		params.minRadius = f.maxSize * fieldMinFraction;
+		params.gap = f.maxGap;
+		params.gapVariation = fieldGapVariation;
+		params.layers = fieldLayers;
+		params.smallBias = fieldSmallBias;
+		params.fill = fieldFill;
+		return params;
+	}
+
+	// A field's cores, into `out`, and the circles its rocks keep clear of.
+	void growCores(const level::AsteroidField &f, int index, std::vector<Rock> &out,
+		std::vector<scatter::Params::KeepOut> &keepOut)
+	{
+		keepOut.clear();
 		glm::vec2 lo, hi;
 		if (!fieldBounds(f, lo, hi)) { return; }
-
-		scatter::Params params;
 		const std::vector<glm::vec2> cores = coresOf(f);
 		for (int c = 0; c < (int)cores.size(); c++)
 		{
@@ -705,32 +851,37 @@ namespace
 			core.body.inverseMass = 0.f;     // immovable: nothing can push it
 			core.body.inverseInertia = 0.f;
 			core.ore = core.oreFull = 0.f;   // and it holds nothing to mine (A4)
-			params.keepOut.push_back({core.placement.position, core.bound});
+			keepOut.push_back({core.placement.position, core.bound});
 			out.push_back(std::move(core));
 		}
+	}
 
-		params.seed = f.seed;
-		params.maxRadius = f.maxSize;
-		params.minRadius = f.maxSize * fieldMinFraction;
-		params.gap = f.maxGap;
-		params.gapVariation = fieldGapVariation;
-		params.layers = fieldLayers;
-		params.smallBias = fieldSmallBias;
-		params.fill = fieldFill;
-		for (const scatter::Item &item : scatter::scatter(lo, hi,
-			[&](glm::vec2 p) { return f.contains(p); }, params))
+	// One chunk of a field's rocks, into `out`: those whose spot is in the
+	// square at chunk (x, y), exactly as scattering the whole field would
+	// place them. `onEach` sees each before it goes in.
+	template <class F>
+	void growChunk(const level::AsteroidField &f, const FieldArea &area, int index,
+		const std::vector<scatter::Params::KeepOut> &keepOut, int x, int y, float size,
+		std::vector<Rock> &out, F &&onEach)
+	{
+		const glm::vec2 lo = glm::vec2((float)x, (float)y) * size;
+		const long long key = chunkKey(index, x, y);
+		for (const scatter::Item &item : scatter::scatterPart(lo, lo + glm::vec2(size),
+			[&](glm::vec2 p) { return areaContains(area, p); }, fieldParams(f, keepOut)))
 		{
 			Rock r = grow({item.position, item.radius, item.seed});
 			r.inField = true;
 			r.field = index;
-			out.push_back(std::move(r));
+			r.chunk = key;
+			r.origin = item.position;
+			if (onEach(r)) { out.push_back(std::move(r)); }
 		}
 	}
 
 	// The editor's view of a painted area: dots on a screen-spaced grid
 	// wherever the area is, so overlapping brush stamps read as one flat
 	// region instead of stacking up.
-	void drawArea(wgpu2d::Renderer2D &renderer, const level::AsteroidField &f)
+	void drawArea(wgpu2d::Renderer2D &renderer, const level::AsteroidField &f, const FieldArea &area)
 	{
 		glm::vec2 lo, hi;
 		if (!fieldBounds(f, lo, hi)) { return; }
@@ -744,7 +895,7 @@ namespace
 		{
 			for (float x = std::floor(lo.x / step) * step; x <= hi.x; x += step)
 			{
-				if (!f.contains({x, y})) { continue; }
+				if (!areaContains(area, {x, y})) { continue; }
 				renderer.renderRectangle({x - dot * 0.5f, y - dot * 0.5f, dot, dot}, {0.4f, 1.f, 0.6f, 0.55f});
 			}
 		}
@@ -873,6 +1024,8 @@ namespace
 		{
 			if (!rocks[i].core && rocks[i].health <= 0.f)
 			{
+				// A chunk's rock stays broken when the chunk is made again (W3).
+				if (rocks[i].chunk >= 0) { kept[{rocks[i].field, rocks[i].origin.x, rocks[i].origin.y}].broken = true; }
 				breakInto(rocks[i]);
 				rocks.erase(rocks.begin() + (long)i);
 				rockGridDirty = true; // the rocks after it are renumbered
@@ -1002,7 +1155,24 @@ void reset(const std::vector<level::Asteroid> &placed, const std::vector<level::
 	buildMask();
 	rocks.clear();
 	for (const level::Asteroid &a : placed) { rocks.push_back(grow(a)); }
-	for (int i = 0; i < (int)fields.size(); i++) { growField(fields[i], i, rocks); }
+
+	// The fields' cores now, and their rocks a chunk at a time round the
+	// view: `stream`, from the first frame (W3).
+	areas.clear();
+	fieldBoxes.clear();
+	fieldHasPaint.clear();
+	fieldKeepOut.assign(fields.size(), {});
+	for (int i = 0; i < (int)fields.size(); i++)
+	{
+		areas.push_back(areaOf(fields[(size_t)i]));
+		glm::vec2 lo = {}, hi = {};
+		fieldHasPaint.push_back(fieldBounds(fields[(size_t)i], lo, hi));
+		fieldBoxes.push_back({lo, hi});
+		growCores(fields[(size_t)i], i, rocks, fieldKeepOut[(size_t)i]);
+	}
+	loadedChunks.clear();
+	kept.clear();
+	streamedThisRound = false;
 	rockGridDirty = true;
 	shards.clear();
 	orbsThrown = 0;
@@ -1039,7 +1209,210 @@ void reset(const std::vector<level::Asteroid> &placed, const std::vector<level::
 	}
 }
 
+namespace
+{
+	// What a chunk's rock carries away when the chunk goes: only what differs
+	// from a rock made fresh.
+	void remember(const Rock &r)
+	{
+		if (r.chunk < 0) { return; }
+		if (r.health >= r.healthFull && r.ore >= r.oreFull && r.oreLoose <= 0.f) { return; }
+		Kept &k = kept[{r.field, r.origin.x, r.origin.y}];
+		k.health = r.health;
+		k.ore = r.ore;
+		k.oreLoose = r.oreLoose;
+	}
+
+	void loadChunk(int field, int x, int y)
+	{
+		growChunk(fieldsCopy[(size_t)field], areas[(size_t)field], field, fieldKeepOut[(size_t)field],
+			x, y, chunkSize, rocks, [](Rock &r)
+		{
+			const auto found = kept.find({r.field, r.origin.x, r.origin.y});
+			if (found == kept.end()) { return true; }
+			if (found->second.broken) { return false; }
+			r.health = found->second.health;
+			r.ore = found->second.ore;
+			r.oreLoose = found->second.oreLoose;
+			if (r.health < r.healthFull) { ensureCracks(r); } // its damage shows again
+			return true;
+		});
+		loadedChunks[chunkKey(field, x, y)] = field;
+		rockGridDirty = true;
+	}
+}
+
+void stream(glm::vec4 view)
+{
+	if (fieldsCopy.empty()) { return; }
+	const auto streamStart = std::chrono::steady_clock::now();
+	if (streamViewScale < 1.f)
+	{
+		// Debug: a smaller rectangle round the view's middle, so its edges,
+		// where chunks come and go, are on screen.
+		const glm::vec2 middle = {view.x + view.z * 0.5f, view.y + view.w * 0.5f};
+		const glm::vec2 half = glm::vec2(view.z, view.w) * (0.5f * std::max(streamViewScale, 0.05f));
+		view = {middle - half, half * 2.f};
+	}
+	streamedView = view;
+	madeLastFrame = droppedLastFrame = 0;
+	const float size = std::max(chunkSize, 500.f);
+	const float margin = std::max(chunkMargin, 0.f) * size;
+	const glm::vec2 wantLo = glm::vec2(view.x, view.y) - glm::vec2(margin);
+	const glm::vec2 wantHi = glm::vec2(view.x + view.z, view.y + view.w) + glm::vec2(margin);
+	// Dropped one chunk further out than they are made, so a view moving
+	// back and forth over a chunk's edge does not make and drop it each time.
+	const glm::vec2 keepLo = wantLo - glm::vec2(size), keepHi = wantHi + glm::vec2(size);
+	madeLo = wantLo; madeHi = wantHi; keptLo = keepLo; keptHi = keepHi;
+
+	std::unordered_set<long long> drop;
+	for (const auto &[key, field] : loadedChunks)
+	{
+		const glm::vec2 lo = glm::vec2(chunkCell(key)) * size;
+		if (lo.x + size <= keepLo.x || lo.y + size <= keepLo.y || lo.x >= keepHi.x || lo.y >= keepHi.y) { drop.insert(key); }
+	}
+	if (!drop.empty())
+	{
+		for (const Rock &r : rocks) { if (r.chunk >= 0 && drop.count(r.chunk)) { remember(r); } }
+		rocks.erase(std::remove_if(rocks.begin(), rocks.end(),
+			[&](const Rock &r) { return r.chunk >= 0 && drop.count(r.chunk) > 0; }), rocks.end());
+		for (long long key : drop) { loadedChunks.erase(key); chunkEvents.push_back({key, false, debugNow()}); }
+		droppedLastFrame = (int)drop.size();
+		rockGridDirty = true;
+	}
+
+	// What is wanted and missing, nearest the view's middle first.
+	struct Todo { int field, x, y; float distance; };
+	static std::vector<Todo> todo;
+	todo.clear();
+	const glm::vec2 middle = {view.x + view.z * 0.5f, view.y + view.w * 0.5f};
+	for (int f = 0; f < (int)fieldsCopy.size(); f++)
+	{
+		if (!fieldHasPaint[(size_t)f]) { continue; }
+		const glm::vec4 box = fieldBoxes[(size_t)f];
+		const glm::vec2 lo = glm::max(wantLo, glm::vec2(box.x, box.y));
+		const glm::vec2 hi = glm::min(wantHi, glm::vec2(box.z, box.w));
+		if (lo.x >= hi.x || lo.y >= hi.y) { continue; }
+		for (int y = (int)std::floor(lo.y / size); y <= (int)std::floor(hi.y / size); y++)
+		{
+			for (int x = (int)std::floor(lo.x / size); x <= (int)std::floor(hi.x / size); x++)
+			{
+				if (loadedChunks.count(chunkKey(f, x, y))) { continue; }
+				const glm::vec2 centre = (glm::vec2((float)x, (float)y) + 0.5f) * size;
+				todo.push_back({f, x, y, glm::distance(centre, middle)});
+			}
+		}
+	}
+	std::sort(todo.begin(), todo.end(), [](const Todo &a, const Todo &b) { return a.distance < b.distance; });
+
+	// The first frame of a round makes everything wanted, so nothing pops in;
+	// after that, a few milliseconds' worth a frame.
+	const auto start = std::chrono::steady_clock::now();
+	waiting.clear();
+	size_t next = 0;
+	for (; next < todo.size(); next++)
+	{
+		const Todo &t = todo[next];
+		loadChunk(t.field, t.x, t.y);
+		madeLastFrame++;
+		chunkEvents.push_back({chunkKey(t.field, t.x, t.y), true, debugNow()});
+		const double spent = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+		if (streamedThisRound && spent >= chunkBudgetMs) { next++; break; }
+	}
+	for (; next < todo.size(); next++) { waiting.push_back(chunkKey(todo[next].field, todo[next].x, todo[next].y)); }
+	streamedThisRound = true;
+
+	const double now = debugNow();
+	chunkEvents.erase(std::remove_if(chunkEvents.begin(), chunkEvents.end(),
+		[&](const ChunkEvent &e) { return now - e.at > chunkFlashSeconds; }), chunkEvents.end());
+	streamMsLastFrame = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - streamStart).count();
+}
+
+void drawChunkDebug(wgpu2d::Renderer2D &renderer)
+{
+	if (!showChunkGrid && !showChunkState && !showStreamRects && !showKept) { return; }
+	const float size = std::max(chunkSize, 500.f);
+	const float px = 1.f / std::max(renderer.currentCamera.zoom, 0.001f);
+	const glm::vec4 view = renderer.getViewRect();
+	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+	auto fill = [&](long long key, glm::vec4 colour)
+	{
+		const glm::vec2 lo = glm::vec2(chunkCell(key)) * size;
+		renderer.renderRectangle({lo.x, lo.y, size, size}, colour);
+	};
+	auto outline = [&](glm::vec2 lo, glm::vec2 hi, glm::vec4 colour, float width)
+	{
+		renderer.renderLine(lo, {hi.x, lo.y}, colour, width * px);
+		renderer.renderLine({hi.x, lo.y}, hi, colour, width * px);
+		renderer.renderLine(hi, {lo.x, hi.y}, colour, width * px);
+		renderer.renderLine({lo.x, hi.y}, lo, colour, width * px);
+	};
+
+	if (showChunkState)
+	{
+		// Made: a faint green. Waiting on the budget: amber. Just made: bright
+		// green fading; just dropped: red fading.
+		for (const auto &[key, field] : loadedChunks)
+		{
+			fill(key, {0.2f, 1.f, 0.4f, 0.12f});
+			const glm::vec2 lo = glm::vec2(chunkCell(key)) * size;
+			const float inset = 4.f * px; // inside the grid line, so both show
+			outline(lo + glm::vec2(inset), lo + glm::vec2(size - inset), {0.3f, 1.f, 0.45f, 0.6f}, 1.5f);
+		}
+		for (long long key : waiting) { fill(key, {1.f, 0.7f, 0.15f, 0.25f}); }
+		const double now = debugNow();
+		for (const ChunkEvent &e : chunkEvents)
+		{
+			const float left = 1.f - (float)((now - e.at) / std::max((double)chunkFlashSeconds, 0.01));
+			if (left <= 0.f) { continue; }
+			fill(e.key, e.made ? glm::vec4(0.3f, 1.f, 0.5f, 0.45f * left) : glm::vec4(1.f, 0.2f, 0.2f, 0.45f * left));
+		}
+	}
+
+	if (showChunkGrid)
+	{
+		const glm::vec4 line = {1.f, 1.f, 1.f, 0.35f};
+		for (float x = std::floor(view.x / size) * size; x <= view.x + view.z; x += size)
+		{
+			renderer.renderLine({x, view.y}, {x, view.y + view.w}, line, 1.5f * px);
+		}
+		for (float y = std::floor(view.y / size) * size; y <= view.y + view.w; y += size)
+		{
+			renderer.renderLine({view.x, y}, {view.x + view.z, y}, line, 1.5f * px);
+		}
+	}
+
+	if (showStreamRects)
+	{
+		// Cyan: the view chunks are made for. Green: made within this.
+		// Red: dropped once outside this.
+		outline({streamedView.x, streamedView.y}, {streamedView.x + streamedView.z, streamedView.y + streamedView.w},
+			{0.3f, 0.9f, 1.f, 0.9f}, 3.f);
+		outline(madeLo, madeHi, {0.3f, 1.f, 0.4f, 0.9f}, 2.f);
+		outline(keptLo, keptHi, {1.f, 0.3f, 0.3f, 0.9f}, 2.f);
+	}
+
+	if (showKept)
+	{
+		// Remembered rocks where they were made: a red cross broken, an amber
+		// ring damaged or mined.
+		const float mark = 10.f * px;
+		for (const auto &[id, k] : kept)
+		{
+			const glm::vec2 at = {id.x, id.y};
+			if (at.x < view.x - mark || at.y < view.y - mark || at.x > view.x + view.z + mark || at.y > view.y + view.w + mark) { continue; }
+			if (k.broken)
+			{
+				renderer.renderLine(at - glm::vec2(mark), at + glm::vec2(mark), {1.f, 0.25f, 0.2f, 1.f}, 2.f * px);
+				renderer.renderLine(at + glm::vec2(-mark, mark), at + glm::vec2(mark, -mark), {1.f, 0.25f, 0.2f, 1.f}, 2.f * px);
+			}
+			else { renderer.renderCircleOutline(at, {1.f, 0.75f, 0.2f, 1.f}, mark, 2.f * px, 12); }
+		}
+	}
+}
+
 float hiddenShade() { return shadeInField; }
+
 
 bool inField(glm::vec2 point)
 {
@@ -1361,7 +1734,7 @@ void update(float dt)
 		place(r);
 		if (r.field >= 0 && !r.core && r.field < (int)fieldsCopy.size())
 		{
-			r.outOfField = !fieldsCopy[(size_t)r.field].contains(r.placement.position);
+			r.outOfField = r.field < (int)areas.size() && !areaContains(areas[(size_t)r.field], r.placement.position);
 		}
 		awakeCount++;
 		const bool still = glm::length(r.body.velocity) < 2.f && std::abs(r.body.spin) < 0.02f;
@@ -1445,7 +1818,10 @@ namespace
 		// The buckets the view covers give the candidates; sorted, they draw
 		// in the order the rocks are stored, as they did when every rock was
 		// looked at, so overlapping rocks keep which one is on top.
-		const glm::vec4 view = renderer.getViewRect();
+		// Debug: culled to the streamed rectangle, so what culling leaves out
+		// shows.
+		glm::vec4 view = renderer.getViewRect();
+		if (cullDrawToStream && streamedView.z > 0.f) { view = streamedView; }
 		static std::vector<int> visible;
 		visible.clear();
 		spatial::query(rockIndex(), {view.x, view.y}, {view.x + view.z, view.y + view.w}, [&](int i)
@@ -1568,57 +1944,113 @@ namespace
 		return true;
 	}
 
-	// The editor's rocks, kept until the placements change: a level that is
-	// mostly field is tens of thousands of rocks, too many to grow each frame
-	// (W1). A field is regrown only when it is the one that changed.
+	// The editor's rocks: single rocks until they change, and each field's
+	// cores and chunks until that field changes. Only the chunks in view are
+	// made -- a level of the size W3 allows is more rocks than fit -- a few
+	// milliseconds' worth a frame, and none when the view takes in more than
+	// `previewChunkLimit` chunks: zoomed that far out, the dots show the paint.
 	std::vector<level::Asteroid> previewPlaced;
-	std::vector<level::AsteroidField> previewFields;
-	std::vector<std::vector<Rock>> previewByField;
 	std::vector<Rock> previewSingles;
+	struct PreviewField
+	{
+		bool valid = false;
+		level::AsteroidField field;
+		FieldArea area;
+		std::vector<Rock> cores;
+		std::vector<scatter::Params::KeepOut> keepOut;
+		glm::vec2 lo = {}, hi = {};
+		bool painted = false;
+		std::unordered_map<long long, std::vector<Rock>> chunks;
+	};
+	std::vector<PreviewField> preview;
+	int previewChunkLimit = 120;
+	float previewBudgetMs = 12.f;
+	float previewChunkSize = 0.f;   // the chunk size the cache was made at
 }
 
 void drawPlacements(wgpu2d::Renderer2D &renderer, const std::vector<level::Asteroid> &placed,
 	const std::vector<level::AsteroidField> &fields)
 {
-	for (const level::AsteroidField &f : fields) { drawArea(renderer, f); }
-
 	if (!same(placed, previewPlaced))
 	{
 		previewSingles.clear();
 		for (const level::Asteroid &a : placed) { previewSingles.push_back(grow(a)); }
 		previewPlaced = placed;
 	}
-	if (previewFields.size() != fields.size())
-	{
-		// A new entry matches no real field (sizes are at least 40), so it
-		// grows; a deleted one shifts the rest, and those that moved regrow.
-		level::AsteroidField none;
-		none.maxSize = -1.f;
-		previewFields.resize(fields.size(), none);
-		previewByField.resize(fields.size());
-	}
+	const float size = std::max(chunkSize, 500.f);
+	if (previewChunkSize != size) { preview.clear(); previewChunkSize = size; }
+	preview.resize(fields.size());
 	for (int i = 0; i < (int)fields.size(); i++)
 	{
-		if (same(fields[(size_t)i], previewFields[(size_t)i])) { continue; }
-		previewByField[(size_t)i].clear();
-		growField(fields[(size_t)i], i, previewByField[(size_t)i]);
-		previewFields[(size_t)i] = fields[(size_t)i];
+		PreviewField &p = preview[(size_t)i];
+		if (p.valid && same(fields[(size_t)i], p.field)) { continue; }
+		p.valid = true;
+		p.field = fields[(size_t)i];
+		p.area = areaOf(p.field);
+		p.cores.clear();
+		growCores(p.field, i, p.cores, p.keepOut);
+		p.painted = fieldBounds(p.field, p.lo, p.hi);
+		p.chunks.clear();
 	}
 
+	for (const PreviewField &p : preview) { drawArea(renderer, p.field, p.area); }
+
+	// The chunks in view, made as the budget allows.
 	const glm::vec4 view = renderer.getViewRect();
-	auto forEachGrown = [&](auto &&visit)
+	const glm::ivec2 c0 = {(int)std::floor(view.x / size), (int)std::floor(view.y / size)};
+	const glm::ivec2 c1 = {(int)std::floor((view.x + view.z) / size), (int)std::floor((view.y + view.w) / size)};
+	const bool rocksShown = (c1.x - c0.x + 1) * (c1.y - c0.y + 1) <= previewChunkLimit;
+	auto inField = [&](const PreviewField &p, int x, int y)
+	{
+		return p.painted && (x + 1) * size > p.lo.x && (y + 1) * size > p.lo.y && x * size <= p.hi.x && y * size <= p.hi.y;
+	};
+	if (rocksShown)
+	{
+		const auto start = std::chrono::steady_clock::now();
+		bool spent = false;
+		for (int i = 0; i < (int)preview.size() && !spent; i++)
+		{
+			PreviewField &p = preview[(size_t)i];
+			for (int y = c0.y; y <= c1.y && !spent; y++)
+			{
+				for (int x = c0.x; x <= c1.x && !spent; x++)
+				{
+					const long long key = chunkKey(i, x, y);
+					if (!inField(p, x, y) || p.chunks.count(key)) { continue; }
+					growChunk(p.field, p.area, i, p.keepOut, x, y, size, p.chunks[key], [](Rock &) { return true; });
+					spent = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() >= previewBudgetMs;
+				}
+			}
+		}
+	}
+
+	auto forEachShown = [&](auto &&visit)
 	{
 		for (const Rock &r : previewSingles) { visit(r); }
-		for (const std::vector<Rock> &field : previewByField) { for (const Rock &r : field) { visit(r); } }
+		for (int i = 0; i < (int)preview.size(); i++)
+		{
+			const PreviewField &p = preview[(size_t)i];
+			for (const Rock &r : p.cores) { visit(r); }
+			if (!rocksShown) { continue; }
+			for (int y = c0.y; y <= c1.y; y++)
+			{
+				for (int x = c0.x; x <= c1.x; x++)
+				{
+					const auto found = p.chunks.find(chunkKey(i, x, y));
+					if (found == p.chunks.end()) { continue; }
+					for (const Rock &r : found->second) { visit(r); }
+				}
+			}
+		}
 	};
 	for (const bool cores : {true, false})
 	{
 		beginRocks(renderer, cores ? coreStone : stone);
-		forEachGrown([&](const Rock &r) { if (r.core == cores && onScreen(view, r)) { drawRock(renderer, r); } });
+		forEachShown([&](const Rock &r) { if (r.core == cores && onScreen(view, r)) { drawRock(renderer, r); } });
 		endRocks(renderer);
 	}
 	// A field's rocks are too many to outline.
-	forEachGrown([&](const Rock &r) { if (!r.inField && onScreen(view, r)) { drawOutline(renderer, r); } });
+	forEachShown([&](const Rock &r) { if (!r.inField && onScreen(view, r)) { drawOutline(renderer, r); } });
 }
 
 // The tunables this file offers (platform/tuning.h): registered at start-up,
@@ -1714,6 +2146,9 @@ const tuning::Group tunables("asteroids", {
 	{"maskCell", maskCell},
 	{"rockGridCell", rockGridCell},
 	{"rockGridSlack", rockGridSlack},
+	{"chunkSize", chunkSize},
+	{"chunkMargin", chunkMargin},
+	{"chunkBudgetMs", chunkBudgetMs},
 	{"textureWorldSize", textureWorldSize},
 	{"brightness", brightness},
 	{"showOutlines", showOutlines},
@@ -1809,6 +2244,34 @@ void debugUi()
 		ImGui::Text("%d", (int)shards.size());
 		tune::SliderFloat("Crack width", &crackWidthPixels, 0.5f, 6.f, "%.1f px");
 		tune::SliderFloat("Crack glow", &crackGlowWidthPixels, 0.5f, 10.f, "%.1f px");
+		ImGui::TreePop();
+	}
+	if (ImGui::TreeNode("Chunks (W3)"))
+	{
+		size_t chunkRocks = 0;
+		for (const Rock &r : rocks) { if (r.chunk >= 0) { chunkRocks++; } }
+		ImGui::Text("%d chunks made, %d rocks in them, %d remembered", (int)loadedChunks.size(),
+			(int)chunkRocks, (int)kept.size());
+		ImGui::TextDisabled("  of %d rocks all told (cores and single rocks always)", (int)rocks.size());
+		ImGui::Text("Last frame: %d made, %d dropped, %d waiting, %.2f ms", madeLastFrame, droppedLastFrame,
+			(int)waiting.size(), streamMsLastFrame);
+		if (tune::SliderFloat("Chunk size", &chunkSize, 1000.f, 12000.f, "%.0f units")) { reset(placedCopy, fieldsCopy); }
+		tune::SliderFloat("Made past the view", &chunkMargin, 0.f, 3.f, "%.1f chunks");
+		tune::SliderFloat("Budget", &chunkBudgetMs, 0.5f, 20.f, "%.1f ms a frame");
+
+		ImGui::SeparatorText("See it");
+		ImGui::Checkbox("Chunk grid", &showChunkGrid);
+		ImGui::SameLine();
+		ImGui::Checkbox("Chunk state", &showChunkState);
+		ImGui::TextDisabled("  green made, amber waiting on the budget; flashes: made, dropped");
+		ImGui::Checkbox("Stream rectangles", &showStreamRects);
+		ImGui::TextDisabled("  cyan streamed view, green made within, red dropped outside");
+		ImGui::Checkbox("Remembered rocks", &showKept);
+		ImGui::TextDisabled("  red cross broken, amber ring damaged or mined");
+		ImGui::SliderFloat("Stream for", &streamViewScale, 0.1f, 1.f, "%.2f of the view");
+		ImGui::TextDisabled("  below 1, chunks come and go on screen; try 0.3 with Made past 0");
+		ImGui::Checkbox("Cull drawing to it too", &cullDrawToStream);
+		ImGui::SliderFloat("Flash", &chunkFlashSeconds, 0.1f, 3.f, "%.1f s");
 		ImGui::TreePop();
 	}
 	if (ImGui::TreeNode("Cores"))

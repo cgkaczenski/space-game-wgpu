@@ -196,4 +196,24 @@ std::vector<Item> scatter(glm::vec2 boundsMin, glm::vec2 boundsMax,
 	return items;
 }
 
+float dependencyReach(const Params &params)
+{
+	const float maxR = std::max(params.maxRadius, 1.f);
+	const float gap = std::max(params.gap, 0.f);
+	return (2.f * maxR + gap) * (float)std::max(params.layers, 1);
+}
+
+std::vector<Item> scatterPart(glm::vec2 partMin, glm::vec2 partMax,
+	const std::function<bool(glm::vec2)> &inside, const Params &params)
+{
+	const glm::vec2 margin(dependencyReach(params));
+	std::vector<Item> items = scatter(partMin - margin, partMax + margin, inside, params);
+	items.erase(std::remove_if(items.begin(), items.end(), [&](const Item &i)
+	{
+		return i.position.x < partMin.x || i.position.y < partMin.y
+			|| i.position.x >= partMax.x || i.position.y >= partMax.y;
+	}), items.end());
+	return items;
+}
+
 }

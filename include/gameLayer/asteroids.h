@@ -38,10 +38,23 @@ namespace asteroids
 	bool init();
 	void cleanup();
 
-	// A new round: the level's rocks, grown from their seeds, and its fields,
-	// scattered.
+	// A new round: the level's single rocks, grown from their seeds, and its
+	// fields' cores. The fields' own rocks come with `stream`.
 	void reset(const std::vector<level::Asteroid> &placed,
 		const std::vector<level::AsteroidField> &fields);
+
+	// The field rocks round `viewRect` (x, y, width, height in the world)
+	// (sight roadmap W3): a field is made a chunk at a time, for the chunks
+	// in and round the view, and dropped once the view is well away; made
+	// again, a chunk is the same rocks, with what happened to them kept.
+	// Once a frame, after the camera is placed and before anything asks
+	// about rocks. The first call of a round makes everything in view.
+	void stream(glm::vec4 viewRect);
+
+	// The Chunks section's debug views, when on: the chunk grid, which are
+	// made, waiting or just made or dropped, the rectangles streaming used,
+	// and the remembered rocks. In the world's camera, over the fog.
+	void drawChunkDebug(wgpu2d::Renderer2D &renderer);
 
 	// Inside any field's painted area: hidden, like tall grass. Answered from
 	// the painted area's grid (paintMask), so it agrees with sight.
