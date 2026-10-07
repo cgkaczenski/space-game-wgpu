@@ -1,6 +1,6 @@
 #pragma once
 
-// This game's zoom: Shift + scroll or -/= to zoom, eased, within limits. The
+// This game's zoom: Ctrl + scroll or -/= to zoom, eased, within limits. The
 // wheel alone switches weapons. The easing
 // and the clamping are engine/cameraZoom; the bindings, the default and the
 // limits are here.

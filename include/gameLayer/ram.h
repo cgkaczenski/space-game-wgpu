@@ -1,6 +1,8 @@
 #pragma once
 
-// The ram (gameplay roadmap C4b). Space winds up for a moment -- the ship
+// The ram (gameplay roadmap C4b). Holding the right mouse button aims it (a
+// red line to where it will end: ramPath), and letting go winds up for a
+// moment -- the ship
 // dips back as a prow of shield brightens in front of it, turning with the
 // mouse -- then surges the way it is facing, past its normal top speed.
 // Anything the prow strikes takes damage, is knocked aside spinning and is
@@ -71,6 +73,9 @@ namespace ram
 	// The shared numbers.
 	float surgeSpeed();
 	float windupBackSpeed();
+	// How far one ram carries a ship along its heading, from where it
+	// starts: the surge less the dip back before it.
+	float reach();
 	float hitDamage();
 	float stunSeconds();        // a struck enemy is disabled this long
 	float playerStunSeconds();  // and the player, struck by an enemy's ram, this long

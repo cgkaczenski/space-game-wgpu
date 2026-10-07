@@ -44,6 +44,7 @@
 #include <weapons.h>
 #include <effects.h>
 #include <ram.h>
+#include <ramPath.h>
 #include <gameState.h>
 #include <level.h>
 #include <arena.h>
@@ -92,6 +93,9 @@ struct Session
 
 	// The player's ram, as every ship that rams has one (B1).
 	ram::Ram ram;
+	// The right button went down over the world and is still held: the ram
+	// is being aimed, and letting go starts it.
+	bool aimingRam = false;
 
 	// Struck by an enemy's ram (B1 step 3): out of control this long more,
 	// tumbling at this rate.
@@ -747,7 +751,7 @@ void debugPanelUi()
 	debugPanel::section("Flight", [] { shipMode::debugUi(session.mode, session.energy); });
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
-	debugPanel::section("Ram", [] { ram::debugUi(session.ram); });
+	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemiesDebugUi);
 	debugPanel::section("Ship bumps", []
@@ -862,6 +866,7 @@ bool gameLogic(float deltaTime)
 
 	if (levelEditor::active())
 	{
+		session.aimingRam = false; // the editor's right button is its own
 		editorFrame(deltaTime, w, h);
 		return true;
 	}
@@ -962,16 +967,20 @@ bool gameLogic(float deltaTime)
 
 	// Facing is the hull; aim is the gun. They are the same vector unless the
 	// ship is turned with A/D, when the mouse aims independently.
-	// The ram, before flying: Space starts it toward the mouse, and ramming
-	// uncloaks, as firing does (gameplay roadmap C4b).
+	// The ram, before flying: holding the right button aims it -- ramPath
+	// draws where it will end -- and letting go starts it toward the mouse.
+	// Ramming uncloaks, as firing does (gameplay roadmap C4b). Stunned or
+	// scoped, the aim is dropped.
 	// Out of control -- paused, dying, leaving -- a wind-up keeps the heading
 	// it had rather than following the mouse.
 	ram::update(session.ram, time.game, controls ? mouseDirection : ram::direction(session.ram));
-	if (controls && !stunnedNow && !ImGui::GetIO().WantCaptureKeyboard
-		&& platform::isButtonPressedOn(platform::Button::Space) && !scope::held() // no ramming while scoped (S4b)
-		&& ram::tryStart(session.ram, mouseDirection))
+	const bool canAimRam = controls && !stunnedNow && !scope::held(); // no ramming while scoped (S4b)
+	if (!canAimRam) { session.aimingRam = false; }
+	else if (platform::isRMousePressed() && !ImGui::GetIO().WantCaptureMouse) { session.aimingRam = true; }
+	if (session.aimingRam && !platform::isRMouseHeld())
 	{
-		energy::uncloak(session.energy);
+		session.aimingRam = false;
+		if (ram::tryStart(session.ram, mouseDirection)) { energy::uncloak(session.energy); }
 	}
 	shield::setRam(session.energy.bubble, ram::barrierLevel(session.ram), ram::direction(session.ram));
 
@@ -1036,8 +1045,10 @@ bool gameLogic(float deltaTime)
 	{
 		// Scoped (S4b), no thrust -- the ship drifts as if cloaked -- and it
 		// brakes to a stop, still turning to the aim.
+		// Shift brakes: no thrust, and quickly, not at once, to a stop.
+		const bool braking = !ImGui::GetIO().WantCaptureKeyboard && platform::isButtonHeld(platform::Button::Shift);
 		session.aim = playerMove::update(session.ship, mouseDirection, time.game,
-			energy::isCloaked(session.energy) || scope::held(), session.mode);
+			energy::isCloaked(session.energy) || scope::held(), braking, session.mode);
 		if (scope::held()) { session.ship.velocity *= scope::brake(time.game); }
 	}
 
@@ -2232,6 +2243,15 @@ bool gameLogic(float deltaTime)
 			shipSheet, shipAtlas.get(3, 0), shipSize);
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
+
+	// The ram's aim, while the right button is held: where it will end. Over
+	// the grade, so the fog does not grey it.
+	if (session.aimingRam && gameState::playerPresent() && !ram::barrierUp(session.ram))
+	{
+		const float hull = game::shipHitbox(session.ship.position, shipSize).radius;
+		ramPath::draw(renderer, session.ship.position,
+			ramPath::end(session.ship.position, mouseDirection, hull), ram::ready(session.ram) >= 1.f);
+	}
 
 	// The gate's swirl rides the cloak's pass, so it bends the same target.
 	cloak::setSwirl(gate::position(), gate::swirlRadius(), gate::swirlStrength());

@@ -42,10 +42,14 @@ namespace playerMove
 	// so the player can line up a shot. The chosen falloff applies again the
 	// moment drifting ends.
 	//
+	// `braking` is Shift held: no thrust, and the ship's speed halves every
+	// Brake seconds, so it comes to a stop quickly but not at once. The hull
+	// still turns. Drifting wins: a cloaked ship cannot brake.
+	//
 	// `mode` is fight or flight (sight roadmap M1): flight scales the tuned
 	// speed by its own multipliers.
 	glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting,
-		shipMode::Mode mode);
+		bool braking, shipMode::Mode mode);
 
 	void debugUi();
 }

@@ -152,7 +152,7 @@ namespace weapons
 	void reset(Loadout &loadout);
 
 	// The player's keys 1-4 and the wheel. The wheel only switches without
-	// Shift; with Shift it zooms (zoomControl).
+	// Ctrl; with Ctrl it zooms (zoomControl).
 	void handleInput(Loadout &loadout);
 
 	// Where a shot starts, and who it is from. Every shot leaves with the

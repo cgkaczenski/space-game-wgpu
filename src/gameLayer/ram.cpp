@@ -16,7 +16,7 @@ namespace
 	float windupBack = 500.f;    // how fast the ship eases back during it
 	float duration = 0.8f;       // seconds of surge
 	float speed = 6000.f;        // against a normal top speed of 2000
-	float cooldown = 8.f;        // seconds, from pressing Space
+	float cooldown = 8.f;        // seconds, from letting go of the right button
 	float damage = 0.4f;         // an enemy has 1 life
 	float stun = 2.f;            // seconds an enemy is disabled
 	// The player, struck by an enemy's ram (B1), is disabled only briefly:
@@ -85,6 +85,7 @@ float barrierLevel(const Ram &r)
 glm::vec2 direction(const Ram &r) { return r.heading; }
 float surgeSpeed() { return speed; }
 float windupBackSpeed() { return windupBack; }
+float reach() { return speed * duration - windupBack * windup; }
 float hitDamage() { return damage; }
 float stunSeconds() { return stun; }
 float playerStunSeconds() { return playerStun; }
@@ -122,7 +123,7 @@ const tuning::Group tunables("ram", {
 void debugUi(Ram &r)
 {
 	ImGui::Text(windingUp(r) ? "winding up" : active(r) ? "ramming"
-		: (r.cooldownLeft > 0.f ? "cooling down" : "ready (Space)"));
+		: (r.cooldownLeft > 0.f ? "cooling down" : "ready (hold right click, let go)"));
 	tune::SliderFloat("Wind-up", &windup, 0.f, 0.5f, "%.2f s");
 	tune::SliderFloat("Surge time", &duration, 0.1f, 2.f, "%.2f s");
 	tune::SliderFloat("Surge speed", &speed, 1000.f, 12000.f, "%.0f");

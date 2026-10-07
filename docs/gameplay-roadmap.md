@@ -75,7 +75,8 @@ second HUD bar (new textures, or the health bar's reused).
      is C3.
   4. **Laser** — a beam, C3; selectable in the meantime but does not fire.
 - Keys **1–4** or the **wheel** (wrapping) select. An empty weapon can be
-  selected but not fired. **Shift + wheel** zooms.
+  selected but not fired. **Ctrl + wheel** zooms (Shift + wheel until Shift
+  became the brake).
 - A slot row centred along the bottom of the HUD: icon, cooldown shade,
   selected frame, ammo pips. No key numbers.
 - Cooldowns longer than first proposed; all tunable in the debug panel.
@@ -146,7 +147,8 @@ past that the oldest fade out. Every kill goes through one function, whatever
 did it. Tunable under Explosions in the debug panel. The missile's lock is a
 **dashed red box** round its target, dashes marching.
 
-**Decided — C4b, the ram:** Space. A 0.1 s **wind-up** first: the ship dips
+**Decided — C4b, the ram:** Space, later **right click**: holding it draws a
+red line to where the ram will end, and letting go rams. A 0.1 s **wind-up** first: the ship dips
 back as the shield gathers into a **prow** — two thick white-hot bars meeting in
 a point ahead of the nose, no blue glass — then the ship surges toward the mouse
 at about 6000 for 0.8 s, past its normal top speed, then its momentum settings

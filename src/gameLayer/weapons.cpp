@@ -281,7 +281,7 @@ void handleInput(Loadout &l)
 		}
 	}
 
-	if (!io.WantCaptureMouse && !platform::isButtonHeld(platform::Button::Shift) && l.count > 0)
+	if (!io.WantCaptureMouse && !platform::isButtonHeld(platform::Button::LeftCtrl) && l.count > 0)
 	{
 		wheel += platform::getScrollY();
 		// Wheel up goes back a slot, down goes forward, and both wrap.

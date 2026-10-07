@@ -57,12 +57,12 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 
 	const ImGuiIO &io = ImGui::GetIO();
 
-	// Shift + wheel: the wheel alone switches weapons (weapons.h). Scrolling
-	// over the debug panel scrolls the panel.
-	if (!io.WantCaptureMouse && platform::isButtonHeld(platform::Button::Shift))
+	// Ctrl + wheel: the wheel alone switches weapons (weapons.h), and Shift
+	// is the brake (playerMove). Scrolling over the debug panel scrolls the
+	// panel.
+	if (!io.WantCaptureMouse && platform::isButtonHeld(platform::Button::LeftCtrl))
 	{
-		// A mouse wheel with Shift held arrives as horizontal scroll on macOS;
-		// a trackpad still reports vertical. Whichever moved.
+		// Vertical, or horizontal for a wheel that reports it that way.
 		float scroll = platform::getScrollY();
 		if (scroll == 0.f) { scroll = platform::getScrollX(); }
 		if (scroll != 0.f)

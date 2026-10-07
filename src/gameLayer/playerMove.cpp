@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include "platformInput.h"
 
+#include <algorithm>
 #include <cmath>
 #include <glm/geometric.hpp>
 
@@ -31,6 +32,12 @@ namespace
 	// Radians per second, game time. About 200 degrees a second.
 	float turnSpeed = 3.5f;
 
+	// Shift: seconds for the ship's speed to halve. From flight's top speed
+	// it is all but stopped in about half a second.
+	float brakeHalfLife = 0.08f;
+	// Below this the brake finishes the job, rather than halving for ever.
+	const float stoppedSpeed = 15.f;
+
 	float held(int a, int b)
 	{
 		return (platform::isButtonHeld(a) || platform::isButtonHeld(b)) ? 1.f : 0.f;
@@ -46,7 +53,7 @@ namespace
 }
 
 glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting,
-	shipMode::Mode mode)
+	bool braking, shipMode::Mode mode)
 {
 	using platform::Button;
 	const float right = held(Button::D, Button::Right) - held(Button::A, Button::Left);
@@ -67,12 +74,17 @@ glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDelta
 	}
 	ship.turnRate = 0.f; // the hull snaps where it is told (P1: the player's keeps snapping)
 
-	if (drifting)
+	if (drifting || braking)
 	{
 		// Momentum with no acceleration and no drag: exactly constant velocity,
 		// through the same step as everything else. No thrust, so no plume.
 		ship.move = movement::momentum(0.f, 0.f);
 		movement::step(ship, intent, gameDeltaTime);
+		if (braking && !drifting)
+		{
+			ship.velocity *= std::exp2(-gameDeltaTime / std::max(brakeHalfLife, 0.001f));
+			if (glm::length(ship.velocity) < stoppedSpeed) { ship.velocity = {}; }
+		}
 		return mouseDirection;
 	}
 
@@ -97,6 +109,7 @@ glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDelta
 const tuning::Group tunables("player", {
 	{"controls", controls},
 	{"turnSpeed", turnSpeed},
+	{"brakeHalfLife", brakeHalfLife},
 	{"useMomentum", useMomentum},
 	{"momentum.acceleration", momentumOptions.acceleration},
 	{"momentum.topSpeed", momentumOptions.maxSpeed},
@@ -119,6 +132,8 @@ void debugUi()
 	{
 		tune::SliderFloat("Turn speed", &turnSpeed, 0.5f, 10.f, "%.1f rad/s");
 	}
+
+	tune::SliderFloat("Brake (Shift)", &brakeHalfLife, 0.02f, 0.5f, "%.2f s to half speed");
 
 	tune::Checkbox("Momentum", &useMomentum);
 	if (useMomentum)
