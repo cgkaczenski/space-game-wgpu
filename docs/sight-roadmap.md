@@ -1752,15 +1752,60 @@ pair at frame 100, moving east at 1,500.
 its grace. Is that too fierce, or just right? Should enemies use gates of
 their own accord (patrols)?
 
-### W6. _(Suggestion)_ A map of what has been seen
+### W6. A map of what has been seen — _built, to playtest_
 
-A `FrameBuffer` the size of a minimap. Each frame, S2's fan is drawn into it
-at map scale. A target keeps what was drawn into it unless it is cleared, so
-the fans build up into an "explored" area. The minimap is drawn in a HUD
-corner, with lanes, gates, the closing ring and S4's ghosts on top: black
-where nothing has been explored, grey where something was explored but is not
-seen now, colour where it is seen. It costs one small fan per frame.
+**Decided**
 
+- **A corner minimap and a full map.** The corner shows 40,000 units round
+  the ship. Holding **M** shows the whole level, large, in the middle of the
+  screen.
+- **On it:** lanes, gates, field paint, S4's ghosts, and the enemies in sight
+  now.
+- **Per round:** a new round starts black, and what has been seen builds up.
+
+**What was built, `gameLayer/explorationMap`**
+
+- **The explored map** is a 1,024-square `FrameBuffer` over the arena's
+  square. A target keeps what is drawn into it until it is cleared, so each
+  frame the player's sight fan (S2's polar map) is drawn into it at map
+  scale, through its own camera (zoom = pixels ÷ world width, position =
+  −half the target).
+  - It's drawn before the frame's first draw, so its `flushFBO` takes
+    nothing else with it.
+  - The fan is textured with a **base map**, a 512-square texture made each
+    round from the paint mask and the lanes: field in a muted brown, open
+    space in deep blue, lanes in cyan, and transparent past the arena.
+  - So the target builds up the real map wherever the player has looked,
+    and stays transparent elsewhere. The fan's texture coordinates do the
+    masking, with no shader of its own.
+- **On screen**, after the HUD:
+  - a frame, the explored map at 0.55 brightness, and this frame's fan over
+    it at full brightness ("seen now");
+  - the closing circle while it closes;
+  - the gates the player has seen: the exit in gold, jump gates in violet,
+    and in the full map a line between a pair's ends once both are known;
+  - S4's ghosts as faint red rings, the enemies in sight as red squares, and
+    the player as a white arrow.
+  - Markers are clipped to the frame.
+- **A Map debug section:** corner on/off, its size and span, the full map's
+  size, how bright "seen before" is, the three base colours (from the next
+  round), and **Forget what was seen**.
+
+**Verified** (temporary probe, removed): the player moved along `level5`'s
+highway, 300 units a frame from frame 60 to 180, then captured at frame 200.
+- **The full map:** a trail from the start, in the far west, to the player's
+  arrow at x ≈ −49,000, and black everywhere else. The trail is the lane's
+  width only: from inside a lane the field's edges block sight (S1), so the
+  lane is all that was seen.
+- **The corner map:** the same trail round the ship, with what is seen now
+  brighter at its end. The arrow was too small at the corner's size, so
+  line and marker sizes now have a floor (1.6 px).
+- **Levels 1–5** run with no validation errors. **Not yet played**, and M
+  has not been held by anyone.
+
+**Not built:** the map isn't on the HUD's shake layer, so it stays still
+when a hit shakes the HUD. And reveals (what the beam lights, S3) don't
+mark the map.
 ---
 
 ## More suggestions in line with this

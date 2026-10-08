@@ -49,6 +49,7 @@
 #include <lanes.h>
 #include <laneLook.h>
 #include <jumpGates.h>
+#include <explorationMap.h>
 #include <gameState.h>
 #include <level.h>
 #include <arena.h>
@@ -393,6 +394,8 @@ const Feature features[] = {
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
 	{"effects",    effects::init,    effects::reset,  effects::cleanup},
 	{"laneLook",   laneLook::init,   laneLook::reset, laneLook::cleanup},
+	// Its start needs the round's paint and lanes, so the game does it in restartGame.
+	{"explorationMap", explorationMap::init, nullptr, explorationMap::cleanup},
 	// After shield and cloak: its reset raises one and lowers the other.
 	{"weapons",    nullptr,          [] { weapons::reset(playerWeapons); }, nullptr},
 };
@@ -468,6 +471,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	asteroids::reset(currentLevel.asteroids, level::fieldsAsPlayed(currentLevel, gate::clearingRadius())); // A1, A1b; the gates' clearings (W1, W5), lanes cut through (W4)
 	lanes::start(currentLevel.lanes); // W4
 	jumpGates::start(currentLevel.jumps); // W5
+	explorationMap::start(currentLevel, levelLoaded ? currentLevel.arenaRadius : 0.f); // W6: after the paint and lanes
 	lastKnown::reset(); // a new round's ghosts (sight roadmap S4)
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
@@ -770,6 +774,7 @@ void debugPanelUi()
 	debugPanel::section("Lanes", lanes::debugUi);
 	debugPanel::section("Lane look", laneLook::debugUi);
 	debugPanel::section("Jump gates", jumpGates::debugUi);
+	debugPanel::section("Map", explorationMap::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -1274,6 +1279,11 @@ bool gameLogic(float deltaTime)
 
 	// The field rocks round the view, now that it is placed (sight roadmap W3).
 	asteroids::stream(renderer.getViewRect());
+
+	// What the player saw last frame goes into the explored map (W6), into
+	// its own target -- here, before the frame's first draw, so its flush
+	// takes nothing else with it.
+	if (gameState::playerPresent()) { explorationMap::reveal(renderer, sight::playerMap()); }
 
 	background::draw(renderer);
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
@@ -2407,6 +2417,19 @@ bool gameLogic(float deltaTime)
 	// Flushes the world, then the HUD.
 	hud::draw(renderer, session.health, energy::level(session.energy), slots, weapons::slotCount,
 		ram::ready(session.ram), w, h);
+
+	// The map of what has been seen (W6): in the corner, and the whole level
+	// while M is held.
+	if (gameState::playerPresent())
+	{
+		explorationMap::Marks marks;
+		marks.player = session.ship.position;
+		marks.facing = session.ship.facing;
+		marks.seen = &sight::playerMap();
+		for (const Enemy &e : session.enemies) { if (inSight(e)) { marks.enemies.push_back(e.body.position); } }
+		const bool full = !ImGui::GetIO().WantCaptureKeyboard && platform::isButtonHeld(platform::Button::M);
+		explorationMap::draw(renderer, w, h, marks, full);
+	}
 
 #pragma endregion
 
