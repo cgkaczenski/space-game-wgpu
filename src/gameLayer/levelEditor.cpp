@@ -2,6 +2,7 @@
 
 #include <asteroids.h>
 #include <gate.h>
+#include <lanes.h>
 #include <engine/regionMask.h>
 #include <enemyAi.h>
 #include <weapons.h>
@@ -31,17 +32,35 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss };
+	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss, Lane };
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Marker, Ring, Asteroid, Field, Core, Scenery };
+	enum class Kind { None, Start, Enemy, Marker, Ring, Asteroid, Field, Core, Scenery, Lane, LanePoint };
 	struct Pick
 	{
 		Kind kind = Kind::None;
 		int index = -1;
 		int core = -1;   // which of field `index`'s cores, for Kind::Core
+		int point = -1;  // which of lane `index`'s points, for Kind::LanePoint
 	};
+
+	// A lane's points are picked by a handle a fixed size on screen.
+	constexpr float lanePointPixels = 12.f;
+
+	float distanceToLane(const level::Lane &l, glm::vec2 p)
+	{
+		float best = 1e30f;
+		for (size_t k = 0; k + 1 < l.points.size(); k++)
+		{
+			const glm::vec2 a = l.points[k], ab = l.points[k + 1] - a;
+			const float len2 = glm::dot(ab, ab);
+			const float t = len2 > 0.f ? std::clamp(glm::dot(p - a, ab) / len2, 0.f, 1.f) : 0.f;
+			best = std::min(best, glm::distance(p, a + ab * t));
+		}
+		if (l.points.size() == 1) { best = glm::distance(p, l.points[0]); }
+		return best;
+	}
 	Pick selected;
 
 	// The Paint tool (asteroid fields, A1b). A stroke lays stamps -- circles of
@@ -124,6 +143,13 @@ namespace
 			return p.core >= 0 && p.core < (int)cores.size() ? cores[(size_t)p.core] : glm::vec2{};
 		}
 		case Kind::Scenery: return drawnAt(level.scenery[p.index]);
+		case Kind::Lane:
+		{
+			// Like a field: its first point stands in, and moving it moves all.
+			const auto &points = level.lanes[p.index].points;
+			return points.empty() ? glm::vec2{} : points.front();
+		}
+		case Kind::LanePoint: return level.lanes[p.index].points[(size_t)p.point];
 		default: return {};
 		}
 	}
@@ -160,6 +186,15 @@ namespace
 			s.position = placedFrom(to, s.depth);
 			break;
 		}
+		case Kind::Lane:
+		{
+			level::Lane &l = level.lanes[p.index];
+			if (l.points.empty()) { break; }
+			const glm::vec2 by = to - l.points.front();
+			for (glm::vec2 &q : l.points) { q += by; }
+			break;
+		}
+		case Kind::LanePoint: level.lanes[p.index].points[(size_t)p.point] = to; break;
 		default: break;
 		}
 	}
@@ -197,7 +232,23 @@ namespace
 		{
 			consider(Kind::Asteroid, i, level.asteroids[i].position, level.asteroids[i].radius);
 		}
+		// A lane's points, by their handles.
+		for (int i = 0; i < (int)level.lanes.size(); i++)
+		{
+			const auto &points = level.lanes[i].points;
+			for (int k = 0; k < (int)points.size(); k++)
+			{
+				const float d = glm::distance(at, points[(size_t)k]);
+				if (d <= lanePointPixels / zoom && d < bestDistance) { best = {Kind::LanePoint, i, -1, k}; bestDistance = d; }
+			}
+		}
 		if (best.kind != Kind::None) { return best; }
+
+		// A lane, anywhere along it: it cuts through fields, so before them.
+		for (int i = (int)level.lanes.size() - 1; i >= 0; i--)
+		{
+			if (distanceToLane(level.lanes[i], at) <= level.lanes[i].width * 0.5f) { return {Kind::Lane, i}; }
+		}
 
 		// A field's cores, before the field they sit in.
 		for (int i = (int)level.fields.size() - 1; i >= 0; i--)
@@ -244,6 +295,22 @@ namespace
 			return;
 		}
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
+		case Kind::Lane: level.lanes.erase(level.lanes.begin() + p.index); break;
+		case Kind::LanePoint:
+		{
+			// A point goes; a lane left with fewer than two goes with it.
+			std::vector<glm::vec2> &points = level.lanes[p.index].points;
+			points.erase(points.begin() + p.point);
+			if (points.size() < 2) { level.lanes.erase(level.lanes.begin() + p.index); }
+			else
+			{
+				selected = {Kind::Lane, p.index};
+				dragging = false;
+				edited = true;
+				return;
+			}
+			break;
+		}
 		default: return; // the start stays: a level needs one
 		}
 		selected = {};
@@ -320,6 +387,10 @@ namespace
 			return p.index >= 0 && p.index < (int)level.fields.size() && p.core >= 0
 				&& p.core < std::max((int)level.fields[p.index].cores.size(), 1);
 		case Kind::Scenery: return p.index >= 0 && p.index < (int)level.scenery.size();
+		case Kind::Lane: return p.index >= 0 && p.index < (int)level.lanes.size();
+		case Kind::LanePoint:
+			return p.index >= 0 && p.index < (int)level.lanes.size() && p.point >= 0
+				&& p.point < (int)level.lanes[p.index].points.size();
 		default: return false;
 		}
 	}
@@ -442,6 +513,12 @@ void update(level::Level &level, wgpu2d::Renderer2D &renderer, glm::vec2 mouse,
 					selected = {Kind::Field, p.index};
 					dragging = false;
 				}
+				else if (p.kind == Kind::Lane)
+				{
+					// Likewise a whole lane: selected, deleted from the panel.
+					selected = {Kind::Lane, p.index};
+					dragging = false;
+				}
 				else { remove(level, p); }
 			}
 			rightDown = false;
@@ -519,8 +596,30 @@ void update(level::Level &level, wgpu2d::Renderer2D &renderer, glm::vec2 mouse,
 	}
 	painting = false;
 
+	// The Lane tool (W4): on a lane's point, pick it up; anywhere else, a
+	// point added to the end of the selected lane, or a new lane begun.
+	if (tool == Tool::Lane && mouseFree && platform::isLMousePressed())
+	{
+		Pick hit = pickAt(level, world, pickShipSize, pickEnemySize);
+		if (hit.kind != Kind::LanePoint)
+		{
+			const bool onLane = selected.kind == Kind::Lane || selected.kind == Kind::LanePoint;
+			int lane = onLane ? selected.index : -1;
+			if (lane < 0)
+			{
+				level.lanes.push_back({});
+				lane = (int)level.lanes.size() - 1;
+			}
+			level.lanes[(size_t)lane].points.push_back(world);
+			hit = {Kind::LanePoint, lane, -1, (int)level.lanes[(size_t)lane].points.size() - 1};
+			edited = true;
+		}
+		selected = hit;
+		dragging = true;
+		dragOffset = positionOf(level, hit) - world;
+	}
 	// Left button: pick and drag, or place.
-	if (mouseFree && platform::isLMousePressed())
+	else if (mouseFree && platform::isLMousePressed())
 	{
 		Pick hit = pickAt(level, world, pickShipSize, pickEnemySize);
 		if (hit.kind == Kind::None && tool != Tool::Select)
@@ -581,6 +680,23 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		const bool erasing = painting ? paintErasing : platform::isButtonHeld(platform::Button::Shift);
 		renderer.renderCircleOutline(cursorWorld, erasing ? glm::vec4(1.f, 0.35f, 0.3f, 0.9f)
 			: glm::vec4(0.4f, 1.f, 0.6f, 0.9f), brushRadius, 2.f * px, 64);
+	}
+
+	// The lanes (W4), the selected one brighter, with handles on its points.
+	{
+		const int lane = (selected.kind == Kind::Lane || selected.kind == Kind::LanePoint)
+			&& validPick(level, selected) ? selected.index : -1;
+		lanes::drawLanes(renderer, level.lanes, lane);
+		if (lane >= 0)
+		{
+			const auto &points = level.lanes[(size_t)lane].points;
+			for (int k = 0; k < (int)points.size(); k++)
+			{
+				const bool picked = selected.kind == Kind::LanePoint && selected.point == k;
+				renderer.renderCircleOutline(points[(size_t)k], picked ? glm::vec4(1.f) : glm::vec4(0.35f, 0.85f, 1.f, 0.9f),
+					lanePointPixels * px, 2.f * px, 16);
+			}
+		}
 	}
 
 	// The closing circle's rings, in the order they close: largest first. Each
@@ -676,8 +792,15 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::RadioButton("Ring", &t, (int)Tool::Ring); ImGui::SameLine();
 	ImGui::RadioButton("Asteroid", &t, (int)Tool::Asteroid); ImGui::SameLine();
 	ImGui::RadioButton("Paint field", &t, (int)Tool::Paint); ImGui::SameLine();
-	ImGui::RadioButton("Scenery", &t, (int)Tool::Scenery);
+	ImGui::RadioButton("Scenery", &t, (int)Tool::Scenery); ImGui::SameLine();
+	ImGui::RadioButton("Lane", &t, (int)Tool::Lane);
 	tool = (Tool)t;
+	if (tool == Tool::Lane)
+	{
+		ImGui::TextDisabled("L: add a point to the selected lane (none selected: a new lane)");
+		ImGui::TextDisabled("L-drag a point to move it  R on a point: delete it");
+		if (ImGui::Button("Start a new lane")) { selected = {}; }
+	}
 	if (tool == Tool::Paint)
 	{
 		ImGui::TextDisabled("L-drag: paint  Shift+L-drag: erase  -/=: brush size");
@@ -892,6 +1015,23 @@ Request debugUi(level::Level &level, bool unsaved)
 		if (ImGui::Button("Back to one at the middle")) { f.cores.clear(); selected = {Kind::Field, selected.index}; edited = true; }
 		break;
 	}
+	case Kind::Lane:
+	case Kind::LanePoint:
+	{
+		level::Lane &l = level.lanes[selected.index];
+		ImGui::Text("Lane %d: %d points", selected.index, (int)l.points.size());
+		if (ImGui::DragFloat("Width", &l.width, 10.f, 200.f, 10000.f, "%.0f")) { edited = true; }
+		if (ImGui::SliderFloat("Speed", &l.speed, 1.f, 6.f, "%.2f x a ship's own")) { edited = true; }
+		if (selected.kind == Kind::LanePoint)
+		{
+			if (ImGui::DragFloat2("Point", &l.points[(size_t)selected.point].x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+			if (ImGui::Button("Delete this point")) { remove(level, selected); break; }
+		}
+		ImGui::TextDisabled("It cuts through any field; ships ride it either way");
+		ImGui::TextDisabled("Select tool: drag along it to move the whole lane");
+		if (ImGui::Button("Delete lane")) { remove(level, {Kind::Lane, selected.index}); }
+		break;
+	}
 	case Kind::Scenery:
 	{
 		level::Scenery &s = level.scenery[selected.index];
@@ -916,6 +1056,7 @@ Request debugUi(level::Level &level, bool unsaved)
 	}
 
 	if (validPick(level, selected) && selected.kind != Kind::Start && selected.kind != Kind::Core
+		&& selected.kind != Kind::Lane && selected.kind != Kind::LanePoint
 		&& ImGui::Button(selected.kind == Kind::Field ? "Delete field" : "Delete"))
 	{
 		remove(level, selected);

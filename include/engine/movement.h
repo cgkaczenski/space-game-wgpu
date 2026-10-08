@@ -65,22 +65,36 @@ namespace movement
 	// drag (capped by maxSpeed if set) for Momentum. 0 when unbounded.
 	float topSpeed(const Options &options);
 
-	// What a body is flying through: thick space that slows it, or nothing.
-	// It scales the body's own top speed rather than replacing its Options,
-	// so whatever set those -- tuning, a roll at spawn, a mode -- still
-	// holds; the caller sets it each frame from wherever the body is.
+	// What a body is flying through: thick space that slows it, a current
+	// that carries it, or nothing. It scales the body's own top speed rather
+	// than replacing its Options, so whatever set those -- tuning, a roll at
+	// spawn, a mode -- still holds; the caller sets it each frame from
+	// wherever the body is.
 	//
 	// A body faster than the medium allows either snaps to the limit
 	// (`settleHalfLife` 0) or loses the excess over time: it halves every
 	// `settleHalfLife` seconds, so a fast body carries a little way in.
-	// Thrust never takes it above what is left of the excess.
+	// Thrust never takes it above what is left of the excess. Below 1 a
+	// medium only tightens the body's own cap; at 1 or above it is the cap,
+	// so a current, or an excess bleeding off, can be faster than the body.
+	//
+	// `push` is an acceleration the medium adds to the body's own thrust, in
+	// the world's frame: a current. It is Momentum's -- an Instant body has
+	// no acceleration to add to -- and it moves the body only up to the
+	// medium's top speed, like thrust.
 	//
 	// A body with no top speed (Momentum with no drag and no cap) is
-	// unbounded, and a medium cannot scale nothing: it flies on unchanged.
+	// unbounded, and a medium cannot scale nothing: it flies on unchanged,
+	// and is not pushed -- a push with nothing to cap it would never stop.
 	struct Medium
 	{
 		float topSpeed = 1.f;        // of the body's own top speed
 		float settleHalfLife = 0.f;  // seconds; 0 snaps
+		glm::vec2 push = {};         // units per second squared
+		// A body faster than its own cap keeps that excess to bleed off too,
+		// rather than first being brought down to its own cap: momentum
+		// carried in from somewhere faster -- out of a current.
+		bool carriesExcess = false;
 	};
 
 	// `options` as they apply this step through `medium`, for a body moving
@@ -94,6 +108,11 @@ namespace movement
 	// of input lands in the same place at 240 fps or at 10.
 	void integrate(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 intent,
 		const Options &options, float deltaTime);
+
+	// The same, with `push` (units per second squared) added to what the
+	// intent accelerates: a medium's current. Ignored by Instant.
+	void integrate(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 intent,
+		const Options &options, float deltaTime, glm::vec2 push);
 
 	// ---- A body (gameplay roadmap P1) ------------------------------------
 	//

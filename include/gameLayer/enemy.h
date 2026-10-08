@@ -10,6 +10,7 @@
 #include <weapons.h>
 #include <energy.h>
 #include <shipMode.h>
+#include <lanes.h>
 #include <ram.h>
 
 constexpr float enemyShipSize = 250.f;
@@ -76,6 +77,7 @@ struct Enemy
 	// Fight or flight (sight roadmap M1). Enemies stay in fight mode for now:
 	// it decides what stops their beam.
 	shipMode::Mode mode = shipMode::Mode::Fight;
+	lanes::Rider laneRider;       // carried by a lane's current, or just out of one (W4)
 	bool canRam = false;
 	ram::Ram ram;                 // the same ram as the player's, when it can
 	float cloakLevel = 0.f;       // its cloak, eased: how faint the hull, how strong the bending

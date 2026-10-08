@@ -30,14 +30,17 @@ void step(Body &body, const Intent &intent, float deltaTime)
 	const float length = glm::length(thrust);
 	if (length > 1.f) { thrust /= length; }
 	body.thrust = thrust;
+	const bool bounded = topSpeed(body.move) > 0.f;
 	integrate(body.position, body.velocity, thrust,
-		through(body.move, body.medium, glm::length(body.velocity), deltaTime), deltaTime);
+		through(body.move, body.medium, glm::length(body.velocity), deltaTime), deltaTime,
+		bounded ? body.medium.push : glm::vec2(0.f));
 }
 
 Options through(const Options &options, const Medium &medium, float speed, float deltaTime)
 {
 	const float open = topSpeed(options);
-	if (medium.topSpeed >= 1.f || open <= 0.f) { return options; }
+	if (medium.topSpeed == 1.f && medium.settleHalfLife <= 0.f) { return options; }
+	if (open <= 0.f) { return options; }
 	const float limit = open * std::max(medium.topSpeed, 0.f);
 	float allowed = limit;
 	if (medium.settleHalfLife > 0.f && speed > limit)
@@ -46,8 +49,11 @@ Options through(const Options &options, const Medium &medium, float speed, float
 		allowed = limit + (speed - limit) * std::exp2(-deltaTime / medium.settleHalfLife);
 	}
 	Options o = options;
-	o.maxSpeed = o.maxSpeed > 0.f ? std::min(o.maxSpeed, allowed) : allowed;
-	if (o.mode == Mode::Instant) { o.maxSpeed = allowed; } // its speed is the cap
+	// Below 1, a medium only ever tightens the body's own cap (W2). At 1 or
+	// above it is the cap: a current's speed, or what is left of an excess
+	// still bleeding off, may be more than the body's own.
+	if (medium.topSpeed < 1.f && o.maxSpeed > 0.f && !medium.carriesExcess) { o.maxSpeed = std::min(o.maxSpeed, allowed); }
+	else { o.maxSpeed = allowed; }
 	return o;
 }
 
@@ -101,6 +107,12 @@ float topSpeed(const Options &options)
 void integrate(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 intent,
 	const Options &options, float deltaTime)
 {
+	integrate(position, velocity, intent, options, deltaTime, {});
+}
+
+void integrate(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 intent,
+	const Options &options, float deltaTime, glm::vec2 push)
+{
 	const float intentLength = glm::length(intent);
 	if (intentLength > 1.f) { intent /= intentLength; }
 
@@ -111,7 +123,7 @@ void integrate(glm::vec2 &position, glm::vec2 &velocity, glm::vec2 intent,
 		return;
 	}
 
-	const glm::vec2 acceleration = intent * options.acceleration;
+	const glm::vec2 acceleration = intent * options.acceleration + push;
 	const glm::vec2 startPosition = position;
 	const glm::vec2 startVelocity = velocity;
 

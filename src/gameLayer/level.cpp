@@ -176,6 +176,21 @@ namespace
 			out.fields.back().cores.push_back(at);
 			return true;
 		}
+		if (word == "lane")
+		{
+			Lane l;
+			if (!(in >> l.width >> l.speed) || l.width <= 0.f) { return false; }
+			out.lanes.push_back(l);
+			return true;
+		}
+		if (word == "point")
+		{
+			// A point of the lane above it.
+			glm::vec2 at;
+			if (out.lanes.empty() || !(in >> at.x >> at.y)) { return false; }
+			out.lanes.back().points.push_back(at);
+			return true;
+		}
 		if (word == "scenery")
 		{
 			Scenery s;
@@ -295,20 +310,42 @@ bool save(const char *path, const Level &level)
 		file << "scenery " << s.art << " " << s.position.x << " " << s.position.y << " "
 			<< s.size << " " << s.depth << "\n";
 	}
+	for (const Lane &l : level.lanes)
+	{
+		file << "\nlane " << l.width << " " << l.speed << "\n";
+		for (const glm::vec2 &p : l.points) { file << "point " << p.x << " " << p.y << "\n"; }
+	}
 	return (bool)file;
 }
 
 std::vector<AsteroidField> fieldsAsPlayed(const Level &level, float gateClearing)
 {
-	std::vector<AsteroidField> fields = level.fields;
-	if (gateClearing <= 0.f) { return fields; }
-	for (AsteroidField &f : fields)
+	// A lane as a chain of erasers along it, close enough that their circles
+	// overlap well past the lane's half-width: the cut's edge wavers by under
+	// a twentieth of the width.
+	std::vector<FieldStamp> cuts;
+	for (const Lane &l : level.lanes)
+	{
+		const float r = l.width * 0.5f;
+		const float step = std::max(r * 0.6f, 1.f);
+		for (size_t i = 0; i + 1 < l.points.size(); i++)
+		{
+			const glm::vec2 a = l.points[i], b = l.points[i + 1];
+			const float length = glm::length(b - a);
+			const int n = std::max(1, (int)std::ceil(length / step));
+			for (int k = 0; k < n; k++) { cuts.push_back({a + (b - a) * ((float)k / (float)n), r, true}); }
+		}
+		if (!l.points.empty()) { cuts.push_back({l.points.back(), r, true}); }
+	}
+	if (gateClearing > 0.f)
 	{
 		for (const Marker &m : level.markers)
 		{
-			if (m.kind == Marker::Kind::Gate) { f.stamps.push_back({m.position, gateClearing, true}); }
+			if (m.kind == Marker::Kind::Gate) { cuts.push_back({m.position, gateClearing, true}); }
 		}
 	}
+	std::vector<AsteroidField> fields = level.fields;
+	for (AsteroidField &f : fields) { f.stamps.insert(f.stamps.end(), cuts.begin(), cuts.end()); }
 	return fields;
 }
 

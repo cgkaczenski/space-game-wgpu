@@ -230,8 +230,9 @@ These are listed now so the shape is known. Each one arrives with its item.
 - **W2, interior movement** _(built, in an **Interior** section)_: **Normal** ·
   **Speed cap** · **Bleeds off**, with **Top speed in a field** and
   **Slowing**. Default: **Bleeds off**.
-- **W4, lane behaviour:** **Current** (pushes along the lane) · **Rail**
-  (steers along the lane). Plus a strength slider and a top-speed multiplier.
+- **W4, lane behaviour** _(built, in a **Lanes** section)_: **Off** ·
+  **Current** · **Rail**, with push, hold and the thrown-out half-life. Each
+  lane's speed multiplier is the lane's own, set in the editor.
 - **W5, gate transit:** **Instant** · **Short transit**, with a seconds
   slider.
 
@@ -1504,29 +1505,134 @@ chunks follows which was made first, which only matters where rocks overlap.
 - **Getting across** 170,000 units at a top speed of 2,000 to 3,200 takes
   a minute or more. That's W4's job.
 
-### W4. High-speed lanes
+### W4. High-speed lanes — _built, to playtest_
 
 **Asked:** high-speed lanes or gates, so the player can cross quickly between
 areas.
 
-**Proposed shape:** a lane is a polyline with a width, stored in the level
-file as a `lane width speed` line followed by `point x y` lines, the way a
-field is followed by its stamps.
+**Decided**
 
-- **A current** along the lane pushes ships forward: an acceleration along
-  the lane's direction, added in the integrator, with a higher top speed. A
-  ship that enters at an angle is turned into the current.
-- **Lanes are open space, cut out of the fields.** Scatter's `keepOut`
-  circles, which exist already for cores, are placed along the lane, and the
-  mask marks lane cells as not paint. Under S1's rule a lane is a corridor:
-  its walls are paint edges, so ships in the lane and ships in the field
-  beside it can't see each other. Along a straight stretch, though, a lane
-  can be seen from end to end. **Fast but exposed to whoever else is in the
-  lane, against slow and close in the fields:** to ambush the lane, you wait
-  in it, at a bend or an exit. That comes straight out of the rule, with no
-  extra code.
-- **Leaving a lane** throws the ship out at speed. Momentum carries it on,
-  and W2's interior drag slows it again.
+- **A current**, by default: an acceleration along the lane and a higher top
+  speed, and you still steer. **Rail** is the other choice.
+- **Both ways:** a lane pushes whichever way along it a ship is going, or,
+  for one all but still, the way it faces.
+- **Every ship**, the player and enemies, in either mode. Flight's boost
+  stacks. Enemies don't seek lanes out yet, but one that drifts in rides.
+- **`level5`'s roads become lanes.** `level4` keeps its plain roads, so there
+  is a level to compare against.
+
+**What was built**
+
+- **engine, `movement::Medium`:**
+  - **`push`**: an acceleration added to the body's own thrust, Momentum
+    only, up to the medium's top speed. A body with no top speed is not
+    pushed, since nothing would ever stop it.
+  - **`topSpeed` above 1**: a medium at or above 1 is the cap, so a body can
+    go faster than its own top speed. Below 1 it still only tightens the
+    body's own cap, so W2 and a ram's aftermath in a field are unchanged.
+  - **`carriesExcess`**: a body faster than its own cap bleeds from where it
+    is, rather than first dropping to its own cap.
+  - `integrate` takes the push. A temporary program checked W2's numbers
+    again, unchanged.
+- **level:** a `lane width speed` line, then `point x y` lines. Width is 1,300
+  by default and speed 2.5 (times a ship's own top speed).
+  `level::fieldsAsPlayed` cuts each lane through every field as a chain of
+  erasers (half the width, 0.6 of that apart), with the gate's clearing.
+  So a lane is open space, a corridor for sight, rock-free, and mapped as
+  such by the mask, all without new rules.
+- **game, `lanes`:**
+  - `mediumFor(rider, body)`, which every ship's medium now comes through.
+    In a lane:
+    - top speed is `1 + (speed − 1) × alignment²`, where alignment is how
+      well the ship's motion lines up with the lane. Along it, 2.5×; across
+      it, the ship's own;
+    - a **push** of 4,000 along it;
+    - a **hold** of 1.5/s on the speed across it, so a ship entering at an
+      angle is turned into the current. Thrust beats it, to leave.
+  - **Thrown out at speed:** a `Rider` per ship (on the session and on each
+    `Enemy`) marks one just out of a lane. Its excess bleeds off with a
+    **0.6 s** half-life in the open, or the field's own 0.15 s in a field,
+    from the lane's speed.
+  - The lanes are drawn in the world under the ships, so the fog greys them
+    where unseen: two edges and a dashed middle, cyan, a fixed width on
+    screen. The one the player is in is brighter.
+  - A **Lanes** debug section: **Off · Current · Rail**, **Push**, **Hold**,
+    **Rail push**, **Rail hold**, **Thrown out**, colour and widths.
+- **Editor, a Lane tool:** click to add a point to the selected lane (none
+  selected: a new one), drag points, right-click a point to delete it. A
+  lane drops when it has fewer than two points. With Select, drag a lane
+  anywhere along it to move it whole. A right-click on a lane only selects
+  it. The panel has width, speed, the point, **Delete this point** and
+  **Delete lane**.
+- **`level5`**, regenerated: the same places, cores and enemies (checked line
+  for line), its 21 roads now lanes. Each is trimmed to start and end just
+  inside the open place it joins, so places are calm. Untrimmed, the first
+  capture found the player carried 4,500 units off the start in 1.6 s: the
+  start sat on a lane, and a current carries a ship at rest.
+
+**Verified** (temporary probes and programs, removed):
+
+- **The lane next to `level5`'s start:** 18 of 18 samples are in a lane,
+  none has a rock within half its width less 150, and none counts as field.
+- **A ship at rest in a lane**, player tuning, no thrust: 4,999 after 3 s,
+  along the lane (0.99).
+- **Thrusting straight across a lane:** at most 2,084 across it, against the
+  ship's own 2,000.
+- **Out of a lane at 4,999:**
+  - into the open: 3,499 after 0.6 s, the half-life exactly;
+  - into a field: 1,250 after 0.6 s, the field's 0.15 s half-life from the
+    lane's speed. Before `carriesExcess` it snapped to the ship's own 2,000
+    first.
+- **`mediumFor`:** 0.05 µs a call with 21 lanes.
+- **Captures** of `level5`'s start show the lane drawn, cut through the
+  field with rocks ending at its edges, in colour while the field round it
+  is fogged. The player stays at the start.
+- **Levels 1–5** run with no validation errors. **Not yet played**, and the
+  Lane tool hasn't been used.
+
+**Asked, after the first pass: flight mode in a lane** ("travel mode")
+
+- **An entry kick:** entering a lane in flight mode adds **1,500** of speed
+  along it, with the ram's afterimages for **0.3 s**. The kick goes past the
+  lane's top speed and bleeds off. Entering means coming in after at least
+  **1 s** out of every lane, so hopping across a lane's edge doesn't earn
+  it again.
+- **A slide, on Shift:** in a lane in flight mode, Shift no longer brakes.
+  Speed is kept, and the velocity swings toward where the nose points at
+  **4 rad/s**: you turn the nose into a bend and carve it, Mario Kart
+  style, rather than drifting out of the lane. Outside lanes, or in fight
+  mode, Shift brakes as before. "Where the nose points" is the mouse in two
+  of the control schemes, and A/D in the third.
+- **Built in:** `lanes::Rider` keeps the lane a ship is in, when it entered,
+  how long it's been out, and which way it is being carried.
+  `lanes::slide` turns a body's velocity toward its facing. The game applies
+  both, since it knows the mode. **Entry boost**, **Entry trail**,
+  **Re-entry grace** and **Slide turn** sliders are in the Lanes section.
+- **Verified** (temporary probe, removed), on `level5`'s highway with flight
+  tuning:
+  - flying in across the lane gave one kick;
+  - hopping out and in four times, a frame each, gave none;
+  - with the nose 50° off the lane, a quarter-second of sliding swung the
+    velocity 46° toward the nose and kept its speed (6,000 → 5,974).
+    Without sliding, the current held it straight along the lane.
+
+**`level5`'s lanes, second pass** (asked: longer, wider, more turns): the 21
+narrow roads are replaced by four lanes from their own random stream. The
+open places are unchanged; cores and enemies are placed again round the
+lanes.
+- **A highway**, 2,400 wide and 180,000 long, from the start clearing's edge
+  to the gate's. It bends 37–53° at each of its 13 turns.
+- **Two loops**, north and south, 2,200 wide and 190,000–220,000 long, each
+  joined to the highway at both ends. Bends of 5–105°.
+- **A spur**, 1,800 wide and 30,000 long, to a bay.
+
+The field share is 80.7%, with 100 cores and 39 enemies. The start, the
+gate and every enemy are out of the lanes (the boss is moved off the
+highway's approach). A capture shows the player staying at the start.
+
+**Not built** (the engine ideas, below): streaks scrolling along a lane, the
+speed look on a ship riding one, the camera zooming out with speed, a flash
+on entering. And enemies don't choose to use lanes yet.
 
 **Engine ideas:**
 
@@ -1538,9 +1644,9 @@ field is followed by its stamps.
 - FinalGlow blooming the streaks;
 - a chromatic flash on entering, which is an F2 effect.
 
-**Open questions:** does the lane steer the ship like a rail, or only push it
-like a current? Can ships fight in a lane? Do enemies use lanes? Do lanes run
-both ways?
+**Open questions, for after playing:** is 2.5× fast enough to cross
+`level5` (170,000 units)? Should a ship at rest be carried, or only one
+already moving along the lane?
 
 ### W5. Gates: jumping between areas
 

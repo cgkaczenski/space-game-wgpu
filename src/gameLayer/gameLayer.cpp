@@ -46,6 +46,7 @@
 #include <ram.h>
 #include <ramPath.h>
 #include <interior.h>
+#include <lanes.h>
 #include <gameState.h>
 #include <level.h>
 #include <arena.h>
@@ -91,6 +92,11 @@ struct Session
 	// Fight or flight (sight roadmap M1): Tab switches. A new round starts in
 	// fight mode, shield up.
 	shipMode::Mode mode = shipMode::Mode::Fight;
+
+	// Carried by a lane's current, or just out of one (sight roadmap W4), and
+	// how much longer flight mode's entry kick draws the ram's afterimages.
+	lanes::Rider laneRider;
+	float laneTrailLeft = 0.f;
 
 	// The player's ram, as every ship that rams has one (B1).
 	ram::Ram ram;
@@ -451,7 +457,8 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	// What there is to mine this round (gameplay roadmap L3). Points banked by
 	// extracting are not a round's and survive.
 	resources::reset();
-	asteroids::reset(currentLevel.asteroids, level::fieldsAsPlayed(currentLevel, gate::clearingRadius())); // A1, A1b; the gate's clearing (W1)
+	asteroids::reset(currentLevel.asteroids, level::fieldsAsPlayed(currentLevel, gate::clearingRadius())); // A1, A1b; the gate's clearing (W1), lanes cut through (W4)
+	lanes::start(currentLevel.lanes); // W4
 	lastKnown::reset(); // a new round's ghosts (sight roadmap S4)
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
@@ -751,6 +758,7 @@ void debugPanelUi()
 	debugPanel::section("Energy", [] { energy::debugUi(session.energy); });
 	debugPanel::section("Flight", [] { shipMode::debugUi(session.mode, session.energy); });
 	debugPanel::section("Interior", interior::debugUi);
+	debugPanel::section("Lanes", lanes::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -1047,13 +1055,35 @@ bool gameLogic(float deltaTime)
 	{
 		// Scoped (S4b), no thrust -- the ship drifts as if cloaked -- and it
 		// brakes to a stop, still turning to the aim.
-		// Inside a field, slower (W2).
-		session.ship.medium = interior::at(session.ship.position);
-		// Shift brakes: no thrust, and quickly, not at once, to a stop.
-		const bool braking = !ImGui::GetIO().WantCaptureKeyboard && platform::isButtonHeld(platform::Button::Shift);
+		// Inside a field, slower (W2); in a lane, carried along (W4).
+		session.ship.medium = lanes::mediumFor(session.laneRider, session.ship, time.game);
+		const bool flying = session.mode == shipMode::Mode::Flight;
+		const bool inLane = session.laneRider.lane >= 0;
+		// Into a lane in flight mode: a kick along it, and the ram's
+		// afterimages for a moment.
+		if (session.laneRider.entered && flying)
+		{
+			session.ship.velocity += session.laneRider.direction * lanes::entryBoost();
+			session.laneTrailLeft = lanes::entryTrailSeconds();
+		}
+		// Shift brakes: no thrust, and quickly, not at once, to a stop. In a
+		// lane in flight mode it slides instead, round toward the nose.
+		const bool shift = !ImGui::GetIO().WantCaptureKeyboard && platform::isButtonHeld(platform::Button::Shift);
+		const bool sliding = shift && flying && inLane;
 		session.aim = playerMove::update(session.ship, mouseDirection, time.game,
-			energy::isCloaked(session.energy) || scope::held(), braking, session.mode);
+			energy::isCloaked(session.energy) || scope::held(), shift && !sliding, session.mode);
+		if (sliding) { lanes::slide(session.ship, time.game); }
 		if (scope::held()) { session.ship.velocity *= scope::brake(time.game); }
+		if (session.laneTrailLeft > 0.f)
+		{
+			session.laneTrailLeft -= time.game;
+			const float speed = glm::length(session.ship.velocity);
+			if (speed > 1.f)
+			{
+				effects::ramTrail(session.ship.position, session.ship.velocity / speed, shipSize,
+					shipAtlas.get(3, 0), time.game);
+			}
+		}
 	}
 
 	// An asteroid field's core is solid (gameplay roadmap A2): the ship is put
@@ -1221,6 +1251,7 @@ bool gameLogic(float deltaTime)
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
 	gate::drawBody(renderer); // in the world, under the ships
 	asteroids::draw(renderer);
+	lanes::draw(renderer, lanes::laneAt(session.ship.position)); // W4: under the ships, greyed by the fog
 #pragma endregion
 
 #pragma region handle bulets
@@ -1702,7 +1733,7 @@ bool gameLogic(float deltaTime)
 		seen.shielded = session.energy.hasShield && (session.energy.state == energy::State::Full
 			|| session.energy.state == energy::State::Breaking);
 		e.effectImmune = std::max(0.f, e.effectImmune - time.game);
-		e.body.medium = interior::at(e.body.position); // slower inside a field, as the player is (W2)
+		e.body.medium = lanes::mediumFor(e.laneRider, e.body, time.game); // fields and lanes, as for the player (W2, W4)
 		const enemyAi::Orders orders = enemyAi::update(e, time.game, seen, comingBack ? &wayIn : nullptr);
 		if (playerInField && !hidden && e.awareness == Enemy::Awareness::Engaged) { playerSeenInField = true; }
 		if (orders.phaseChanged)
