@@ -51,6 +51,11 @@ namespace asteroids
 	// about rocks. The first call of a round makes everything in view.
 	void stream(glm::vec4 viewRect);
 
+	// The next `stream` makes everything in view at once, as the first of a
+	// round does: after a jump (W5), so the far end's rocks are all there
+	// when the flash clears rather than coming in over the next frames.
+	void streamAllNext();
+
 	// The Chunks section's debug views, when on: the chunk grid, which are
 	// made, waiting or just made or dropped, the rectangles streaming used,
 	// and the remembered rocks. In the world's camera, over the fog.

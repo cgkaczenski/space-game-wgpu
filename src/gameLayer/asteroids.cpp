@@ -1242,6 +1242,8 @@ namespace
 	}
 }
 
+void streamAllNext() { streamedThisRound = false; }
+
 void stream(glm::vec4 view)
 {
 	if (fieldsCopy.empty()) { return; }

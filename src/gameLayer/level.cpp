@@ -176,6 +176,13 @@ namespace
 			out.fields.back().cores.push_back(at);
 			return true;
 		}
+		if (word == "jump")
+		{
+			JumpPair j;
+			if (!(in >> j.a.x >> j.a.y >> j.b.x >> j.b.y)) { return false; }
+			out.jumps.push_back(j);
+			return true;
+		}
 		if (word == "lane")
 		{
 			Lane l;
@@ -310,6 +317,11 @@ bool save(const char *path, const Level &level)
 		file << "scenery " << s.art << " " << s.position.x << " " << s.position.y << " "
 			<< s.size << " " << s.depth << "\n";
 	}
+	if (!level.jumps.empty()) { file << "\n"; }
+	for (const JumpPair &j : level.jumps)
+	{
+		file << "jump " << j.a.x << " " << j.a.y << " " << j.b.x << " " << j.b.y << "\n";
+	}
 	for (const Lane &l : level.lanes)
 	{
 		file << "\nlane " << l.width << " " << l.speed << "\n";
@@ -342,6 +354,11 @@ std::vector<AsteroidField> fieldsAsPlayed(const Level &level, float gateClearing
 		for (const Marker &m : level.markers)
 		{
 			if (m.kind == Marker::Kind::Gate) { cuts.push_back({m.position, gateClearing, true}); }
+		}
+		for (const JumpPair &j : level.jumps)
+		{
+			cuts.push_back({j.a, gateClearing, true});
+			cuts.push_back({j.b, gateClearing, true});
 		}
 	}
 	std::vector<AsteroidField> fields = level.fields;

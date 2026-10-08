@@ -32,18 +32,24 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss, Lane };
+	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss, Lane, Jump };
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Marker, Ring, Asteroid, Field, Core, Scenery, Lane, LanePoint };
+	enum class Kind { None, Start, Enemy, Marker, Ring, Asteroid, Field, Core, Scenery, Lane, LanePoint, Jump };
 	struct Pick
 	{
 		Kind kind = Kind::None;
 		int index = -1;
 		int core = -1;   // which of field `index`'s cores, for Kind::Core
-		int point = -1;  // which of lane `index`'s points, for Kind::LanePoint
+		int point = -1;  // which of lane `index`'s points, for Kind::LanePoint; which end, for Kind::Jump
 	};
+
+	// The Jump gate tool (W5): the first click places one end, the second the
+	// other.
+	bool jumpPending = false;
+	glm::vec2 jumpFirst = {};
+	const glm::vec4 jumpColour = {0.75f, 0.45f, 1.f, 0.9f};
 
 	// A lane's points are picked by a handle a fixed size on screen.
 	constexpr float lanePointPixels = 12.f;
@@ -150,6 +156,7 @@ namespace
 			return points.empty() ? glm::vec2{} : points.front();
 		}
 		case Kind::LanePoint: return level.lanes[p.index].points[(size_t)p.point];
+		case Kind::Jump: return p.point == 0 ? level.jumps[p.index].a : level.jumps[p.index].b;
 		default: return {};
 		}
 	}
@@ -195,6 +202,7 @@ namespace
 			break;
 		}
 		case Kind::LanePoint: level.lanes[p.index].points[(size_t)p.point] = to; break;
+		case Kind::Jump: (p.point == 0 ? level.jumps[p.index].a : level.jumps[p.index].b) = to; break;
 		default: break;
 		}
 	}
@@ -231,6 +239,16 @@ namespace
 		for (int i = 0; i < (int)level.asteroids.size(); i++)
 		{
 			consider(Kind::Asteroid, i, level.asteroids[i].position, level.asteroids[i].radius);
+		}
+		// Jump gates, either end of a pair, picked like the exit gate.
+		for (int i = 0; i < (int)level.jumps.size(); i++)
+		{
+			for (int end = 0; end < 2; end++)
+			{
+				const glm::vec2 gateAt = end == 0 ? level.jumps[i].a : level.jumps[i].b;
+				const float d = glm::distance(at, gateAt);
+				if (d <= gateRadius && d < bestDistance) { best = {Kind::Jump, i, -1, end}; bestDistance = d; }
+			}
 		}
 		// A lane's points, by their handles.
 		for (int i = 0; i < (int)level.lanes.size(); i++)
@@ -296,6 +314,7 @@ namespace
 		}
 		case Kind::Scenery: level.scenery.erase(level.scenery.begin() + p.index); break;
 		case Kind::Lane: level.lanes.erase(level.lanes.begin() + p.index); break;
+		case Kind::Jump: level.jumps.erase(level.jumps.begin() + p.index); break; // the pair goes together
 		case Kind::LanePoint:
 		{
 			// A point goes; a lane left with fewer than two goes with it.
@@ -391,6 +410,7 @@ namespace
 		case Kind::LanePoint:
 			return p.index >= 0 && p.index < (int)level.lanes.size() && p.point >= 0
 				&& p.point < (int)level.lanes[p.index].points.size();
+		case Kind::Jump: return p.index >= 0 && p.index < (int)level.jumps.size() && (p.point == 0 || p.point == 1);
 		default: return false;
 		}
 	}
@@ -596,9 +616,35 @@ void update(level::Level &level, wgpu2d::Renderer2D &renderer, glm::vec2 mouse,
 	}
 	painting = false;
 
+	if (tool != Tool::Jump) { jumpPending = false; }
+	// The Jump gate tool (W5): on a gate, pick it up; anywhere else, the
+	// first click places one end and the second the other.
+	if (tool == Tool::Jump && mouseFree && platform::isLMousePressed())
+	{
+		Pick hit = pickAt(level, world, pickShipSize, pickEnemySize);
+		if (hit.kind == Kind::Jump)
+		{
+			jumpPending = false;
+			selected = hit;
+			dragging = true;
+			dragOffset = positionOf(level, hit) - world;
+		}
+		else if (!jumpPending)
+		{
+			jumpPending = true;
+			jumpFirst = world;
+		}
+		else
+		{
+			level.jumps.push_back({jumpFirst, world});
+			jumpPending = false;
+			selected = {Kind::Jump, (int)level.jumps.size() - 1, -1, 1};
+			edited = true;
+		}
+	}
 	// The Lane tool (W4): on a lane's point, pick it up; anywhere else, a
 	// point added to the end of the selected lane, or a new lane begun.
-	if (tool == Tool::Lane && mouseFree && platform::isLMousePressed())
+	else if (tool == Tool::Lane && mouseFree && platform::isLMousePressed())
 	{
 		Pick hit = pickAt(level, world, pickShipSize, pickEnemySize);
 		if (hit.kind != Kind::LanePoint)
@@ -680,6 +726,26 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		const bool erasing = painting ? paintErasing : platform::isButtonHeld(platform::Button::Shift);
 		renderer.renderCircleOutline(cursorWorld, erasing ? glm::vec4(1.f, 0.35f, 0.3f, 0.9f)
 			: glm::vec4(0.4f, 1.f, 0.6f, 0.9f), brushRadius, 2.f * px, 64);
+	}
+
+	// Jump gate pairs (W5): a violet ring at each end and a faint line between,
+	// and the end of one being placed.
+	for (int i = 0; i < (int)level.jumps.size(); i++)
+	{
+		const level::JumpPair &j = level.jumps[(size_t)i];
+		const bool picked = selected.kind == Kind::Jump && selected.index == i;
+		renderer.renderLine(j.a, j.b, {jumpColour.r, jumpColour.g, jumpColour.b, picked ? 0.6f : 0.25f}, 2.f * px);
+		for (int end = 0; end < 2; end++)
+		{
+			const glm::vec2 at = end == 0 ? j.a : j.b;
+			renderer.renderCircleOutline(at, jumpColour, gateRadius, 3.f * px, 48);
+			if (picked && selected.point == end) { renderer.renderCircleOutline(at, {1.f, 1.f, 1.f, 1.f}, gateRadius * 1.15f, 3.f * px, 48); }
+		}
+	}
+	if (jumpPending && tool == Tool::Jump)
+	{
+		renderer.renderCircleOutline(jumpFirst, jumpColour, gateRadius, 3.f * px, 48);
+		renderer.renderLine(jumpFirst, cursorWorld, {jumpColour.r, jumpColour.g, jumpColour.b, 0.4f}, 2.f * px);
 	}
 
 	// The lanes (W4), the selected one brighter, with handles on its points.
@@ -793,8 +859,14 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::RadioButton("Asteroid", &t, (int)Tool::Asteroid); ImGui::SameLine();
 	ImGui::RadioButton("Paint field", &t, (int)Tool::Paint); ImGui::SameLine();
 	ImGui::RadioButton("Scenery", &t, (int)Tool::Scenery); ImGui::SameLine();
-	ImGui::RadioButton("Lane", &t, (int)Tool::Lane);
+	ImGui::RadioButton("Lane", &t, (int)Tool::Lane); ImGui::SameLine();
+	ImGui::RadioButton("Jump gates", &t, (int)Tool::Jump);
 	tool = (Tool)t;
+	if (tool == Tool::Jump)
+	{
+		ImGui::TextDisabled(jumpPending ? "L: place the other end" : "L: place one end of a pair, then the other");
+		ImGui::TextDisabled("L-drag a gate to move it  R on a gate: delete the pair");
+	}
 	if (tool == Tool::Lane)
 	{
 		ImGui::TextDisabled("L: add a point to the selected lane (none selected: a new lane)");
@@ -1013,6 +1085,15 @@ Request debugUi(level::Level &level, bool unsaved)
 		if (ImGui::Button("Remove this core")) { remove(level, selected); break; }
 		ImGui::SameLine();
 		if (ImGui::Button("Back to one at the middle")) { f.cores.clear(); selected = {Kind::Field, selected.index}; edited = true; }
+		break;
+	}
+	case Kind::Jump:
+	{
+		level::JumpPair &j = level.jumps[selected.index];
+		ImGui::Text("Jump gate pair %d", selected.index);
+		if (ImGui::DragFloat2("End A", &j.a.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		if (ImGui::DragFloat2("End B", &j.b.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		ImGui::TextDisabled("%.0f apart; each end sits in a clearing", glm::distance(j.a, j.b));
 		break;
 	}
 	case Kind::Lane:

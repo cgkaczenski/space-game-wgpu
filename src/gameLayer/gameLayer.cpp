@@ -48,6 +48,7 @@
 #include <interior.h>
 #include <lanes.h>
 #include <laneLook.h>
+#include <jumpGates.h>
 #include <gameState.h>
 #include <level.h>
 #include <arena.h>
@@ -262,14 +263,15 @@ float playerStunDrag = 4.f;
 
 // How long the hull is drawn along its heading: the warp-out's stretch, or a
 // lane's speed (sight roadmap W4), whichever is more.
-float playerStretch() { return std::max(gameState::warpStretch(), laneLook::stretch()); }
+float playerStretch() { return std::max({gameState::warpStretch(), laneLook::stretch(), jumpGates::stretch()}); }
 
 // The player's ship is solid unless cloaked. Called before each pass that can
 // bump the ship, because the cloak can drop partway through a frame -- firing
 // uncloaks.
 void syncSolid()
 {
-	session.ship.solid = !energy::isCloaked(session.energy);
+	// Nor in a jump, or just out of one (sight roadmap W5).
+	session.ship.solid = !energy::isCloaked(session.energy) && !jumpGates::shielded();
 }
 
 // A modified weapon's hit that reached the hull (gameplay roadmap B2) -- the
@@ -463,8 +465,9 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	// What there is to mine this round (gameplay roadmap L3). Points banked by
 	// extracting are not a round's and survive.
 	resources::reset();
-	asteroids::reset(currentLevel.asteroids, level::fieldsAsPlayed(currentLevel, gate::clearingRadius())); // A1, A1b; the gate's clearing (W1), lanes cut through (W4)
+	asteroids::reset(currentLevel.asteroids, level::fieldsAsPlayed(currentLevel, gate::clearingRadius())); // A1, A1b; the gates' clearings (W1, W5), lanes cut through (W4)
 	lanes::start(currentLevel.lanes); // W4
+	jumpGates::start(currentLevel.jumps); // W5
 	lastKnown::reset(); // a new round's ghosts (sight roadmap S4)
 	// Hit-stop is this round's freeze, not a feature row: the table is GPU,
 	// audio, and gameplay modules. The speed slider is a setting and stays.
@@ -766,6 +769,7 @@ void debugPanelUi()
 	debugPanel::section("Interior", interior::debugUi);
 	debugPanel::section("Lanes", lanes::debugUi);
 	debugPanel::section("Lane look", laneLook::debugUi);
+	debugPanel::section("Jump gates", jumpGates::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -899,9 +903,10 @@ bool gameLogic(float deltaTime)
 			restartGame();
 		}
 		gameClock::setPaused(gameState::paused());
-		// The warp-out's zoom blur, or a lane's entry flash (W4).
-		crt::setTransition(gameState::switchOff(), gameState::whiteOut(),
-			std::max(gameState::warpBlur(), laneLook::flash()));
+		// The warp-out's zoom blur, or a lane's entry flash (W4), or a jump's
+		// white and blur (W5).
+		crt::setTransition(gameState::switchOff(), std::max(gameState::whiteOut(), jumpGates::whiteOut()),
+			std::max({gameState::warpBlur(), laneLook::flash(), jumpGates::warpBlur()}));
 	}
 	const bool controls = gameState::controlsLive();
 
@@ -1149,6 +1154,15 @@ bool gameLogic(float deltaTime)
 		startExtraction();
 	}
 
+	// Jump gates (sight roadmap W5): into one, out of the other. Moved, the
+	// far end's rocks are all made at once, behind the white; the camera's
+	// leash snaps it after the ship.
+	if (jumpGates::updatePlayer(session.ship,
+		controls && gameState::playerPresent() && !energy::isCloaked(session.energy), time.game))
+	{
+		asteroids::streamAllNext();
+	}
+
 	// What the ram strikes: the arc's reach, a little ahead of the hull. Each
 	// enemy once per ram; the player takes nothing.
 	if (ram::active(session.ram))
@@ -1264,6 +1278,7 @@ bool gameLogic(float deltaTime)
 	background::draw(renderer);
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
 	gate::drawBody(renderer); // in the world, under the ships
+	jumpGates::drawBodies(renderer); // W5
 	asteroids::draw(renderer);
 	{
 		// W4: under the ships, greyed by the fog -- the lanes, and their
@@ -1285,7 +1300,8 @@ bool gameLogic(float deltaTime)
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
 	// No firing while scoped (S4b): the scope is for finding, not fighting.
-	const bool trigger = controls && !stunnedNow && !scope::held()
+	// Nor in a jump or the grace after it (W5).
+	const bool trigger = controls && !stunnedNow && !scope::held() && !jumpGates::shielded()
 		&& platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
 	// What the player can see from where the ship now is (sight roadmap S2):
 	// rebuilt once a frame, before anything asks -- a missile's lock first.
@@ -1425,7 +1441,7 @@ bool gameLogic(float deltaTime)
 	weapons::Targets targets;
 	targets.enemies = &session.enemies;
 	targets.player = session.ship.position;
-	targets.playerTargetable = gameState::playerPresent() && !energy::isCloaked(session.energy);
+	targets.playerTargetable = gameState::playerPresent() && !energy::isCloaked(session.energy) && !jumpGates::shielded();
 	weapons::steerMissiles(session.bullets, targets, time.game);
 
 	for (int i = 0; i < session.bullets.size(); i++)
@@ -1536,7 +1552,7 @@ bool gameLogic(float deltaTime)
 				// A cloaked ship cannot be hit: the shot passes through and
 				// carries on, rather than vanishing on something that isn't there.
 				// Not once it is wreckage or leaving: those shots fly on.
-				if (gameState::playerPresent() && !energy::isCloaked(session.energy) &&
+				if (gameState::playerPresent() && !energy::isCloaked(session.energy) && !jumpGates::shielded() &&
 					collisionSystem.overlaps(session.bullets[i].getHitbox(),
 					game::shipHitbox(session.ship.position, shipSize)))
 				{
@@ -1757,6 +1773,8 @@ bool gameLogic(float deltaTime)
 		e.effectImmune = std::max(0.f, e.effectImmune - time.game);
 		e.body.medium = lanes::mediumFor(e.laneRider, e.body, time.game); // fields and lanes, as for the player (W2, W4)
 		const enemyAi::Orders orders = enemyAi::update(e, time.game, seen, comingBack ? &wayIn : nullptr);
+		// A chaser at the gate the player just took comes through after it (W5).
+		jumpGates::updateEnemy(e.body, e.awareness != Enemy::Awareness::Unaware);
 		if (playerInField && !hidden && e.awareness == Enemy::Awareness::Engaged) { playerSeenInField = true; }
 		if (orders.phaseChanged)
 		{
@@ -1816,7 +1834,7 @@ bool gameLogic(float deltaTime)
 				}
 
 				const collision::Circle hull = game::shipHitbox(session.ship.position, shipSize);
-				const float toPlayer = gameState::playerPresent()
+				const float toPlayer = gameState::playerPresent() && !jumpGates::shielded()
 					? collision::rayToCircle(eb.origin, eb.direction, hull) : -1.f;
 				if (toPlayer >= 0.f && toPlayer < reach)
 				{
@@ -2222,6 +2240,7 @@ bool gameLogic(float deltaTime)
 	resources::drawGlow(renderer, effectClock);
 	arena::draw(renderer, renderer.currentCamera.zoom);
 	gate::draw(renderer, renderer.currentCamera.zoom);
+	jumpGates::drawRings(renderer, renderer.currentCamera.zoom); // W5
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
 	for (auto &b : session.bullets)
@@ -2318,7 +2337,17 @@ bool gameLogic(float deltaTime)
 	}
 
 	// The gate's swirl rides the cloak's pass, so it bends the same target.
-	cloak::setSwirl(gate::position(), gate::swirlRadius(), gate::swirlStrength());
+	// It has one swirl: the exit's while it is open and nearer, otherwise the
+	// nearest jump gate's (W5).
+	{
+		glm::vec2 jumpAt;
+		const float exitDistance = gate::swirlStrength() > 0.f ? glm::distance(gate::position(), session.ship.position) : 1e30f;
+		if (jumpGates::nearest(session.ship.position, exitDistance, jumpAt))
+		{
+			cloak::setSwirl(jumpAt, jumpGates::swirlRadius(), jumpGates::swirlStrength());
+		}
+		else { cloak::setSwirl(gate::position(), gate::swirlRadius(), gate::swirlStrength()); }
+	}
 	cloak::flushWorld(renderer, session.ship.position, shipSize, w, h, time.game);
 
 	// The arrow to the gate, once it is open. Screen pixels, from the world
@@ -2331,6 +2360,22 @@ bool gameLogic(float deltaTime)
 			const glm::vec2 onScreen = {(gate::position().x - view.x) / view.z * (float)w,
 				(gate::position().y - view.y) / view.w * (float)h};
 			hud::pointTo(true, onScreen, gate::pulse(), gate::colour());
+		}
+	}
+
+	// And to each jump gate off screen and within reach (W5): a small violet
+	// chevron, dim while its pair rests.
+	{
+		const glm::vec4 view = renderer.getViewRect();
+		if (view.z != 0.f && view.w != 0.f)
+		{
+			for (int g = 0; g < jumpGates::count(); g++)
+			{
+				const glm::vec2 at = jumpGates::position(g);
+				if (glm::distance(at, session.ship.position) > 60000.f) { continue; }
+				const glm::vec2 onScreen = {(at.x - view.x) / view.z * (float)w, (at.y - view.y) / view.w * (float)h};
+				hud::markOffScreen(onScreen, {0.75f, 0.45f, 1.f, jumpGates::resting(g) ? 0.35f : 0.9f}, 0.6f);
+			}
 		}
 	}
 

@@ -74,6 +74,10 @@ namespace gate
 	// ships.
 	void drawBody(wgpu2d::Renderer2D &renderer);
 
+	// The same art anywhere, for other gates (sight roadmap W5's jump gates):
+	// `radius` the gate's, turned `spin` radians, multiplied by `tint`.
+	void drawHole(wgpu2d::Renderer2D &renderer, glm::vec2 at, float radius, float spin, glm::vec4 tint);
+
 	// The ring and the arc. **The caller must have set `BlendMode::Additive`.**
 	void draw(wgpu2d::Renderer2D &renderer, float zoom);
 

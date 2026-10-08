@@ -38,6 +38,8 @@
 // line from before -- or the older `marker resource x y` -- still loads, as a
 // single asteroid sized by the amount, and is saved as one.
 //   scenery Planet1 -6000 9000 2700 0                art x y size depth
+//   jump -60000 20000 40000 -50000          x y x y: a pair of jump gates (sight
+//                                           roadmap W5): into one, out of the other
 //   lane 1300 2.5                           width speed: a high-speed lane (sight
 //   point -15000 0                          roadmap W4), then its points in order,
 //   point -9000 -1500                       as stamps follow a field. Speed is a
@@ -158,6 +160,13 @@ namespace level
 		std::vector<glm::vec2> points;
 	};
 
+	// A pair of jump gates (sight roadmap W5): flying into either brings a
+	// ship out of the other. Each sits in a clearing, as the exit does.
+	struct JumpPair
+	{
+		glm::vec2 a = {}, b = {};
+	};
+
 	struct Level
 	{
 		float arenaRadius = 20000.f;
@@ -170,6 +179,7 @@ namespace level
 		std::vector<AsteroidField> fields;
 		std::vector<Scenery> scenery;
 		std::vector<Lane> lanes;
+		std::vector<JumpPair> jumps;
 	};
 
 	// Reads `path` into `out`. False only if the file cannot be opened; a line
@@ -180,9 +190,9 @@ namespace level
 	// Writes `level` in the same format. False if the file cannot be written.
 	bool save(const char *path, const Level &level);
 
-	// The fields as they are played (sight roadmap W1, W4): each with a
-	// clearing of `gateClearing` erased round every gate, and every lane cut
-	// through it, last, so the gate sits in open space and a lane is a
+	// The fields as they are played (sight roadmap W1, W4, W5): each with a
+	// clearing of `gateClearing` erased round every gate -- the exit and
+	// every jump gate -- and every lane cut through it, last, so the gate sits in open space and a lane is a
 	// corridor wherever they are put -- moving either moves its hole. Not
 	// saved: the file keeps only what was painted.
 	std::vector<AsteroidField> fieldsAsPlayed(const Level &level, float gateClearing);

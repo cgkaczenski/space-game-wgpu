@@ -218,6 +218,13 @@ void drawBody(wgpu2d::Renderer2D &renderer)
 		{light, light, light, 1.f}, {}, glm::degrees(spin));
 }
 
+void drawHole(wgpu2d::Renderer2D &renderer, glm::vec2 where, float radius, float turn, glm::vec4 tint)
+{
+	if (body.id == 0) { return; }
+	const float size = radius * bodyPerRadius;
+	renderer.renderRectangle({where - glm::vec2(size * 0.5f), glm::vec2(size)}, body, tint, {}, glm::degrees(turn));
+}
+
 void draw(wgpu2d::Renderer2D &renderer, float zoom)
 {
 	if (!present) { return; }

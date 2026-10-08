@@ -233,8 +233,9 @@ These are listed now so the shape is known. Each one arrives with its item.
 - **W4, lane behaviour** _(built, in a **Lanes** section)_: **Off** ·
   **Current** · **Rail**, with push, hold and the thrown-out half-life. Each
   lane's speed multiplier is the lane's own, set in the editor.
-- **W5, gate transit:** **Instant** · **Short transit**, with a seconds
-  slider.
+- **W5, gate transit** _(built, in a **Jump gates** section)_: **Short
+  transit** · **Instant**, with their times, rest, grace and the chasers'
+  window.
 
 ---
 
@@ -1679,16 +1680,77 @@ highway in flight mode at 3,200, angled in.
 `level5` (170,000 units)? Should a ship at rest be carried, or only one
 already moving along the lane?
 
-### W5. Gates: jumping between areas
+### W5. Gates: jumping between areas — _built, to playtest_
 
-This can replace lanes or sit alongside them: paired gates, where flying into
-one brings the ship out of the other. The extraction gate (L5) already has
-the look: the spinning black hole, the swirl in the cloak's pass, the warp
-stretch, and the white fade from L1's "extracted". A jump gate plays that
-sequence without ending the round.
+Paired gates, alongside the lanes: flying into one brings the ship out of the
+other, moving the way it went in. The extraction gate (L5) gave the look.
 
-**Open questions:** is the jump instant, or a short transit? Is the exit
-protected? Can enemies follow? Does a gate charge, like the extraction gate?
+**Decided**
+
+- **A short transit**, by default: the hull stretches and the screen goes
+  white and blurred over 0.3 s. At the whitest the ship is moved, and the
+  white clears at the far end over another 0.3 s. **Instant** is the other
+  choice, behind a 0.2 s white flash.
+- **Fly in, then a rest.** Any time, uncloaked, with no charging: it's a
+  road, not an exit. Both ends of the pair then rest for **3 s**, so a ship
+  can't bounce straight back.
+- **A grace coming out:** through the transit and for **1.5 s** after,
+  shots, beams and rams pass through, missiles can't lock, and the player
+  can't fire.
+- **Chasers follow:** an enemy engaged with the player or searching for it
+  that reaches the gate the player took within **6 s** comes out of the
+  other. Others ignore gates. A searching enemy heads for where it lost the
+  player, which is that gate, so following comes out of the AI as it is.
+
+**What was built**
+
+- **level:** `jump x1 y1 x2 y2`, one line a pair (`level::JumpPair`).
+  `fieldsAsPlayed` cuts the exit's clearing round both ends of every pair,
+  so jump gates sit in open space wherever they're put.
+- **game, `jumpGates`:** the pairs, the player's transit, the rest, the
+  grace, the chasers' window, and the drawing.
+  - The move places the ship out past the far gate's rim, the way it was
+    going, and asks the chunk streamer to make everything in view at once
+    on the next frame (`asteroids::streamAllNext`), behind the white. The
+    camera's chase leash already snaps it after a teleport.
+  - The white and blur go to the CRT's transition (the extraction's, with
+    the game's own taken as whichever is more); the stretch goes to the
+    hull, as the warp-out's and a lane's do.
+  - The grace makes the player untouchable as a cloak does: not `solid`
+    (rams, bumps), passed by bullets and enemy beams, not a missile target,
+    and the trigger is held.
+  - The look: the extraction gate's black hole, drawn by a new
+    `gate::drawHole`, in violet, each end of a pair turning the other way,
+    with a ring, dim while resting. The cloak pass's one swirl goes to the
+    nearest jump gate unless the open exit is nearer. The HUD points a small
+    violet chevron at each one off screen within 60,000 units.
+  - A **Jump gates** debug section: **Short transit · Instant**, transit
+    and flash times, **Rest**, **Grace**, **Chasers follow**, radius, how
+    far past the rim, colour and swirl.
+- **Editor, a Jump gates tool:** click one end, then the other, with a line
+  from the first to the cursor while placing. Drag either end. A right-click
+  on an end deletes the pair. A pair's panel has both ends' positions and
+  how far apart they are.
+- **`level5`:** three pairs join its six big bays, each to the one furthest
+  from it, 61,000–133,000 apart. Cores and enemies are placed clear of the
+  gates. The rest is unchanged.
+
+**Verified** (temporary probe, removed): the player set into `level5`'s first
+pair at frame 100, moving east at 1,500.
+- **The transit:** over 22 frames the white rose to 0.96, the blur to 0.98
+  and the hull's stretch to 2.96. At frame 123 the ship was at the far gate
+  plus 1,000 along its heading. The white then cleared over 22 more frames.
+  It was shielded throughout and after, with both ends resting.
+- **A chaser:** an engaged enemy set down at the entry gate 25 frames after
+  came out 1,020 from the far gate.
+- **A capture** at frame 175 shows the far gate (violet, resting), the
+  player, and the chaser beside it with its cone on the player.
+- **Levels 1–5** run with no validation errors. **Not yet played**, and the
+  editor tool hasn't been used.
+
+**Open, for after playing:** chasers come out right behind the player, inside
+its grace. Is that too fierce, or just right? Should enemies use gates of
+their own accord (patrols)?
 
 ### W6. _(Suggestion)_ A map of what has been seen
 
