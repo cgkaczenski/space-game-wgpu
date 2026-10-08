@@ -38,9 +38,22 @@ namespace
 	float graceLeft = 0.f;
 	float flashLeft = 0.f;          // Instant's flash
 
-	// Where the player last went in, for chasers.
+	// Where the player last went in, for chasers. Opened when the player is
+	// moved, not when the jump starts, so a chaser always comes out after it,
+	// into rocks the player's arrival has already made. Each jump has its own
+	// number, and a chaser follows each jump once.
 	glm::vec2 followFrom = {}, followTo = {};
 	float followLeft = 0.f;
+	unsigned jumpSerial = 0;
+	glm::vec2 pendingFrom = {}, pendingTo = {}; // the jump under way, until the move
+
+	void openFollow()
+	{
+		followFrom = pendingFrom;
+		followTo = pendingTo;
+		followLeft = followSeconds;
+		jumpSerial++;
+	}
 
 	glm::vec2 gateAt(int g) { return g % 2 == 0 ? pairs[(size_t)(g / 2)].a : pairs[(size_t)(g / 2)].b; }
 	glm::vec2 otherEnd(int g) { return gateAt(g ^ 1); }
@@ -85,6 +98,7 @@ bool updatePlayer(movement::Body &ship, bool canUse, float dt)
 			moved = true;
 			movedNow = true;
 			graceLeft = graceSeconds + transitLeft; // the grace starts at the far end, counted from the white clearing
+			openFollow();
 		}
 		return movedNow;
 	}
@@ -97,12 +111,12 @@ bool updatePlayer(movement::Body &ship, bool canUse, float dt)
 		const glm::vec2 heading = headingOf(ship);
 		exitAt = placeOut(otherEnd(g), heading);
 		restLeft[(size_t)(g / 2)] = restSeconds;
-		followFrom = gateAt(g);
-		followTo = otherEnd(g);
-		followLeft = followSeconds;
+		pendingFrom = gateAt(g);
+		pendingTo = otherEnd(g);
 		if (transit == Transit::Instant)
 		{
 			ship.position = exitAt;
+			openFollow();
 			flashLeft = instantFlashSeconds;
 			graceLeft = graceSeconds;
 			return true;
@@ -114,11 +128,12 @@ bool updatePlayer(movement::Body &ship, bool canUse, float dt)
 	return false;
 }
 
-bool updateEnemy(movement::Body &body, bool chasing)
+bool updateEnemy(movement::Body &body, bool chasing, unsigned &followed)
 {
-	if (!chasing || followLeft <= 0.f) { return false; }
+	if (!chasing || followLeft <= 0.f || followed == jumpSerial) { return false; }
 	if (glm::distance(body.position, followFrom) > gateRadius) { return false; }
 	body.position = placeOut(followTo, headingOf(body));
+	followed = jumpSerial; // through once: not again, however it comes back
 	return true;
 }
 

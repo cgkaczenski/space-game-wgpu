@@ -1819,6 +1819,23 @@ pair at frame 100, moving east at 1,500.
 - **Levels 1–5** run with no validation errors. **Not yet played**, and the
   editor tool hasn't been used.
 
+**Fixed after the pre-merge review** (`docs/line-of-sight-review.md`):
+- **Chasers went through at the start of the transit,** a third of a second
+  before the player, into chunks not yet made. They also had no latch: an
+  enemy standing in the entry gate was sent again every frame of the
+  window. Now the window opens on the move frame, not the jump's start.
+  Each jump has a number, and an enemy keeps the number of the last jump it
+  followed (`Enemy::jumpFollowed`), so it goes through once. A probe placed
+  a chaser in the entry gate 22 frames before the move: it waited, went
+  through on the move frame, and placed back in the gate inside the window
+  it stayed put.
+- **A jump with the scope up didn't load the far end.** The full stream on
+  the move frame read the camera's view, and the scope's ease barely moves
+  the camera across a jump. Now a jump snaps the camera onto the ship (plus
+  the scope's lean) in every mode. A probe with the scope forced up showed
+  the move frame streaming a 7,364-wide view whose centre is 1,576 from the
+  ship (the lean), so the ship and its surroundings are inside it.
+
 **Open, for after playing:** chasers come out right behind the player, inside
 its grace. Is that too fierce, or just right? Should enemies use gates of
 their own accord (patrols)?

@@ -40,10 +40,11 @@ namespace jumpGates
 	bool updatePlayer(movement::Body &ship, bool canUse, float gameDeltaTime);
 
 	// An enemy, once a frame after it has moved. `chasing`: engaged with the
-	// player or searching for it. If the player has just gone through a gate
-	// and this enemy reaches it in time, it comes out of the other. True if
-	// it was moved.
-	bool updateEnemy(movement::Body &body, bool chasing);
+	// player or searching for it. If the player has just come out of a gate
+	// and this enemy reaches the one it went into in time, it comes out of
+	// the other -- once per jump: `followed` is the enemy's own record of the
+	// last jump it followed. True if it was moved.
+	bool updateEnemy(movement::Body &body, bool chasing, unsigned &followed);
 
 	bool inTransit();
 	// The player can be neither hit nor fire: in transit, or in the grace

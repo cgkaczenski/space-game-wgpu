@@ -78,6 +78,7 @@ struct Enemy
 	// it decides what stops their beam.
 	shipMode::Mode mode = shipMode::Mode::Fight;
 	lanes::Rider laneRider;       // carried by a lane's current, or just out of one (W4)
+	unsigned jumpFollowed = 0;    // the last of the player's jumps it came through after (W5)
 	bool canRam = false;
 	ram::Ram ram;                 // the same ram as the player's, when it can
 	float cloakLevel = 0.f;       // its cloak, eased: how faint the hull, how strong the bending

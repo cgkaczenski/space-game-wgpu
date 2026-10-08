@@ -1160,11 +1160,14 @@ bool gameLogic(float deltaTime)
 	}
 
 	// Jump gates (sight roadmap W5): into one, out of the other. Moved, the
-	// far end's rocks are all made at once, behind the white; the camera's
-	// leash snaps it after the ship.
+	// camera snaps after the ship -- in every mode, the scope's ease too --
+	// and the far end's rocks are all made at once, from that view, behind
+	// the white.
+	bool jumpedNow = false;
 	if (jumpGates::updatePlayer(session.ship,
 		controls && gameState::playerPresent() && !energy::isCloaked(session.energy), time.game))
 	{
+		jumpedNow = true;
 		asteroids::streamAllNext();
 	}
 
@@ -1240,21 +1243,32 @@ bool gameLogic(float deltaTime)
 		const glm::vec2 viewSize = {(float)w, (float)h};
 		const float zoomNow = std::max(renderer.currentCamera.zoom, 1e-4f);
 		const glm::vec2 lean = scope::lean(viewSize / zoomNow);
-		// Only the scope's lean and its way back: a restart or a teleport
-		// still snaps by the chase's leash, as it always has.
+		// Only the scope's lean and its way back: a restart snaps by the
+		// chase's leash, as it always has. A jump snaps outright, whatever the
+		// camera was doing: the scope's ease would barely move it across a
+		// jump, and the far end's rocks are made from this frame's view.
 		static bool comingBack = false;
-		if (scope::amount() > 0.f) { comingBack = true; }
-		else if (glm::distance(cameraBase + viewSize * 0.5f, session.ship.position) <= 150.f) { comingBack = false; }
-		if (scope::amount() > 0.f || comingBack)
+		if (jumpedNow)
 		{
-			cameraBase = camera::ease(cameraBase, session.ship.position + lean, viewSize,
-				scope::cameraRate(), time.real);
+			// Zero dead zone and zero leash, as a restart: straight onto it.
+			cameraBase = camera::follow(cameraBase, session.ship.position + lean, viewSize, {550.f, 0.f, 0.f});
+			comingBack = scope::amount() > 0.f;
 		}
 		else
 		{
-			cameraBase = camera::follow(
-				cameraBase, session.ship.position, viewSize,
-				{time.real * 550.f, 0.f, 150.f});
+			if (scope::amount() > 0.f) { comingBack = true; }
+			else if (glm::distance(cameraBase + viewSize * 0.5f, session.ship.position) <= 150.f) { comingBack = false; }
+			if (scope::amount() > 0.f || comingBack)
+			{
+				cameraBase = camera::ease(cameraBase, session.ship.position + lean, viewSize,
+					scope::cameraRate(), time.real);
+			}
+			else
+			{
+				cameraBase = camera::follow(
+					cameraBase, session.ship.position, viewSize,
+					{time.real * 550.f, 0.f, 150.f});
+			}
 		}
 	}
 
@@ -1789,7 +1803,7 @@ bool gameLogic(float deltaTime)
 		e.body.medium = lanes::mediumFor(e.laneRider, e.body, time.game); // fields and lanes, as for the player (W2, W4)
 		const enemyAi::Orders orders = enemyAi::update(e, time.game, seen, comingBack ? &wayIn : nullptr);
 		// A chaser at the gate the player just took comes through after it (W5).
-		jumpGates::updateEnemy(e.body, e.awareness != Enemy::Awareness::Unaware);
+		jumpGates::updateEnemy(e.body, e.awareness != Enemy::Awareness::Unaware, e.jumpFollowed);
 		if (playerInField && !hidden && e.awareness == Enemy::Awareness::Engaged) { playerSeenInField = true; }
 		if (orders.phaseChanged)
 		{
