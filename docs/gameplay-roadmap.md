@@ -464,6 +464,36 @@ Nothing in the game can draw a word; every string on screen today is ImGui's.
   for free. On the HUD it goes through the HUD's layer, so it shakes with the
   bars.
 
+**Decided (first pass)**
+- **ProggyClean, as a bitmap.** It is a pixel font drawn on a 13 px grid, so
+  it is baked at 13 px and only ever scaled by whole numbers, sampled
+  nearest. SDF would round its square corners; it waits for a smooth font
+  that wants any size.
+- **Sizes are whole multiples**, one step per 480 px of window height: 3 at
+  1440. Headings are three steps.
+- **All three uses**, as the first real text:
+  - The **hold and banked points** in a line under the energy bar, to one
+    decimal. The debug panel keeps its readout.
+  - **PAUSED** across the middle while paused, with "ESC TO RESUME" under it.
+  - **Damage numbers** on enemies the player hits — shots, beam, ram, bump —
+    as life × 100, so a standard hull is 100. Hits on one enemy within
+    0.35 s add up into one number, which is what makes a beam read as one
+    climbing figure. They rise and fade over 0.9 s of game time, so a pause
+    freezes them. None over an enemy the fog hides. All tunable under
+    **Damage numbers** in the debug panel.
+- Damage numbers are drawn in **screen space**, not in the world: a world
+  camera's zoom would take a pixel font off its grid. They sit above the world
+  and under the HUD, so they do not shake with it.
+- _Built:_ `wgpu2d::Font`, `measureText`, `Renderer2D::renderText`
+  (`src/render/font.cpp`); `gameLayer/textLook` (the font, the scale, a
+  one-pixel shadow); `gameLayer/damageNumbers`; `hud::showHaul`,
+  `hud::showPaused`.
+
+**Still open**
+- Damage the player takes: numbers over the player's ship too, in red, or is
+  the health bar enough?
+- Burn damage on enemies outside the circle shows no numbers. Should it?
+
 ### U2. In-game menu
 
 The natural home for the control scheme and settings that live in the debug

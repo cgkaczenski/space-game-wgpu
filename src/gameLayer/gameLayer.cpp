@@ -14,6 +14,8 @@
 #include "imfilebrowser.h"
 #include <render/wgpu2d.h>
 #include <hud.h>
+#include <textLook.h>
+#include <damageNumbers.h>
 #include <shipThruster.h>
 #include <shipShield.h>
 #include <bulletLook.h>
@@ -375,7 +377,10 @@ struct Feature
 };
 
 const Feature features[] = {
+	// Before the HUD, which draws with its font.
+	{"textLook",   textLook::init,   nullptr,         textLook::cleanup},
 	{"hud",        hud::init,        hud::reset,      hud::cleanup},
+	{"damageNumbers", nullptr,       damageNumbers::reset, nullptr},
 	{"thruster",   thruster::init,   thruster::reset, thruster::cleanup},
 	{"shield",     shield::init,     nullptr,         shield::cleanup},
 	{"bulletLook", bulletLook::init, nullptr,         bulletLook::cleanup},
@@ -777,6 +782,7 @@ void debugPanelUi()
 	debugPanel::section("Map", explorationMap::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
+	debugPanel::section("Damage numbers", damageNumbers::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Enemies", enemiesDebugUi);
@@ -1201,6 +1207,7 @@ bool gameLogic(float deltaTime)
 				&& !hitboxDebug::isDamageFrozen())
 			{
 				enemy.life -= ram::hitDamage();
+				damageNumbers::hit(enemy.id, enemy.body.position, ram::hitDamage());
 			}
 			if (enemy.life <= 0.f)
 			{
@@ -1452,6 +1459,8 @@ bool gameLogic(float deltaTime)
 		{
 			hitEffectsOnEnemy(session.enemies[target], beam.stun, beam.lockdown);
 			session.enemies[target].life -= beam.damagePerSecond * time.game;
+			damageNumbers::hit(session.enemies[target].id, session.enemies[target].body.position,
+				beam.damagePerSecond * time.game);
 			if (session.enemies[target].life <= 0.f)
 			{
 				killEnemy(target);
@@ -1550,6 +1559,7 @@ bool gameLogic(float deltaTime)
 						if (result == energy::HitResult::Damaged)
 						{
 							struck.life -= session.bullets[i].damage;
+							damageNumbers::hit(struck.id, struck.body.position, session.bullets[i].damage);
 							hitEffectsOnEnemy(struck, session.bullets[i].stun, session.bullets[i].lockdown);
 						}
 
@@ -2010,6 +2020,7 @@ bool gameLogic(float deltaTime)
 					&& !hitboxDebug::isDamageFrozen())
 				{
 					e.life -= bumpEnemyDamage;
+					damageNumbers::hit(e.id, e.body.position, bumpEnemyDamage);
 				}
 				if (e.life <= 0.f)
 				{
@@ -2023,6 +2034,7 @@ bool gameLogic(float deltaTime)
 #pragma endregion
 
 	effects::update(time.game);
+	damageNumbers::update(time.game);
 	resources::update(time.game, session.ship.position, gameState::playerPresent());
 	asteroids::update(time.game); // rocks drift, spin, spring home and bump (A2)
 
@@ -2436,7 +2448,16 @@ bool gameLogic(float deltaTime)
 		slots[s] = {v.style, v.ready, v.ammo, v.maxAmmo, v.selected, v.usable};
 	}
 
+	// Damage numbers: screen space, over the world and under the HUD, so
+	// they do not shake with it. Placed from the world camera, which is
+	// still current; none over an enemy the fog hides.
+	damageNumbers::draw(renderer, renderer.getViewRect(), w, h, fogHides
+		? damageNumbers::Shown([](glm::vec2 p) { return sight::playerSeesShip(p, 60.f); })
+		: damageNumbers::Shown());
+
 	hud::showMode(session.mode == shipMode::Mode::Flight);
+	if (gameState::playerPresent()) { hud::showHaul(resources::held(), resources::banked()); }
+	if (gameState::paused()) { hud::showPaused(); }
 	// Flushes the world, then the HUD.
 	hud::draw(renderer, session.health, energy::level(session.energy), slots, weapons::slotCount,
 		ram::ready(session.ram), w, h);

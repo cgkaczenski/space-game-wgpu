@@ -396,6 +396,59 @@ namespace wgpu2d
 		FrameBuffer target;
 	};
 
+	// ---- Text (gameplay roadmap U1) ---------------------------------------
+	//
+	// A bitmap font: the glyphs rasterised once, at one size, into an atlas,
+	// and a table saying where each one is and how to place it. Drawing a
+	// string is then one quad per character through the ordinary batch --
+	// there is no text shader. The atlas is white with the glyph's coverage
+	// in alpha, so the sprite shader's `color * texel` is the tint.
+	//
+	// Crisp at the size it was baked at and at whole multiples of it, when
+	// the text sits on whole pixels; blurred or uneven anywhere else. That is
+	// the trade a bitmap makes, and it is the right one for a pixel font,
+	// which is only meant to be seen on its own grid.
+	//
+	// Printable ASCII (32..126) only, and no kerning: right for a monospace
+	// pixel font. A proportional font would want stbtt's pair table.
+	struct Font
+	{
+		// One character's placement, in pixels at the baked size, relative to
+		// the pen on the baseline (y down). `uv` is gl2d's convention, ready
+		// for renderRectangle.
+		struct Glyph
+		{
+			glm::vec2 offset = {};  // pen to the glyph's top-left
+			glm::vec2 size = {};
+			float advance = 0.f;    // pen to the next character's pen
+			glm::vec4 uv = {};
+		};
+
+		static constexpr int firstChar = 32;
+		static constexpr int charCount = 95;
+
+		Texture texture = {};
+		float pixelHeight = 0.f; // the size it was baked at
+		float ascent = 0.f;      // baseline to the top of the tallest glyph
+		float descent = 0.f;     // baseline to the bottom of the lowest; negative
+		float lineGap = 0.f;
+		std::vector<Glyph> glyphs;
+
+		// Rasterises `ttfFile` at `pixelHeight` (stb_truetype's pixel height:
+		// ascender to descender). `pixelated` samples it nearest rather than
+		// linear: a pixel font scaled by a whole number keeps hard edges. False
+		// if the file would not load; the reason is on stderr.
+		bool createFromFile(const char *ttfFile, float pixelHeight, bool pixelated = true);
+		void cleanup();
+
+		// Baseline to baseline, at the baked size.
+		float lineHeight() const { return ascent - descent + lineGap; }
+	};
+
+	// The box `text` fills drawn at `scale` (1 is the baked size): the widest
+	// line by the number of lines times the line height. '\n' starts a line.
+	glm::vec2 measureText(const Font &font, const char *text, float scale = 1.f);
+
 	// A camera is a transform: where the view sits and how far it is zoomed.
 	// buildViewProj turns those into the matrix the vertex shader applies.
 	//
@@ -499,6 +552,18 @@ namespace wgpu2d
 		void renderLine(const glm::vec2 position, const float angleDegrees, const float length, const Color4f color, const float width = 2.f);
 		void renderLine(const glm::vec2 start, const glm::vec2 end, const Color4f color, const float width = 2.f);
 		void renderCircleOutline(const glm::vec2 position, const Color4f color, const float size, const float width = 2.f, const unsigned int segments = 16);
+
+		// Text, in the current camera's world. `anchor` says which point of
+		// the text's box (measureText) sits at `position`: {0, 0} its
+		// top-left, {0.5, 0.5} its centre, {1, 0} its top-right. Lines are
+		// aligned against each other by the same fraction, so a centred block
+		// centres every line.
+		//
+		// Each line's start is rounded to whole units after anchoring, so text
+		// placed on the pixel grid stays there whatever its width. With a
+		// whole `scale` that keeps a pixel font crisp in screen space.
+		void renderText(glm::vec2 position, const char *text, const Font &font,
+			const Color4f color = {1, 1, 1, 1}, float scale = 1.f, glm::vec2 anchor = {0, 0});
 
 		// Triangles rather than rectangles: any flat mesh, such as a polygon
 		// fanned from its centre (asteroids, A1). `vertexCount` vertices make

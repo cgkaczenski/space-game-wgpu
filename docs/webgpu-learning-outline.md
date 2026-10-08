@@ -448,7 +448,7 @@ in [`roadmap.md`](roadmap.md).
 | Instancing | one growable buffer + draw runs — see N5 |
 | Render bundles, MSAA | same — MSAA is N6; render bundles stay marginal |
 | Building for the Web | native Metal only; `wgpuMetalLayer.mm` and the wgpu-native pin both stand in the way |
-| Milestone 9 (text) | skipped: gl2d's font path is almost all CPU (stb_truetype pack, glyph quads through the existing batch), and the game draws no gl2d text — glui is layout only and every string is ImGui |
+| Milestone 9 (text) | skipped by the port: gl2d's font path is almost all CPU (stb_truetype pack, glyph quads through the existing batch), and the game drew no gl2d text then — glui is layout only and every string was ImGui. Built later as U1 (below, "Text: the concepts") |
 
 ---
 
@@ -1439,6 +1439,68 @@ sight into a target every frame and never clearing it.
 **Code:** `src/gameLayer/explorationMap.cpp` · `src/gameLayer/laneLook.cpp` ·
 `src/gameLayer/jumpGates.cpp` · `src/gameLayer/lanes.cpp` ·
 `Medium` and `through` in `src/engine/movement.cpp`
+
+---
+
+## Text: the concepts
+
+### U1. A bitmap font — *built*
+
+**Concepts:** Text is sprites. A `.ttf` holds outlines; the GPU draws
+triangles and samples textures. So the outlines are rasterised once, at load,
+into an **atlas**, and a string is one textured quad per character through the
+batch that already exists. No new shader, no new pipeline.
+
+- **An atlas plus a table.** `stbtt_PackBegin` / `stbtt_PackFontRange` /
+  `stbtt_PackEnd` rasterise ASCII 32..126 into one channel of coverage and
+  fill a `stbtt_packedchar` per glyph: its texel rectangle, its offset from
+  the pen, and its advance. The atlas starts at 128 × 64 and doubles until
+  the pack fits. One pixel of padding keeps neighbours out of each other's
+  texels.
+- **Coverage in alpha, white in colour.** The sprite shader is `color * texel`,
+  so a white atlas with the shape in alpha makes the vertex colour the tint.
+  R8 would be a quarter of the memory, but the renderer only makes RGBA8 and
+  the atlas is a few kilobytes.
+- **Layout is a pen on a baseline.** Lines are laid out from the font's
+  **ascent** (baseline to the top) and **descent** (below it, negative); line
+  height is their difference plus the line gap. Each glyph is placed at
+  pen + offset and moves the pen by its advance. Measuring a string is the
+  same walk without drawing, which is what anchoring (centre, right) needs.
+- **A pixel font has a grid, and staying on it is the whole job.**
+  ProggyClean at 13 px rasterises to coverage that is only ever 0 or 255,
+  with no partial texels (checked). Its outlines sit on whole pixels at that
+  size. To keep that on screen, three things have to line up:
+  1. **Nearest sampling.** Linear would blend each texel with its neighbour
+     at every scaled edge.
+  2. **Whole-number scale.** At 2.5 some font pixels cover 2 screen pixels
+     and others 3.
+  3. **Whole-pixel origin.** `renderText` rounds each line's start after
+     anchoring.
+
+  No oversampling either: `stbtt_PackSetOversampling` buys sub-pixel placement
+  under linear filtering, which is the opposite of what a pixel font wants.
+- **Why not SDF here.** A distance field rebuilds a smooth edge at any scale,
+  but that rounds a pixel font's square corners. It is the right tool for a
+  smooth font at many sizes, and stays open for one.
+- **Screen space for world text.** Damage numbers are anchored to world
+  points but drawn under a screen camera, placed with the view rectangle. The
+  world camera's zoom would scale the font by a non-whole amount.
+- **The batch makes text cheap.** Every glyph shares the atlas texture, so
+  consecutive glyphs extend one draw run. The HUD's text added one run to the
+  frame (44 → 45 in the paused capture, with damage numbers on screen).
+
+**How it was checked:** the atlas's coverage histogram, outside the game,
+using the same pack calls: 1355 texels at 255, 0 partial. Two offscreen
+2560 × 1440 captures: the hold line under the energy bar, and PAUSED with
+numbers frozen mid-rise. The numbers came from temporary synthetic hits
+(since removed): three hits on one target merged into one "30", and one
+under the fog was hidden.
+
+**Code:** `wgpu2d::Font`, `measureText` and `Renderer2D::renderText` in
+`include/render/wgpu2d.h` / `src/render/font.cpp` ·
+`src/gameLayer/textLook.cpp` · `src/gameLayer/damageNumbers.cpp` ·
+`hud::showHaul` / `hud::showPaused` in `src/gameLayer/hud.cpp` ·
+`resources/fonts/`
 
 ---
 

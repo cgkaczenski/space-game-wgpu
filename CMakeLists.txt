@@ -212,18 +212,20 @@ target_copy_webgpu_binaries("${CMAKE_PROJECT_NAME}")
 add_library(wgpu2d STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/wgpuContext.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/layerEffect.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/font.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/webgpuImpl.cpp"
 )
 set_property(TARGET wgpu2d PROPERTY CXX_STANDARD 17)
 
 # PUBLIC: wgpu2d.h includes glm, wgpuFrame.h includes webgpu.hpp, and the
 # generated shader header is included by wgpuContext.cpp from the same
-# directory the consumers search. stb_image is PRIVATE -- Texture::loadFromFile
-# uses it, no header exposes it.
+# directory the consumers search. stb_image and stb_truetype are PRIVATE --
+# Texture::loadFromFile and Font::createFromFile use them, no header exposes
+# them.
 target_include_directories(wgpu2d PUBLIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/include/"
 	"${CMAKE_CURRENT_BINARY_DIR}/generated/")
-target_link_libraries(wgpu2d PUBLIC webgpu glm PRIVATE stb_image)
+target_link_libraries(wgpu2d PUBLIC webgpu glm PRIVATE stb_image stb_truetype)
 # No glfw, no glfw3webgpu: the application creates the surface and hands it in.
 # That is what makes this target usable by a project that is not on GLFW.
 
