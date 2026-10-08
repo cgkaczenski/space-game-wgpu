@@ -68,8 +68,7 @@ bool update(float dt, const Input &input)
 		break;
 
 	case State::Paused:
-		if (input.escapePressed) { enter(State::Playing); }
-		break;
+		break; // the menu's to leave (resume)
 
 	case State::Dying:
 		if (!input.focused) { pauseOnNextRound = true; }
@@ -164,6 +163,11 @@ float whiteOut()
 	}
 	if (reveal == Reveal::FromWhite) { return ease(revealLeft / std::max(fromWhiteSeconds, 0.001f)); }
 	return 0.f;
+}
+
+void resume()
+{
+	if (state == State::Paused) { enter(State::Playing); }
 }
 
 void reset()

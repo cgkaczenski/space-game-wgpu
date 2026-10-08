@@ -475,6 +475,7 @@ Nothing in the game can draw a word; every string on screen today is ImGui's.
   - The **hold and banked points** in a line under the energy bar, to one
     decimal. The debug panel keeps its readout.
   - **PAUSED** across the middle while paused, with "ESC TO RESUME" under it.
+    _(Replaced in U2:)_ the pause menu's title.
   - **Damage numbers** on enemies the player hits — shots, beam, ram, bump —
     as life × 100, so a standard hull is 100. Hits on one enemy within
     0.35 s add up into one number, which is what makes a beam read as one
@@ -486,8 +487,8 @@ Nothing in the game can draw a word; every string on screen today is ImGui's.
   and under the HUD, so they do not shake with it.
 - _Built:_ `wgpu2d::Font`, `measureText`, `Renderer2D::renderText`
   (`src/render/font.cpp`); `gameLayer/textLook` (the font, the scale, a
-  one-pixel shadow); `gameLayer/damageNumbers`; `hud::showHaul`,
-  `hud::showPaused`.
+  one-pixel shadow); `gameLayer/damageNumbers`; `hud::showHaul`
+  (and `hud::showPaused`, gone in U2).
 
 **Still open**
 - Damage the player takes: numbers over the player's ship too, in red, or is
@@ -498,6 +499,41 @@ Nothing in the game can draw a word; every string on screen today is ImGui's.
 
 The natural home for the control scheme and settings that live in the debug
 panel today.
+
+**Decided (first pass)**
+- **The menu is the pause.** Escape, or the window losing focus, pauses and
+  opens it over the grey world. The menu owns Escape while it is open:
+  Escape on the first page resumes, on Settings it goes back.
+- **Straight in at launch**, as before: the last level played, no title
+  screen.
+- **Pages:** PAUSED (Resume, Restart, Settings, Quit) and SETTINGS (Volume,
+  CRT, Fullscreen, Back).
+- **Player settings: volume, CRT strength, fullscreen.** The control scheme
+  stays in the debug panel. They are kept in `settings.cfg` beside
+  `lastLevel.cfg`, gitignored, and written on every change. Fullscreen is
+  on by default.
+  - CRT is a 0..1 multiplier on the tuned strength and glow, so the tuning
+    file keeps the designer's look and the player can only turn it down.
+    At 0 the CRT pass is skipped; transitions still run.
+  - Volume is raudio's master volume.
+- **Keyboard and mouse.** W/S or arrows move, repeating when held. A/D or
+  arrows change a value. Enter or Space presses. Hovering selects, a click
+  presses, and a drag along a slider's bar sets it. No controller yet.
+- **The mechanism is in `wgpu2d`** (`Menu`, `MenuInput`, `MenuStyle`): an
+  immediate-mode menu that reads actions, not keys. The game maps its keys
+  onto it and says what the rows are.
+- A choice is acted on at the **top of the next frame**. A restart starts
+  features that draw into their own targets, and a target's flush takes
+  every quad pending, menu included.
+- A choice made with a click leaves the button down as play resumes, so the
+  trigger waits for it to be let go.
+- _Built:_ `wgpu2d::Menu` (`src/render/menu.cpp`); `gameLayer/menu`;
+  `gameLayer/playerSettings`; `gameState::resume`; `crt::setPlayerStrength`.
+
+**Still open**
+- Menu transitions through the CRT's switch-off and switch-on (an engine idea
+  below). Restart is an instant cut for now.
+- A Levels page belongs to U3.
 
 **Open questions**
 - Is Escape still pause, now opening the menu over the paused world? Or is the

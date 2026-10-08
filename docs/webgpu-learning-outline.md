@@ -1499,8 +1499,57 @@ under the fog was hidden.
 **Code:** `wgpu2d::Font`, `measureText` and `Renderer2D::renderText` in
 `include/render/wgpu2d.h` / `src/render/font.cpp` ·
 `src/gameLayer/textLook.cpp` · `src/gameLayer/damageNumbers.cpp` ·
-`hud::showHaul` / `hud::showPaused` in `src/gameLayer/hud.cpp` ·
-`resources/fonts/`
+`hud::showHaul` in `src/gameLayer/hud.cpp` · `resources/fonts/`
+
+### U2. An immediate-mode menu — *built*
+
+**Concepts:** The menu runs as code, not as a tree of widgets. Every frame
+the game lists the rows in order, and each call draws its row and says whether
+it was chosen.
+
+- **Immediate mode keeps almost no state.** `wgpu2d::Menu` holds only:
+  - the selected row
+  - last frame's row count, so up and down can wrap
+  - last frame's height, so the panel behind can be drawn before the rows
+  - which slider is being dragged
+
+  Pages are just which list of calls the game makes. Each page keeps its own
+  `Menu`, so coming back from Settings lands on Settings.
+- **One rectangle, drawn and tested.** A row is laid out, hit-tested
+  against the pointer and drawn in one call. The rectangle the mouse is
+  tested against is the rectangle on screen, and there is no second copy to
+  fall out of step.
+- **Actions, not keys.** `MenuInput` is up, down, left, right, confirm and
+  back, plus a pointer. The game maps keys onto it and converts the cursor
+  from window coordinates into framebuffer pixels. They differ on a
+  high-density display. The library never sees a key code, so it would work
+  with a pad unchanged.
+- **The frame that opens the menu must not feed it.** Escape pauses at the
+  top of a frame, and the menu draws at the bottom of the same frame. Fed
+  that frame's Escape, the menu would close itself immediately. So its first
+  frame draws without input.
+- **Act on a choice at the top of the next frame.** `flushFBO` takes every
+  pending quad (W6). A restart run mid-draw starts features that draw into
+  their own targets, and the menu's quads would go into a map. The choice
+  is stored and acted on next frame, where restarts already happen.
+- **Two owners for one knob.** The CRT's strength is the tuning file's. The
+  player's setting is a multiplier on top, kept in its own file. Neither one
+  overwrites the other.
+
+**How it was checked:** two offscreen 2560 × 1440 captures, driven by
+temporary injected actions (since removed):
+- Escape, then down, down: SETTINGS highlighted.
+- Then confirm, down: the Settings page with CRT highlighted and both
+  sliders full.
+
+A third run loaded a `settings.cfg` with `crt 0`. The picture came out flat,
+and the frame used one pipeline fewer, because the CRT pass was skipped.
+
+**Code:** `wgpu2d::Menu`, `MenuInput`, `MenuStyle` in `include/render/wgpu2d.h`
+/ `src/render/menu.cpp` · `src/gameLayer/menu.cpp` ·
+`src/gameLayer/playerSettings.cpp` · `gameState::resume` ·
+`crt::setPlayerStrength` · `menuChoice` / `triggerHeldOver` in
+`src/gameLayer/gameLayer.cpp`
 
 ---
 

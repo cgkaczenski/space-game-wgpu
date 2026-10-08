@@ -21,6 +21,7 @@ namespace
 	// monitor rather than as a filter: the curvature is the first thing to look
 	// broken, so it is the smallest of them.
 	float strength = 1.0f;
+	float playerAmount = 1.f; // the player's setting, on top of the tuning
 	float curvature = 0.06f;
 	float scanlines = 0.14f;
 	float mask = 0.08f;
@@ -95,6 +96,8 @@ bool init()
 
 void setEnabled(bool e) { enabled = e; }
 bool isEnabled() { return enabled; }
+void setPlayerStrength(float s) { playerAmount = glm::clamp(s, 0.f, 1.f); }
+float playerStrength() { return playerAmount; }
 
 void setTransition(float off, float white, float w)
 {
@@ -118,10 +121,11 @@ void apply()
 {
 
 	const bool transition = switchOff > 0.f || whiteOut > 0.f || warp > 0.f;
+	const float master = strength * playerAmount;
 
 	// Off costs nothing: no target, no extra pass, the frame goes straight to
 	// the surface as it always did.
-	if (effect.id == 0 || (!transition && (!enabled || strength <= 0.f)))
+	if (effect.id == 0 || (!transition && (!enabled || master <= 0.f)))
 	{
 		wgpu2d::clearFinalEffect();
 		wgpu2d::clearFinalGlow();
@@ -131,7 +135,7 @@ void apply()
 	// The filter switched off but a transition running: the shader runs for
 	// the transition alone, every part of the CRT look at zero. Warmth too --
 	// it is the one part the master does not scale.
-	if (!enabled || strength <= 0.f)
+	if (!enabled || master <= 0.f)
 	{
 		wgpu2d::clearFinalGlow();
 		wgpu2d::EffectParams params;
@@ -151,12 +155,14 @@ void apply()
 		// colour that is added rather than blended.
 		const float warmLuma = glm::dot(warmColour, glm::vec3(0.2126f, 0.7152f, 0.0722f));
 		glow.tint = glm::mix(glm::vec3(1.f), warmColour / warmLuma, warmth);
-		wgpu2d::setFinalGlow(glow);
+		wgpu2d::FinalGlow scaled = glow;
+		scaled.intensity *= playerAmount;
+		wgpu2d::setFinalGlow(scaled);
 	}
 	else { wgpu2d::clearFinalGlow(); }
 
 	wgpu2d::EffectParams params;
-	params.a = {strength, curvature, scanlines, mask};
+	params.a = {master, curvature, scanlines, mask};
 	params.b = {period, vignette, fringing, warmth};
 	params.c = {switchOff, whiteOut, warp * warpStreak, 0.f};
 	wgpu2d::setFinalEffect(effect, params);

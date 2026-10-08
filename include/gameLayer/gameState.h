@@ -1,12 +1,12 @@
 #pragma once
 
-// Where a round is (gameplay roadmap L1). No words on screen: every state is
-// shown by what the world does.
+// Where a round is (gameplay roadmap L1). Every state is shown by what the
+// world does; the only words are the pause menu's (U2).
 //
 //   Playing     the controls are live.
 //   Paused      Escape, or the window losing focus. Game time stops, so the
 //               whole simulation freezes where it is; the world is drawn grey
-//               and dim. Only Escape resumes.
+//               and dim, and the menu (U2) opens over it. The menu resumes.
 //   Dying       health reached zero. The ship has exploded, the controls are
 //               off, and the world runs on around the wreck. Then the picture
 //               switches off like a CRT and the round restarts by itself.
@@ -78,6 +78,10 @@ namespace gameState
 	// Straight to Playing with no transition: the debug panel's reset, and
 	// the first round. Leaves a pause alone.
 	void reset();
+
+	// From Paused, back to Playing: the menu's Resume (gameplay roadmap U2).
+	// The menu owns Escape while paused, so `update` no longer resumes.
+	void resume();
 
 	void debugUi();
 }

@@ -16,6 +16,9 @@
 #include <hud.h>
 #include <textLook.h>
 #include <damageNumbers.h>
+#include <utility>
+#include <menu.h>
+#include <playerSettings.h>
 #include <shipThruster.h>
 #include <shipShield.h>
 #include <bulletLook.h>
@@ -387,6 +390,8 @@ const Feature features[] = {
 	{"cloak",      cloak::init,      nullptr,         cloak::cleanup},
 	{"worldGrade", worldGrade::init, nullptr,         worldGrade::cleanup},
 	{"crt",        crt::init,        nullptr,         crt::cleanup},
+	// After the CRT, which it sets the player's strength on.
+	{"playerSettings", playerSettings::init, nullptr,  nullptr},
 	{"background", background::init, nullptr,         background::cleanup},
 	{"scenery",    scenery::init,    nullptr,         scenery::cleanup},
 	// Its start needs the level, so the game does it in restartGame instead.
@@ -884,6 +889,16 @@ bool initGame()
 	return true;
 }
 
+// The menu's choice (gameplay roadmap U2), made while drawing one frame and
+// acted on at the top of the next, where a restart belongs: restartGame
+// starts features that draw into their own targets, and a flushFBO at the
+// end of a frame would take the menu's pending quads along with it.
+static menu::Choice menuChoice = menu::Choice::None;
+
+// A mouse press that chose from the menu is still down as play resumes. The
+// trigger waits for it to be let go, or the click would fire a shot.
+static bool triggerHeldOver = false;
+
 bool gameLogic(float deltaTime)
 {
 
@@ -906,12 +921,31 @@ bool gameLogic(float deltaTime)
 	// Where the round is (gameplay roadmap L1), before the clock is read and
 	// before the CRT is set, because both follow it. A restart happens here,
 	// at the top of a frame, while the transition has the screen covered.
+	// The menu is the pause (U2): open while paused, and it owns Escape then.
+	const bool menuWasOpen = gameState::paused();
 	{
-		const bool escape = !ImGui::GetIO().WantCaptureKeyboard
+		const bool escape = !menuWasOpen && !ImGui::GetIO().WantCaptureKeyboard
 			&& platform::isButtonPressedOn(platform::Button::Escape);
 		if (gameState::update(deltaTime, {escape, platform::isFocused()}))
 		{
 			restartGame();
+		}
+		switch (std::exchange(menuChoice, menu::Choice::None))
+		{
+		case menu::Choice::Resume:
+			gameState::resume();
+			triggerHeldOver = menu::choseWithPointer();
+			break;
+		case menu::Choice::Restart:
+			gameState::resume();
+			gameState::reset();
+			restartGame();
+			triggerHeldOver = menu::choseWithPointer();
+			break;
+		case menu::Choice::Quit:
+			return false;
+		case menu::Choice::None:
+			break;
 		}
 		gameClock::setPaused(gameState::paused());
 		// The warp-out's zoom blur, or a lane's entry flash (W4), or a jump's
@@ -1337,8 +1371,9 @@ bool gameLogic(float deltaTime)
 	// Clicks on the debug panel are the panel's.
 	// No firing while scoped (S4b): the scope is for finding, not fighting.
 	// Nor in a jump or the grace after it (W5).
+	if (triggerHeldOver && !platform::isLMouseHeld()) { triggerHeldOver = false; }
 	const bool trigger = controls && !stunnedNow && !scope::held() && !jumpGates::shielded()
-		&& platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse;
+		&& platform::isLMouseHeld() && !ImGui::GetIO().WantCaptureMouse && !triggerHeldOver;
 	// What the player can see from where the ship now is (sight roadmap S2):
 	// rebuilt once a frame, before anything asks -- a missile's lock first.
 	// Scoped, its long narrow cone joins the sight and the all-round sight
@@ -2457,7 +2492,6 @@ bool gameLogic(float deltaTime)
 
 	hud::showMode(session.mode == shipMode::Mode::Flight);
 	if (gameState::playerPresent()) { hud::showHaul(resources::held(), resources::banked()); }
-	if (gameState::paused()) { hud::showPaused(); }
 	// Flushes the world, then the HUD.
 	hud::draw(renderer, session.health, energy::level(session.energy), slots, weapons::slotCount,
 		ram::ready(session.ram), w, h);
@@ -2473,6 +2507,14 @@ bool gameLogic(float deltaTime)
 		for (const Enemy &e : session.enemies) { if (inSight(e)) { marks.enemies.push_back(e.body.position); } }
 		const bool full = !ImGui::GetIO().WantCaptureKeyboard && platform::isButtonHeld(platform::Button::M);
 		explorationMap::draw(renderer, w, h, marks, full);
+	}
+
+	// The menu, over everything (U2). The frame the pause began, it draws
+	// without reading input: that frame's Escape is the one that opened it.
+	if (gameState::paused())
+	{
+		if (!menuWasOpen) { menu::open(); }
+		menuChoice = menu::update(renderer, w, h, menuWasOpen);
 	}
 
 #pragma endregion

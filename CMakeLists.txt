@@ -213,6 +213,7 @@ add_library(wgpu2d STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/wgpuContext.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/layerEffect.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/font.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/menu.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/render/webgpuImpl.cpp"
 )
 set_property(TARGET wgpu2d PROPERTY CXX_STANDARD 17)

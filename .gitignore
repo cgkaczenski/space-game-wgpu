@@ -10,6 +10,7 @@ Makefile
 .cache/
 imgui.ini
 lastLevel.cfg
+settings.cfg
 errorLogs.txt
 
 # F12 / WGPU_SCREENSHOT_FRAME writes these next to the binary

@@ -607,4 +607,98 @@ namespace wgpu2d
 		// contents are already scaled by their own coverage (outline 12).
 		void drawFullscreenEffect(Texture source, Effect effect, const EffectParams &params);
 	};
+
+	// ---- Menus (gameplay roadmap U2) --------------------------------------
+	//
+	// An immediate-mode menu, the way ImGui is one: each frame the caller
+	// says what the rows are, in order, and each row says whether it was
+	// chosen. What survives between frames is only which row is selected,
+	// the row count (for wrapping), and a slider being dragged.
+	//
+	// It reads actions, not keys: the application maps its keyboard, mouse
+	// or pad onto MenuInput, so nothing here knows what a key code is. It
+	// draws with renderText and plain rectangles in whatever camera is
+	// current, and the pointer is in that camera's coordinates.
+
+	struct MenuInput
+	{
+		bool up = false, down = false;       // move the selection, wrapping
+		bool left = false, right = false;    // change a choice or slider
+		bool confirm = false;                // press the selected row
+		bool back = false;                   // the caller decides what this means
+
+		// The pointer, when it is the menu's to read (not over a debug
+		// panel, say). Hovering selects; pressing presses.
+		bool pointerActive = false;
+		glm::vec2 pointer = {};
+		bool pointerMoved = false;
+		bool pointerPressed = false;  // went down this frame
+		bool pointerHeld = false;
+	};
+
+	struct MenuStyle
+	{
+		const Font *font = nullptr;
+		float scale = 1.f;        // the font's; a whole number for a pixel font
+		float titleScale = 2.f;
+		float width = 400.f;      // of every row, centred on the menu's x
+		float rowHeight = 1.8f;   // in lines of the font at `scale`
+		float padding = 0.5f;     // a row's text from its edges, in lines
+
+		Color4f title = {1, 1, 1, 1};
+		Color4f text = {0.8f, 0.8f, 0.8f, 1};
+		Color4f selected = {1, 1, 1, 1};
+		Color4f highlight = {1, 1, 1, 0.12f};  // the bar behind the selected row
+		Color4f panel = {0, 0, 0, 0};          // behind the whole menu; 0 alpha: none
+		Color4f shadow = {0, 0, 0, 0};         // one font pixel down and right; 0 alpha: none
+		Color4f track = {1, 1, 1, 0.2f};       // a slider's empty part
+		Color4f fill = {1, 1, 1, 0.9f};        // and its filled part
+	};
+
+	struct Menu
+	{
+		int selected = 0;
+
+		// Starts this frame's rows, the first one's top edge at `topCentre`.
+		// Applies up/down to the selection, wrapping by last frame's count.
+		void begin(Renderer2D &renderer, const MenuInput &input, glm::vec2 topCentre, const MenuStyle &style);
+
+		// A heading: not selectable, `titleScale`, centred.
+		void title(const char *text);
+
+		// A gap of `lines` lines, not selectable.
+		void space(float lines = 1.f);
+
+		// True on the frame it is pressed: confirm while selected, or a press
+		// on it.
+		bool button(const char *label);
+
+		// The label on the left, the current option on the right. Left and
+		// right step through the options, a press steps forward; wraps. True
+		// on the frame `index` changes.
+		bool choice(const char *label, int &index, const char *const *options, int count);
+		bool toggle(const char *label, bool &value); // a choice of OFF / ON
+
+		// The label on the left, a bar on the right. Left and right step by
+		// `step`; the pointer sets it by dragging along the bar. True on the
+		// frame `value` changes.
+		bool slider(const char *label, float &value, float min, float max, float step);
+
+		// `back` was pressed this frame.
+		bool backPressed() const { return input.back; }
+
+		// Ends the frame: the row count and height for the next one.
+		void end();
+
+		// ---- Between begin and end ---------------------------------------
+		Renderer2D *renderer = nullptr;
+		MenuInput input = {};
+		MenuStyle style = {};
+		glm::vec2 topCentre = {};
+		float y = 0.f;            // the next row's top
+		int row = 0;              // the next selectable row's index
+		int rowCount = 0;         // selectable rows last frame
+		float lastHeight = 0.f;   // the whole menu's, last frame, for the panel
+		int dragging = -1;        // the slider the pointer is dragging
+	};
 }

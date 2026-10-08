@@ -47,6 +47,13 @@ namespace crt
 	void setEnabled(bool enabled);
 	bool isEnabled();
 
+	// The player's setting (gameplay roadmap U2), 0 .. 1: a multiplier on the
+	// tuned strength and glow, so the designer's look stays the tuning file's
+	// and the player only turns it down. 0 is a flat picture; transitions
+	// still run.
+	void setPlayerStrength(float s);
+	float playerStrength();
+
 	// This feature's own debug controls (roadmap R11).
 	void debugUi();
 }

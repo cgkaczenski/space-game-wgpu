@@ -63,10 +63,6 @@ namespace hud
 	// the next draw: a line of text under the energy bar. Not called, no line.
 	void showHaul(float held, float banked);
 
-	// The game is paused, for the next draw: PAUSED across the middle, and
-	// how to resume under it.
-	void showPaused();
-
 	// Draws the HUD and puts it on screen.
 	//
 	// Flushes whatever the renderer has pending first, on purpose: the HUD is

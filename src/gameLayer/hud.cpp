@@ -68,12 +68,7 @@ namespace
 	const glm::vec4 haulColour = {0.85f, 0.95f, 1.f, 0.9f};
 	const float haulGapPerc = 0.25f; // under the energy bar, of a bar's height
 
-	bool pausedShown = false;
-	const glm::vec4 pausedColour = {1.f, 1.f, 1.f, 1.f};
-	const glm::vec4 pausedHintColour = {0.8f, 0.8f, 0.8f, 0.85f};
-	const float pausedTopPerc = 0.4f;
-
-	void drawText(wgpu2d::Renderer2D &renderer, glm::vec4 energyRect, int width, int height)
+	void drawText(wgpu2d::Renderer2D &renderer, glm::vec4 energyRect, int height)
 	{
 		const float scale = textLook::screenScale(height);
 		if (haulShown)
@@ -82,14 +77,6 @@ namespace
 			std::snprintf(line, sizeof(line), "HOLD %.1f   BANKED %.1f", haulHeld, haulBanked);
 			textLook::draw(renderer, {energyRect.x, energyRect.y + energyRect.w * (1.f + haulGapPerc)},
 				line, haulColour, scale);
-		}
-		if (pausedShown)
-		{
-			const glm::vec2 centre = {width * 0.5f, height * pausedTopPerc};
-			const float big = textLook::screenScale(height, 3);
-			textLook::draw(renderer, centre, "PAUSED", pausedColour, big, {0.5f, 1.f});
-			textLook::draw(renderer, centre + glm::vec2(0.f, big * 4.f), "ESC TO RESUME",
-				pausedHintColour, scale, {0.5f, 0.f});
 		}
 	}
 
@@ -400,11 +387,6 @@ void showHaul(float held, float banked)
 	haulBanked = banked;
 }
 
-void showPaused()
-{
-	pausedShown = true;
-}
-
 void markOffScreen(glm::vec2 target, glm::vec4 colour, float scale)
 {
 	markers.push_back({target, colour, scale});
@@ -435,11 +417,10 @@ void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 
 		drawSlots(renderer, slots, slotCount, ramReady, width, height);
 		drawPointer(renderer, width, height);
-		drawText(renderer, energyRect, width, height);
+		drawText(renderer, energyRect, height);
 		pointerShown = false; // for one draw; the game says so every frame
 		modeShown = false;
 		haulShown = false;
-		pausedShown = false;
 		markers.clear();
 	}
 	renderer.popCamera();
