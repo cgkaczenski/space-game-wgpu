@@ -286,6 +286,7 @@ Predicted `0.25 → 64` and `0.125 → 32`. Exactly half, which is the double mu
 | Alpha | `SrcAlpha` | `OneMinusSrcAlpha` | `C·a + dst·(1-a)` — the source *replaces* in proportion to coverage |
 | Additive | `SrcAlpha` | `One` | `C·a + dst` — the destination survives whole, so light accumulates |
 | Premultiplied | `One` | `OneMinusSrcAlpha` | `C + dst·(1-a)` — for a source already scaled by its coverage (see 12) |
+| Mask *(added in S7)* | `Zero` | `SrcAlpha` | `dst·a` — the source's colour is ignored; what is there survives only as far as the source covers it |
 
 **Why it cannot be done in the shader.** The fragment shader cannot read the pixel it is about to write — core WebGPU exposes no framebuffer fetch. Blending is the hardware's answer to that, and it is why the operation is a fixed menu of factors rather than arbitrary code.
 
@@ -383,6 +384,29 @@ Two things they taught that the blending theory does not:
 `PresentMode::Fifo` does not degrade smoothly. It quantises to divisors of the refresh rate, so on a 75 Hz panel the only rates available are 75, 37.5, 25, 18.75, 15 — and a reported **15 fps means a frame took between 53 and 67 ms**, not "a bit over 13". Reading a frame rate as a budget rather than a speed narrows a performance question enormously before any profiling starts.
 
 **And a slow frame should be able to describe itself.** The per-frame counters exist so that a frame far above its neighbours can say what it did that a normal one does not: a pipeline compiled mid-frame, a validation error, an allocation, or time spent blocking in an async drain. Every counter is zero in a steady frame, so a non-zero one names the cause — and **all zeros is a result too**, because it puts the cost outside the process.
+
+### The CPU half: the build type was the frame time (W1)
+
+A level that was 80% asteroid field ran at 30 ms of game logic a frame at
+2560×1440. macOS's sampler (`sample <pid> 5`, no setup, works on a running
+process) put three quarters of it in `asteroids::drawFields`, and most of
+that inside `std::vector::push_back` and `glm::vec2`'s constructor: building
+every visible rock's triangles on the CPU, every frame. Those are one-line
+functions that an optimiser inlines away. The build had no `CMAKE_BUILD_TYPE`,
+so nothing was inlined.
+
+- **The same code at `-O2` ran the same level at 2.9 ms**, and loaded it in
+  49 ms instead of 280. The default build is now `RelWithDebInfo` with
+  `-O2 -g` and no `NDEBUG` (the renderer's `assert`s stay on). A debugger
+  steps less faithfully through it, so a Debug build is a second build
+  directory.
+- **Profile before optimising, then check the boring fix first.** The plan
+  had been to make rocks only near the camera; the measurement said that
+  could wait. (It came back in W3, for a different reason: memory.)
+- **Cost that grows with what exists, not what is drawn.** Even idle, frame
+  time rose with every rock in the level (2.9 ms at 67,000, 6.9 ms at
+  605,000), because three per-frame loops (heat, awake, sleep) walked them
+  all. Drawing was already culled by the buckets (S1b); simulation wasn't.
 
 **LearnWebGPU:** [Benchmarking / Time](https://eliemichel.github.io/LearnWebGPU/advanced-techniques/benchmarking/time.html) — written, and not applicable on this adapter.
 
@@ -895,6 +919,526 @@ tool in `src/gameLayer/levelEditor.cpp`
 **Code:** `resources/shaders/asteroid.wgsl` · `drawFan`, `beginRocks`,
 `Surface` in `src/gameLayer/asteroids.cpp` · `EffectParams::d` in
 `include/render/wgpu2d.h`, `EffectUniforms` in `src/render/wgpuContext.cpp`
+
+
+---
+
+## Sight: the concepts
+
+*Line of sight, the fog, and what the player and the enemies remember, from
+the `line-of-sight` branch. The items, the decisions and the playtests behind
+each are in [`sight-roadmap.md`](sight-roadmap.md) (S1–S7). This section is
+the concepts, as built. Most of it is CPU geometry rather than GPU work; the
+GPU part is S3's fog, which grew out of 10, 12 and F6. Since M1, weapons do
+not follow the sight rule (only a core stops them), so "the rule" below is
+sight's alone.*
+
+### S1. A painted area as a grid — *built*
+
+**Concepts:** A field's area is circles painted and erased in order. Asking
+"is this point inside" of the stamps means replaying every stamp, about 450
+on `level3`, for every question. Instead the stamps are **rasterised once**
+into a grid of labels, and a lookup becomes one division and one read.
+
+- **Order matters, so each layer gets its own scratch grid.** Within a
+  field, the last stamp covering a cell's centre decides it. An eraser must
+  not cut another field's paint, so each field is painted in its own
+  scratch, then laid over the labels. The later field wins where two
+  overlap.
+- **A stamp costs its own area.** Each stamp visits only the cells under its
+  bounding square, not the whole grid.
+- **Aligned to the world.** The grid's origin sits on a multiple of the cell
+  size, so a world point is in the same cell however the bounds come out.
+- **The grid is the truth.** Its edges are stair steps a cell wide, and
+  hiding, sight and the fog all read the grid, so they agree on where a
+  field ends. The exact stamp test is kept for building the grid, and for
+  deciding whether a field rock has been knocked out of its own field.
+
+**What the build taught.**
+
+- **A test can be weaker than the thing it tests.** The first check of the
+  line walk (below) sampled each line every 1/50 of a cell and reported
+  about 0.2% of lines as wrong. Every "error" was a corner the line clipped
+  between two samples. Replacing the sampling with an **exact reference**
+  fixed it: every grid-line crossing worked out in closed form, sorted, and
+  the label read at each interval's midpoint. Then 18,000 lines agreed
+  exactly. Before trusting a mismatch, ask whether the reference can see
+  what the code sees.
+
+**Code:** `include/engine/regionMask.h` · `src/engine/regionMask.cpp` ·
+`buildMask` and `paintMask` in `src/gameLayer/asteroids.cpp`
+
+### Walking a line through a grid: the DDA — *built*
+
+**Concepts:** Given a segment from A to B, list every grid cell it passes
+through, in order, with the distance at which it enters each.
+
+- **The key fact.** A straight line crosses the vertical grid lines at evenly
+  spaced distances along itself, and the horizontal ones at a different but
+  also even spacing. It changes cell exactly at those crossings and nowhere
+  else. So the walk is a **merge of two arithmetic sequences**: always take
+  the nearer next crossing.
+- **Four numbers.** With `P(t) = A + t·dir` and `dir` of length 1, so `t` is
+  distance:
+  - `tDeltaX = cell / |dir.x|` is the distance between two vertical
+    crossings, and never changes;
+  - `tMaxX` is the distance to the next one;
+  - `stepX` (±1) is which way the column index moves;
+  - likewise for Y. A line parallel to an axis has `tMax = ∞` on it.
+- **The loop.** If `tMaxX < tMaxY`, step the column and add `tDeltaX`;
+  otherwise step the row and add `tDeltaY`. Stop past B. One comparison and
+  one addition per cell, and every cell the line touches is visited exactly
+  once, a corner clip included.
+- **A worked example**, with cells of 50, A = (10, 20) and B = (160, 95):
+  `dir` = (0.894, 0.447), `tDeltaX` = 55.9, `tDeltaY` = 111.8, and the first
+  `tMax` values are 44.7 and 67.1.
+
+  | compare | nearer | enters | at t |
+  | --- | --- | --- | --- |
+  | 44.7 vs 67.1 | X | (1, 0) | 44.7 |
+  | 100.6 vs 67.1 | Y | (1, 1) | 67.1 |
+  | 100.6 vs 178.9 | X | (2, 1) | 100.6 |
+  | 156.5 vs 178.9 | X | (3, 1) | 156.5 |
+  | 212.4 vs 178.9 | — | stop: 178.9 is past B (167.7) | |
+
+  It ends in cell (3, 1), which is where B is.
+- **Clipping first.** A segment that starts outside the grid is clipped to
+  the grid's rectangle (the slab test, the same one used for a ray against a
+  box), so the walk never steps through empty space. Outside counts as one
+  cell, "nothing".
+- **Exact corners are ambiguous.** When `tMaxX == tMaxY`, the line passes
+  through a grid corner, and one side cell is visited for zero length. Any
+  two methods can disagree there. That turned out to be the only kind of
+  disagreement left between S2's map and this walk.
+- **Cost.** About (|Δx| + |Δy|) / cell steps. A 4,000-unit sight line on a
+  50-unit grid is at most 113.
+- **One walk, two grids.** The same function walks the painted area's labels
+  (`region::march`) and the rock buckets (`spatial::raycast`), so there is
+  one implementation to trust. It was moved out of `march` and re-verified
+  against the exact reference.
+
+This is Amanatides and Woo's voxel traversal (1987). Wolfenstein 3D's
+raycaster used the same walk on its 2D map. DDA means digital differential
+analyser, the line-drawing method it descends from.
+
+**Code:** `include/engine/gridWalk.h` · `src/engine/gridWalk.cpp`
+
+### S1b. Buckets: a uniform grid of items — *built*
+
+**Concepts:** Every rock question (shots, sight, the beam, shadows, drawing)
+used to loop over every rock. A **uniform grid** lists each item in every
+cell its bounding square overlaps, so a question looks only at the cells it
+covers. It suits items of similar size, like a field's rocks; widely mixed
+sizes would want a tree (a quadtree, a BVH).
+
+- **Flat storage, rebuilt by a counting sort.** Two arrays, not a vector per
+  cell:
+  1. count the items landing in each cell;
+  2. prefix-sum the counts into `cellStart`;
+  3. write each item's index at its cell's next free slot.
+
+  Cell c's items are `items[cellStart[c] .. cellStart[c+1])`. A rebuild is
+  linear in the items, with no hashing and almost no allocation.
+- **Each item once per query.** An item listed in several cells would be
+  handed out several times. A stamp per item, set to the query's number,
+  skips the repeats.
+- **Rays walk the buckets near to far and stop early.** Once a hit is found
+  at distance t, any bucket that begins past t can be skipped. Anything
+  nearer would contain the nearer hit point, that point lies in a bucket
+  entered no later, and the item is listed there.
+- **Slack: loose bounds.** Each rock is listed under its circle plus some
+  slack. The grid is rebuilt only when some rock has moved further than the
+  slack since the last build. The circle is centred on the centre of mass,
+  so a rock spinning in place never counts as moving.
+- **Exactly the same answers.** To make "nothing changed" checkable, the grid
+  returns what the old loop over every rock did: `hitCircle` the
+  lowest-numbered rock, `raycast` the later rock on an exact tie, drawing
+  in stored order. A temporary mode ran every query both ways, and they
+  never disagreed.
+
+**What the build taught.**
+
+- **Measure before tuning, then measure the build.** A rebuild of 65,000
+  rocks took 8.9 ms in the game, and 0.57 ms when the same code was compiled
+  at `-O2`. The algorithm was fine; the build was unoptimised. That
+  measurement is why W1 made `-O2 -g` the default build.
+
+**Code:** `include/engine/spatialGrid.h` · `src/engine/spatialGrid.cpp` ·
+`rockIndex` and `checkListed` in `src/gameLayer/asteroids.cpp`
+
+### S2. A polar map: a one-dimensional shadow map — *built*
+
+**Concepts:** What can be seen from one point. The circle round the viewer is
+cut into N slices (720 by default), each holding how far the viewer sees
+along its centre line. It is a shadow map with "depth per pixel" replaced by
+"distance per angle".
+
+- **Everything that blocks is a segment.** A segment covers the slices whose
+  centre lines it crosses.
+  - The angle it covers is `atan2(cross(a, b), dot(a, b))`, taking `a` and
+    `b` relative to the viewer.
+  - Along each slice direction `u`, the distance is one line intersection:
+    `t = cross(a, b − a) / cross(u, b − a)`.
+  - Each slice keeps the nearest. Writing every edge of an outline leaves
+    its silhouette, with its far side hidden for free.
+- **Field edges are segments too.** They are the sides between cells the rule
+  treats differently. A line from the viewer crosses a side going away from
+  the viewer's side of it, so the cell on the viewer's side decides whether
+  the side blocks: any change, or only one going into a field. That replaced
+  a walk per slice (58,000 callback steps) with one scan of the box round
+  the viewer.
+- **The fan is the truth.** Each slice's end point is visible from the
+  viewer, so the end points make a polygon that is star-shaped from there,
+  and a triangle fan draws it, as A1 draws a rock. "Can the viewer see this
+  point" tests the triangle the fan draws there, so the rules and the
+  drawing are the same shape. The cost is a wedge about one slice wide at
+  the side of a shadow, where neighbouring slices differ a lot.
+- **Merging two maps is a maximum.** Two shapes seen from the same point,
+  combined slice by slice by the further distance, make one shape still all
+  visible from that point. That is how the scope's cone joins the all-round
+  sight.
+- **Building over a box.** A map can be built over any box: the square round
+  the viewer, or just a cone's bounding box. The cone's box is its apex, the
+  ends of its sides, and the arc's extremes where it takes in an axis. The
+  scope's long cone and each enemy's cone (S6) use it.
+
+**What the build taught.**
+
+- **Seal the corners, by a hair.** Two cell sides meeting at a corner can let
+  a ray through the gap in floating point. Extending each side by 1/1,000 of
+  a cell sealed it, but caught rays merely passing near a corner too, and
+  blocked about 100 times more slices than it should. 1/100,000 of a cell
+  covers the rounding and nothing else.
+- **Two implementations of one rule, compared slice by slice.** The map and
+  the line walk were checked against each other along every slice centre,
+  from random viewpoints, under every rule. What remained, about one slice
+  in a million, was all exact grid corners. One "leak" was a line going
+  diagonally from paint into paint past a one-cell notch, where the map was
+  right and the walk's tie-break was not. A later round found a real bug: a
+  viewer standing over a field rock poking out of the paint, where the map
+  saw that rock's far side and the walk blocked at 0.
+
+**Code:** `include/engine/visibility.h` · `src/engine/visibility.cpp` ·
+`build`, `addEdges`, `coneBox`, `blockedAt` and `updatePlayer` in
+`src/gameLayer/sight.cpp`
+
+### Looks: cones, soft sides, and reach — *built*
+
+**Concepts:** A viewer has a **look**: a facing, a half-angle and a range.
+From inside a field, a line within the cone sees past the field's edge; from
+outside, the player's cone sees into a field, with the field's own rocks
+casting shadows.
+
+- **Which crossing comes first decides.** The first edge a line crosses
+  either leaves the paint (the viewer is inside) or enters it (outside). In
+  the map, the sides a line leaves by go into a map of their own, so each
+  slice can compare "first way out" with "first other edge".
+- **Soft sides by weight.** A slice near a cone's side gets part of the reach
+  past the edge, fading over a few degrees, instead of switching on or off
+  as the aim moves a hair.
+- **Measure from the right place.** A reach measured from where each line
+  leaves the field made the cone's far end the field's ragged edge pushed
+  outward. Measured from the viewer, the far end is an arc.
+- **Ease an angle by the angle.** Blending two directions and normalising
+  barely moves a direction facing away from its target, and does not move
+  one facing exactly away at all. A capture caught the cone pointing back
+  into the field while the aim pointed out. Rotating by a share of the signed
+  angle between them (`atan2(cross, dot)`) eases any turn the same.
+
+**Code:** `Look`, `coneWeight`, `crossings`, `reachPast` in
+`src/gameLayer/sight.cpp`
+
+### S3. The fog: a mask without a mask texture — *built*
+
+**Concepts:** Grey out what the player cannot see. `worldGrade` already put
+the world in a screen-sized target and brought it back as one quad through a
+grading shader (10, F6). The fog adds a second draw from the same target:
+
+1. the whole view comes back **greyed** (a third grade, "unseen");
+2. the sight fan is drawn on top from the **same texture, ungraded**.
+
+So the fan's geometry is the mask. An effect reads one texture, and a mask
+texture would have needed a second binding, which is library work. Drawing
+the shape with the world as its texture needed none: `renderTriangles` with
+a texture, plus `setEffect`.
+
+- **Screen-space UVs.** Each fan corner's texture coordinate is its pixel
+  position over the view's size. The target is exactly the view's size, so
+  every fan pixel samples the texel under it, and inside the fan the image
+  is the unfogged world itself, not a resampled copy.
+- **Fade premultiplied colour by scaling all four channels.** A soft edge is
+  a ring of triangles past the fan, with vertex colour going from (1,1,1,1)
+  to (0,0,0,0). The target holds premultiplied colour (12), so fading alpha
+  alone would leave bright fringes.
+- **Hide information; grey scenery.** The fog grades the whole world, so an
+  enemy drawn under it comes out grey but still says where it is. Enemies,
+  their shots, plumes and cones are not drawn where unseen; rocks,
+  explosions and debris are greyed.
+- **Smooth the drawing, not the rules.** Rays crossing stair steps make the
+  fog's edge jump. The fog is drawn from a copy of the map eased slice by
+  slice over a moment, while the rules use the exact map.
+- **Reveals.** A circle of sight, such as the one round what the player's
+  beam burns, is drawn by the same pass as another fan, and the rules count
+  it as seen.
+
+**What the build taught.**
+
+- **Runs are not repeatable.** Two hidden-window runs with the same settings
+  differed in 12% of their pixels (wall-clock time in the shaders, one
+  wandering enemy), so frames from different runs cannot be compared pixel
+  by pixel. Alignment was checked by cropping across an edge instead: a
+  half-pixel error would show as a doubled or shifted copy there.
+- **Force the scene a capture needs.** Captures that depend on input (the
+  aim, the scope, an enemy losing the player) were made with temporary
+  environment overrides that pinned that one thing, then removed.
+
+**Code:** `resources/shaders/worldGrade.wgsl` · `apply` in
+`src/gameLayer/worldGrade.cpp` · `playerDrawnMap`, `reveal`,
+`playerSeesShip` in `src/gameLayer/sight.cpp` · the `Shown` tests in
+`src/gameLayer/effects.cpp`
+
+### S4 and S5. Memory: ghosts both ways — *built*
+
+**Concepts:** What was seen, after it is gone.
+
+- **A ghost is born at an edge in time.** The memory keeps each thing's last
+  seen state. On the frame it goes from seen to unseen, it leaves a ghost
+  holding that state: where the thing *was*, never where it is.
+- **Arm before clearing.** "Clear a ghost when its spot is looked at and
+  found empty" fails at once, because the spot is where the thing was last
+  seen, so it is in sight the frame the ghost is made. A ghost is **armed**
+  by its spot leaving sight first; only then does looking back at an empty
+  spot clear it.
+- **Don't keep a second copy of a truth.** For where the *enemies* think the
+  player is (S5), each searching enemy already holds that spot, the place it
+  flies to. Copying it into the same memory would have been a second source
+  of truth, so S5 reads the AI's own state.
+- **Off-screen markers.** The gate's chevron became one function: a ray from
+  the screen's centre, stopped at an inset rectangle, with a chevron at the
+  tip. Ghosts use the same function, smaller, in their own colour.
+
+**Code:** `include/engine/contactMemory.h` · `src/engine/contactMemory.cpp` ·
+`src/gameLayer/lastKnown.cpp` · `src/gameLayer/theirGhost.cpp` ·
+`drawChevron` and `markOffScreen` in `src/gameLayer/hud.cpp`
+
+### S4b. A periscope camera — *built*
+
+**Concepts:** Hold V: the view zooms out and leans toward the pointer,
+lagging it.
+
+- **A lean with no feedback.** The lean is the pointer's offset from the
+  screen's centre, as a share of half the screen, times a share of the view.
+  Moving the view does not move the pointer on the screen, so the lean
+  cannot chase itself.
+- **Ease by a rate, not at a speed.** `current = target + (current −
+  target) · exp(−rate · dt)` closes the same share of any gap per second,
+  whatever the frame rate, so a big jump settles as quickly as a small one.
+  The existing chase moves at a fixed speed with a leash, which would crawl
+  across a big lean or snap to it.
+- **Zoom eases in log space.** Zoom is a ratio, so it is blended as
+  `normal · scope^amount` rather than linearly (as `cameraZoom` already did).
+- **Aim from the ship, not the screen centre.** Once the view leans off the
+  ship, "pointer minus screen centre" stops being the direction from the
+  ship to the pointer, so while scoped the aim is measured from the ship's
+  position on screen.
+
+**Code:** `ease` and `pointerLead` in `include/engine/cameraFollow.h` ·
+`src/gameLayer/scope.cpp`
+
+### S7. Three levels of fog: a blend as a mask — *built*
+
+**Concepts:** In sight, colour; seen before, the grey fog; never seen, black.
+"Never seen" is W6's explored map: a target over the arena, opaque where the
+player has looked and transparent where it never has. The fog needed to
+**darken what is already drawn, by that texture**.
+
+- **None of the three blend modes could.** Alpha and Premultiplied lay a
+  picture over another; Additive only adds. S3's note said a mask needed "an
+  effect that reads a second texture": a second binding, a new shader. But
+  a blend unit already has a second input, **the destination**. One more
+  pipeline variant, `Mask`, colour `(Zero, SrcAlpha)`: `out = dst · srcAlpha`.
+  Drawing the explored map over the greyed view through it keeps what it
+  covers and blacks out the rest. No shader at all.
+- **Colour and alpha blend separately, and here that is the point.** The
+  alpha half is `(Zero, One)`: the destination's alpha is kept. Masked to
+  black is then *opaque* black, not a hole the screen shows through, and a
+  premultiplied target stays premultiplied: `(C·a, a)` becomes
+  `(C·m·a, a)`, the colour `C·m` at the same coverage.
+- **Order makes the mask safe.** Grey view, then the mask, then the sight
+  fan in colour from the world target (S3). What is in sight is drawn after
+  the mask, so it can never be blacked out, even on a frame where the
+  explored map is one frame behind.
+- **Texture coordinates map screen to world.** The mask is one screen quad
+  whose corners' UVs are where their world points fall in the explored map;
+  the sampler clamps past its edge.
+- **The texel is the fog's edge.** A 2048-square map over a 200,000-unit
+  arena is 98 units a texel: linear filtering turns that into a soft edge
+  about 18 px wide at the farthest zoom.
+
+**When a rule made a feature useless.** Scoped, the black hid everything:
+the scope's cone is sight, sight stops at rocks, and the start is ringed by
+field. Under the grey fog the land beyond still showed; under black the
+scope showed nothing. The fix was a **game decision, not a bug fix**: the
+scope surveys. Its whole cone, unblocked, is drawn into the explored map
+(grey, mapped), while only true sight is in colour, with its enemies.
+
+**Code:** `BlendMode::Mask` in `include/render/wgpu2d.h` and the
+`switch (key.blend)` in `src/render/wgpuContext.cpp` · `Explored` and the
+mask pass in `src/gameLayer/worldGrade.cpp` · `exploredMask` and `reveal`'s
+`scopeCone` in `src/gameLayer/explorationMap.cpp`
+
+### How this work was checked
+
+The same few moves, every time, and worth reusing:
+
+- **List the candidate causes before fixing anything.** Then test the
+  cheapest. The jitter, the missing cone, the beam stopping at the edge,
+  the 884 mismatched slices and the stuck cone were each a hypothesis
+  confirmed by one print, one probe or one forced frame.
+- **Two implementations of one rule, compared.** Map against walk, grid
+  against brute force, the new against the old. Each disagreement is either
+  a bug or an ambiguity worth naming.
+- **Temporary scaffolding, removed.** Checks behind an environment variable,
+  a probe that fires once, a forced scene for a capture. Never committed.
+- **GPU readbacks as PNGs** for anything visual (15), sent to the author, who
+  is the only one who sees the window.
+- **Frame the capture so it can show the effect.** The chunk views showed
+  nothing until the streamed area was shrunk inside the screen; the first
+  three-level fog capture showed two levels until the ship was moved into a
+  field. A capture that cannot show the thing proves nothing either way.
+- **Small standalone programs against one engine file.** `movement.cpp` or
+  `scatter.cpp` compiled with a `main` in the scratchpad: a lane's push, a
+  medium's bleed, chunks against a whole scatter. Seconds to build and run,
+  and the expected numbers written beside the printed ones. A **control**
+  that should fail (chunks with no margin) proves the test can.
+- **Force what a capture cannot press**, from an environment variable: the
+  scope held, the ship set on a lane, the full map shown.
+
+---
+
+## Space: the concepts
+
+*Levels that are mostly field, bigger maps, and ways across them, from the
+`line-of-sight` branch: the W items of [`sight-roadmap.md`](sight-roadmap.md).
+W1's measuring is in 16 and W6 feeds S7's fog; the rest is CPU work in
+`engine/` and the game.*
+
+### W1. Painting the clearings, not the field — *built*
+
+- **Invert the brush.** A level that is 80% field is one stamp the arena's
+  size and erasers for the clearings and lanes. Stamps apply in order, so
+  the file format needed nothing; **Fill the arena** inserts its stamp
+  *first*, so what was already erased stays erased.
+- **Cache by value, regrow by change.** The editor regrew every rock every
+  frame. It now keeps a copy of each field and its rocks, and regrows only a
+  field whose copy differs.
+- **A rule, applied at play time, not saved.** The gate always sits in a
+  clearing: `level::fieldsAsPlayed` appends an eraser round it when a round
+  starts, so moving the gate moves its clearing, and the file keeps only
+  what was painted. Lanes and jump gates (W4, W5) cut themselves the same
+  way.
+
+### W2. A medium: scale, don't overwrite — *built*
+
+- **The mechanism is a multiplier on the body's own top speed** (`Medium` in
+  `engine/movement`), applied as each step builds its options. Overwriting
+  the options would have erased what set them: an enemy's speed rolled at
+  spawn, its enraged boost, the player's flight multipliers. Scaled, they
+  all survive and stack.
+- **Snap or bleed.** Entering slow space fast either clamps to the new cap
+  or loses the excess with a half-life, `excess · 2^(−dt/h)`, which is frame
+  rate independent like the integrator itself.
+- **Below 1 a medium only tightens.** A ram's aftermath in a field still
+  drops to the ship's own cap first. Above 1 (a lane), the medium *is* the
+  cap. One flag (`carriesExcess`) lets a ship leaving a lane keep its speed
+  to bleed, rather than snap down first. That was a bug found by a probe.
+
+### W3. Chunks that come back the same — *built*
+
+**Concepts:** Five times the radius is 25 times the rocks, about 1.5 GB. Make
+rocks only round the view, and make a chunk again exactly as it was.
+
+- **Deterministic per-cell scatter is half of it.** A cell's rock depends
+  only on its cell's hash. What *keeps* it depends on coarser rocks within
+  one coarse cell, and theirs on coarser still: a chain as long as the
+  layers. So `scatterPart` scatters a margin of `layers × (2·maxR + gap)`
+  round the chunk and keeps the rocks inside it. Tested against whole-field
+  scatters item for item; the **control**, with no margin, differed, so the
+  test could fail.
+- **Identity by origin.** A rock is its field and the exact spot scatter gave
+  it (deterministic floats compare exactly). That key carries what must
+  survive a drop: broken, damage, ore. Rocks only pushed spring home anyway.
+- **A budget and hysteresis.** Chunks are made nearest first within 4 ms a
+  frame (all at once on a round's first frame, or after a jump), and dropped
+  a chunk further out than they are made, so a view wobbling on an edge
+  doesn't make and drop the same chunk each frame.
+- **Which rules need a thing decides where it must exist.** Weapons stop only
+  at cores, sight walks the paint mask, ships bump only cores: no rule needs
+  a field rock out of view. So cores and single rocks are always loaded, and
+  field rocks need only exist where they are seen.
+- **A lookup that scales with the area's detail.** `level5` has 1,400
+  stamps; "is this point painted" became a bucket query over nearby stamps,
+  with the same answer (0 of 300,000 points disagreed).
+
+**Code:** `scatterPart` and `dependencyReach` in `engine/scatter` · `stream`,
+`FieldArea`, `kept` in `src/gameLayer/asteroids.cpp`
+
+### W4. A current, in the exact integrator — *built*
+
+- **A push is just more acceleration.** Momentum integrates
+  `dv/dt = a − drag·v` in closed form; a current adds to `a`, so the solution
+  still holds and lanes behave the same at any frame rate.
+- **Anisotropic speed from one number.** A lane's top speed is
+  `1 + (speed − 1)·alignment²` times the ship's own, with alignment how well
+  its motion lines up with the lane: fast along, ordinary across. Plus a
+  damping of the speed across it, so a ship entering at an angle is turned
+  in.
+- **A current carries what is still.** The first capture found the player
+  swept off the start: a lane began there. A level fix (lanes start at a
+  clearing's edge), not a rule change.
+- **The look reuses the renderer's pieces.** Streaks are vertex-coloured
+  triangles on a white pixel, a 3×3 grid bright only at its middle, so
+  interpolation draws the fade (no fourth gradient texture: see 14).
+  Their intensity is 1.4, above FinalGlow's threshold, so they bloom: 14's
+  "values above 1 are load-bearing", on purpose.
+
+### W5. Hiding a teleport — *built*
+
+- **Move at the whitest frame.** The transit raises the CRT's white and the
+  hull's stretch, moves the ship at the peak, then lowers them. A cut nobody
+  can see is not a cut.
+- **Pay for the discontinuity while it is hidden.** The far end's rocks are
+  all made on the next frame (`streamAllNext`), behind the white; the
+  camera's existing chase leash snaps it after the ship.
+- **Emergent following.** A searching enemy flies to where it lost the
+  player: the gate. So "chasers follow" needed only a timed window at that
+  gate, not new AI.
+
+### W6. A render target as memory — *built*
+
+**Concepts:** A map of what has been seen, built by drawing the player's
+sight into a target every frame and never clearing it.
+
+- **A target keeps what was drawn** (10) until it is cleared, so
+  accumulation is free: the explored map is "draw the fan there, each
+  frame".
+- **Its own camera, from the projection.** For a target `W` pixels square
+  over a world square of side `S` centred on `c`: zoom `= W / S`, camera
+  position `= c − W/2`. Derived from the projection in 5, not guessed.
+- **`flushFBO` takes everything pending.** So the map is drawn at the start
+  of the frame, before the first draw, or the world would go into it too.
+- **Texture coordinates as the mask, in world space.** S3 used geometry as a
+  mask on screen. Here the fan is drawn into the map *textured with a base
+  map* made once per round (paint, open space, lanes), its UVs being world
+  positions. The target builds up the real map exactly where the player has
+  looked, and stays transparent elsewhere: masking with no mask texture.
+- **UVs are top-down.** Pixel rows, screen space and texture coordinates
+  all run the same way here, so the base map's first row is the world's
+  top. Checked by a capture: the trail lies where the ship flew.
+
+**Code:** `src/gameLayer/explorationMap.cpp` · `src/gameLayer/laneLook.cpp` ·
+`src/gameLayer/jumpGates.cpp` · `src/gameLayer/lanes.cpp` ·
+`Medium` and `through` in `src/engine/movement.cpp`
 
 ---
 
