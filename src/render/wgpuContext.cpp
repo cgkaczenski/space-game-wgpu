@@ -951,6 +951,7 @@ namespace
 		{
 			case wgpu2d::BlendMode::Additive: return "additive";
 			case wgpu2d::BlendMode::Premultiplied: return "premultiplied";
+			case wgpu2d::BlendMode::Mask: return "mask";
 			default: return "alpha";
 		}
 	}
@@ -1105,6 +1106,12 @@ namespace
 				blend.color.srcFactor = BlendFactor::One;
 				blend.color.dstFactor = BlendFactor::OneMinusSrcAlpha;
 				break;
+			case wgpu2d::BlendMode::Mask:
+				// 0 + dst*a: the source only scales what is there, by its
+				// coverage. Nothing of its colour arrives.
+				blend.color.srcFactor = BlendFactor::Zero;
+				blend.color.dstFactor = BlendFactor::SrcAlpha;
+				break;
 			default:
 				// src*a + dst*(1-a): gl2d's "over".
 				blend.color.srcFactor = BlendFactor::SrcAlpha;
@@ -1114,6 +1121,14 @@ namespace
 		blend.alpha.operation = BlendOperation::Add;
 		blend.alpha.srcFactor = BlendFactor::One;
 		blend.alpha.dstFactor = BlendFactor::OneMinusSrcAlpha;
+		if (key.blend == wgpu2d::BlendMode::Mask)
+		{
+			// The destination's alpha kept: masked to black is still opaque
+			// black. A target stays premultiplied: (C*a, a) becomes (C*m*a, a),
+			// the colour C*m at the same coverage.
+			blend.alpha.srcFactor = BlendFactor::Zero;
+			blend.alpha.dstFactor = BlendFactor::One;
+		}
 
 		// A pipeline may only draw into an attachment of the format it was
 		// built for. R1 established that this is not caught at creation: the

@@ -47,6 +47,13 @@ namespace wgpu2d
 		// FrameBuffer back. Using Alpha there multiplies by coverage a second
 		// time and the result comes out dark.
 		Premultiplied,
+		// dst * srcAlpha, for colour; the destination's alpha is kept. What
+		// is already drawn survives only as far as the source covers it, and
+		// goes to black where it does not: a mask laid over a picture rather
+		// than a picture laid over another. For darkness -- a fog of what has
+		// never been seen, a light map's unlit parts -- or a cut-out. The
+		// source's colour is ignored; only its coverage counts.
+		Mask,
 	};
 
 	// gl2d's texture-coordinate convention: {u0, v0, u1, v1} with v measured

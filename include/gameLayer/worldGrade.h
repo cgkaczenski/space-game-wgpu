@@ -32,6 +32,13 @@
 // in the target for the grade, so the fog costs the fan and nothing more --
 // but with it on, the world goes through the target every frame.
 //
+// **Never visited** (after W6) is a level below unseen: black. W6's explored
+// map -- a target over the arena, opaque where the player has looked and
+// transparent where it never has -- is laid over the unseen grade with the
+// Mask blend, which keeps what is drawn only as far as the map covers it.
+// Then the sight goes on top, so three levels: in sight, in colour; seen
+// before, the fog's grey; never seen, black.
+//
 // The shader lives in resources/shaders/worldGrade.wgsl.
 
 #include <render/wgpu2d.h>
@@ -52,10 +59,15 @@ namespace worldGrade
 	// the world is not sent through a target at all.
 	// `reveals`, with the fog on, are circles of sight drawn in colour too
 	// (centre and radius, world units): what the player's beam lights.
+	// `explored`, with the fog on and Never visited Black: what the player
+	// has ever seen, a texture whose coverage is 1 where it has and 0 where
+	// it has not, laid over the world rectangle `worldRect` (x, y, width,
+	// height); past it, the edge texel.
 	struct Reveal { glm::vec2 centre; float radius; };
+	struct Explored { wgpu2d::Texture texture; glm::vec4 worldRect; };
 	void apply(wgpu2d::Renderer2D &renderer, float pauseAmount, const zone::Circle *safe,
 		int width, int height, const visibility::PolarMap *sight = nullptr,
-		const std::vector<Reveal> *reveals = nullptr);
+		const std::vector<Reveal> *reveals = nullptr, const Explored *explored = nullptr);
 
 	// Whether the fog is on at all (S3): with it off, nothing is hidden for
 	// being out of sight either -- unseen would look the same as seen.

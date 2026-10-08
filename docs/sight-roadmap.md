@@ -1095,6 +1095,77 @@ _Mark of the Ninja_ or _Commandos_.
   grey outline where its sight is cut, from inside its field.
 - **Not yet seen in play** with an enemy turning past single rocks.
 
+### S7. Three levels of fog — _built, to playtest_
+
+**Asked:** two levels of fog. The grey fog as it is, for what the player has
+visited but can't see now; and a black fog that blocks vision completely
+for what the player has never visited.
+
+So the view has three levels: **in sight**, in colour; **seen before**, the
+grey fog (World grade's Grey, or whichever fog is chosen); **never seen**,
+black.
+
+**The library piece: a `Mask` blend** (`wgpu2d::BlendMode::Mask`). The
+renderer had Alpha and Premultiplied, which only lay a picture over another,
+and Additive, which only adds light. None could darken what is already
+drawn by a mask. `Mask` is colour `(Zero, SrcAlpha)`: `out = dst × srcAlpha`,
+so what's there survives only as far as the source covers it. Alpha is
+`(Zero, One)`, so the destination's alpha is kept: masked to black is still
+opaque black, and a target stays premultiplied. The factor names were read
+from the vendored `webgpu.h`. It's general (a fog of the unseen, a light
+map's unlit parts, a cut-out), so it's in `wgpu2d`. It's the cheaper half of
+"an effect that reads a second texture": no shader, a fourth blend pipeline.
+
+**How the fog uses it** (`worldGrade`):
+1. The whole view is drawn graded as unseen, as before.
+2. **New:** W6's explored map (a target over the arena, opaque where the
+   player has looked) is laid over the view through `Mask`, each screen
+   corner's texture coordinate the world point under it. What has never
+   been seen goes black.
+3. The player's sight is drawn on top in colour, as before, so what's in
+   sight is never masked, even before the explored map has caught up.
+
+**Never visited: Black · Like the rest** is a selection in World grade's fog
+settings, default Black. The explored map is now 2,048 square, so the black
+fog's edge is one texel: 98 world units on `level5`, 20 on a 20,000 arena,
+softened by linear filtering. The HUD's jump-gate chevrons now point only at
+gates the player has seen, as the map does, since unseen space is black.
+
+**Verified** (temporary probe, removed): on `level5`, the player moved along
+the highway from frame 60 to 180, then set down in the field beside it.
+- **Riding the lane:** a capture shows the lane in colour and the field
+  either side black (never seen, since the lane's walls blocked sight).
+- **In the field:** a capture shows the field round the player in colour,
+  the highway grey to one side (seen before, out of sight from inside the
+  field), and the corners beyond black. The map was not flipped: the grey
+  trail lies where the ship went.
+- The renderer reports the new pipeline: `sprite, BGRA8Unorm, mask`.
+- Levels 1–5 run with no validation errors. **Not yet played.**
+
+**Asked, after: the scope reveals through the black fog.** Scoped, the black
+hid everything past a small circle. The rules were working as written: the
+scope's cone is merged into the player's sight (S4b) and drawn in colour,
+but it's blocked like any sight, and from a clearing ringed by dense field
+the field's rocks stop it a few hundred units in. Before S7 the grey fog
+still showed the land beyond; with black, the scope showed nothing.
+- **Decided:** the scope **surveys**. While it is more than half up, its
+  whole cone, a sector from the ship out to the cone's range with nothing
+  blocking it, is drawn into the explored map with the player's sight. What
+  it points at turns from black to "seen before" grey and stays mapped,
+  minimap included.
+- **Only true sight is in colour** and shows enemies, so the scope maps
+  terrain without seeing through rocks.
+- **Verified** with captures, the scope held from a temporary switch
+  (removed): scoped at `level5`'s start, the cone's sector showed as grey
+  field and rocks where it had been black. After it was lowered, the corner
+  map kept the sector.
+
+**Consequences:**
+- Beyond the arena's edge is never "seen", since the base map is transparent
+  there, so once out of sight it goes black, not grey.
+- What the beam lights (S3's reveals) shows in colour but doesn't mark the
+  explored map.
+
 ---
 
 ## Next: fight and flight
@@ -1847,6 +1918,7 @@ Only one row asks for anything new in the library.
 | Grey everything outside it              | `worldGrade`'s target, a third grade, and the fan textured with the target | none                                      |
 | A soft fog edge                         | Vertex alpha on a ring of triangles                                        | none                                      |
 | A blurred, softer edge                  | A mask target, blurred by FinalGlow's compute blur                         | **an effect that reads a second texture** |
+| Black where never seen (S7)             | W6's explored map as a mask                                                | **built:** the `Mask` blend               |
 | Ghost outlines                          | `outline::begin` / `end`                                                   | none                                      |
 | Cones cut by rocks                      | A fan from the enemy                                                       | none                                      |
 | An explored map                         | A `FrameBuffer` that is never cleared                                      | none                                      |

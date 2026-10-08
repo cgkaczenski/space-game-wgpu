@@ -19,6 +19,7 @@
 
 #include <render/wgpu2d.h>
 #include <engine/visibility.h>
+#include <sight.h>
 #include <glm/vec2.hpp>
 #include <vector>
 
@@ -37,7 +38,14 @@ namespace explorationMap
 	// Draws `seen` into the explored map. Its own flush, into its own target:
 	// call while nothing else is waiting to be drawn -- before the frame's
 	// first draw.
-	void reveal(wgpu2d::Renderer2D &renderer, const visibility::PolarMap &seen);
+	//
+	// `scopeCone`, while the scope is up (S4b), is mapped too, whole: a sector
+	// from `seen`'s origin out to the cone's range, nothing blocking it. The
+	// scope surveys -- what it points at stops being black (S7) and shows as
+	// seen before -- though only what is truly in sight shows in colour, with
+	// its enemies.
+	void reveal(wgpu2d::Renderer2D &renderer, const visibility::PolarMap &seen,
+		const sight::Look *scopeCone = nullptr);
 
 	// What the map marks, this frame.
 	struct Marks
@@ -51,6 +59,15 @@ namespace explorationMap
 	// The corner map, and the whole level while `full`. Screen space, after
 	// the HUD. Notes which gates the player can see now, for later.
 	void draw(wgpu2d::Renderer2D &renderer, int width, int height, const Marks &marks, bool full);
+
+	// The explored map for the fog's never-visited level (worldGrade): its
+	// texture, opaque where the player has looked, and the world rectangle it
+	// covers (x, y, width, height). False with no map.
+	bool exploredMask(wgpu2d::Texture &texture, glm::vec4 &worldRect);
+
+	// Whether the player has seen jump gate `g` (jumpGates' numbering), so
+	// the HUD only points at gates it knows.
+	bool jumpGateSeen(int g);
 
 	void debugUi();
 }

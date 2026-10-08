@@ -19,7 +19,10 @@ namespace explorationMap
 
 namespace
 {
-	constexpr int exploredSize = 1024;   // the explored map's target, pixels square
+	// The explored map's target, pixels square. It is also the fog's mask
+	// for what has never been seen, so its texel is the fog edge's softness:
+	// 98 world units on a 100,000-radius arena, 20 on a 20,000 one.
+	constexpr int exploredSize = 2048;
 	constexpr int baseSize = 512;        // the base map's texture
 
 	wgpu2d::FrameBuffer explored;
@@ -154,7 +157,7 @@ void start(const level::Level &level, float arenaRadius)
 	base.createFromBuffer((const char *)pixels.data(), baseSize, baseSize, false, false);
 }
 
-void reveal(wgpu2d::Renderer2D &renderer, const visibility::PolarMap &seen)
+void reveal(wgpu2d::Renderer2D &renderer, const visibility::PolarMap &seen, const sight::Look *scopeCone)
 {
 	if (radius <= 0.f || base.id == 0 || explored.texture.id == 0) { return; }
 	if (needsClear) { explored.clear(); needsClear = false; }
@@ -181,6 +184,20 @@ void reveal(wgpu2d::Renderer2D &renderer, const visibility::PolarMap &seen)
 	for (int i = 0; i < n; i++)
 	{
 		vertex(seen.origin); vertex(visibility::corner(seen, i)); vertex(visibility::corner(seen, i + 1));
+	}
+	// The scope's cone, whole: a sector, nothing blocking it.
+	if (scopeCone && scopeCone->range > 0.f && scopeCone->halfAngle > 0.f)
+	{
+		constexpr int steps = 48;
+		const float facing = std::atan2(scopeCone->facing.y, scopeCone->facing.x);
+		for (int k = 0; k < steps; k++)
+		{
+			const float a0 = facing - scopeCone->halfAngle + 2.f * scopeCone->halfAngle * (float)k / steps;
+			const float a1 = facing - scopeCone->halfAngle + 2.f * scopeCone->halfAngle * (float)(k + 1) / steps;
+			vertex(seen.origin);
+			vertex(seen.origin + glm::vec2(std::cos(a0), std::sin(a0)) * scopeCone->range);
+			vertex(seen.origin + glm::vec2(std::cos(a1), std::sin(a1)) * scopeCone->range);
+		}
 	}
 	renderer.renderTriangles(positions.data(), uvs.data(), colours.data(), positions.size(), base);
 	renderer.flushFBO(explored);
@@ -303,6 +320,16 @@ const tuning::Group tunables("explorationMap", {
 	{"openColour", openColour},
 	{"laneColour", laneColour},
 });
+
+bool exploredMask(wgpu2d::Texture &texture, glm::vec4 &worldRect)
+{
+	if (radius <= 0.f || explored.texture.id == 0) { return false; }
+	texture = explored.texture;
+	worldRect = {-radius, -radius, 2.f * radius, 2.f * radius};
+	return true;
+}
+
+bool jumpGateSeen(int g) { return g >= 0 && g < (int)jumpSeen.size() && jumpSeen[(size_t)g]; }
 
 void debugUi()
 {

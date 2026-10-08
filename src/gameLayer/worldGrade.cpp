@@ -43,6 +43,10 @@ namespace
 	Edge edge = Edge::Soft;
 	float edgeFadePixels = 60.f;     // the soft edge's width, on screen
 
+	// Below unseen: what the player has never seen (after W6).
+	enum class Unvisited { Black, LikeUnseen };
+	Unvisited unvisited = Unvisited::Black;
+
 	// The fan and its soft ring, in screen pixels, built each frame.
 	std::vector<glm::vec2> fanPositions, fanUvs;
 	std::vector<wgpu2d::Color4f> fanColours;
@@ -91,7 +95,8 @@ void cleanup()
 }
 
 void apply(wgpu2d::Renderer2D &renderer, float pauseAmount, const zone::Circle *safe,
-	int width, int height, const visibility::PolarMap *sight, const std::vector<Reveal> *reveals)
+	int width, int height, const visibility::PolarMap *sight, const std::vector<Reveal> *reveals,
+	const Explored *explored)
 {
 	if (effect.id == 0 || width <= 0 || height <= 0) { return; }
 
@@ -139,6 +144,32 @@ void apply(wgpu2d::Renderer2D &renderer, float pauseAmount, const zone::Circle *
 	renderer.setBlendMode(wgpu2d::BlendMode::Premultiplied);
 	renderer.setEffect(effect, params);
 	renderer.renderRectangle({0.f, 0.f, (float)width, (float)height}, worldTarget.texture);
+
+	// Never seen: the explored map over the unseen view through Mask, so
+	// only what it covers survives, and the rest is black. Each screen
+	// corner's texture coordinate is where in the map its world point is.
+	if (fogged && explored && unvisited == Unvisited::Black && explored->texture.id != 0
+		&& explored->worldRect.z > 0.f && explored->worldRect.w > 0.f)
+	{
+		renderer.clearEffect();
+		renderer.setBlendMode(wgpu2d::BlendMode::Mask);
+		const glm::vec2 corners[4] = {{0.f, 0.f}, {(float)width, 0.f}, {(float)width, (float)height}, {0.f, (float)height}};
+		glm::vec2 positions[6], uvs[6];
+		wgpu2d::Color4f colours[6];
+		const int order[6] = {0, 1, 2, 0, 2, 3};
+		for (int k = 0; k < 6; k++)
+		{
+			const glm::vec2 screen = corners[order[k]];
+			const glm::vec2 world = {view.x + screen.x / (float)width * view.z, view.y + screen.y / (float)height * view.w};
+			positions[k] = screen;
+			uvs[k] = (world - glm::vec2(explored->worldRect.x, explored->worldRect.y))
+				/ glm::vec2(explored->worldRect.z, explored->worldRect.w);
+			colours[k] = {1.f, 1.f, 1.f, 1.f};
+		}
+		renderer.renderTriangles(positions, uvs, colours, 6, explored->texture);
+		renderer.setBlendMode(wgpu2d::BlendMode::Premultiplied);
+		renderer.setEffect(effect, params);
+	}
 
 	if (fogged)
 	{
@@ -232,6 +263,7 @@ const tuning::Group tunables("worldGrade", {
 	{"fogDimBrightness", dimBrightness},
 	{"fogEdge", edge},
 	{"fogEdgePixels", edgeFadePixels},
+	{"fogUnvisited", unvisited},
 });
 
 void debugUi()
@@ -256,6 +288,18 @@ void debugUi()
 			ImGui::RadioButton("Black", &f, (int)Fog::Black);
 		}
 		fog = (Fog)f;
+	}
+	if (fog != Fog::Off)
+	{
+		int u = (int)unvisited;
+		{
+			tune::Highlight h(&unvisited); // the radios edit a copy
+			ImGui::TextUnformatted("Never visited"); ImGui::SameLine();
+			ImGui::RadioButton("Black", &u, (int)Unvisited::Black); ImGui::SameLine();
+			ImGui::RadioButton("Like the rest", &u, (int)Unvisited::LikeUnseen);
+		}
+		unvisited = (Unvisited)u;
+		ImGui::TextDisabled("  in sight: colour; seen before: the fog below; never seen: black");
 	}
 	if (fog == Fog::Grey)
 	{

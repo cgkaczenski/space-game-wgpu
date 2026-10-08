@@ -1283,7 +1283,12 @@ bool gameLogic(float deltaTime)
 	// What the player saw last frame goes into the explored map (W6), into
 	// its own target -- here, before the frame's first draw, so its flush
 	// takes nothing else with it.
-	if (gameState::playerPresent()) { explorationMap::reveal(renderer, sight::playerMap()); }
+	// The scope, more than half up, maps its whole cone too (S7): it surveys.
+	if (gameState::playerPresent())
+	{
+		const sight::Look scopeCone = scope::cone();
+		explorationMap::reveal(renderer, sight::playerMap(), scope::amount() > 0.5f ? &scopeCone : nullptr);
+	}
 
 	background::draw(renderer);
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
@@ -2300,8 +2305,11 @@ bool gameLogic(float deltaTime)
 	static std::vector<worldGrade::Reveal> lit;
 	lit.clear();
 	for (const sight::Reveal &r : sight::reveals()) { lit.push_back({r.centre, r.radius}); }
+	// And what the player has never seen, black (W6's explored map).
+	worldGrade::Explored explored;
+	const bool haveExplored = fogged && explorationMap::exploredMask(explored.texture, explored.worldRect);
 	worldGrade::apply(renderer, gameState::pauseLook(), arena::radius() > 0.f ? &safe : nullptr, w, h,
-		fogged ? &sight::playerDrawnMap() : nullptr, fogged ? &lit : nullptr);
+		fogged ? &sight::playerDrawnMap() : nullptr, fogged ? &lit : nullptr, haveExplored ? &explored : nullptr);
 
 	// Burn ticks flash hulls red, drawn over the grade so the red survives it.
 	// Still in the world's batch, so the cloak bends them with the rest.
@@ -2382,7 +2390,8 @@ bool gameLogic(float deltaTime)
 			for (int g = 0; g < jumpGates::count(); g++)
 			{
 				const glm::vec2 at = jumpGates::position(g);
-				if (glm::distance(at, session.ship.position) > 60000.f) { continue; }
+				// Only gates it has seen, as on the map: never-seen space is black now.
+				if (!explorationMap::jumpGateSeen(g) || glm::distance(at, session.ship.position) > 60000.f) { continue; }
 				const glm::vec2 onScreen = {(at.x - view.x) / view.z * (float)w, (at.y - view.y) / view.w * (float)h};
 				hud::markOffScreen(onScreen, {0.75f, 0.45f, 1.f, jumpGates::resting(g) ? 0.35f : 0.9f}, 0.6f);
 			}
