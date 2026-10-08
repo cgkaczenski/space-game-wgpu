@@ -1630,19 +1630,50 @@ The field share is 80.7%, with 100 cores and 39 enemies. The start, the
 gate and every enemy are out of the lanes (the boss is moved off the
 highway's approach). A capture shows the player staying at the start.
 
-**Not built** (the engine ideas, below): streaks scrolling along a lane, the
-speed look on a ship riding one, the camera zooming out with speed, a flash
-on entering. And enemies don't choose to use lanes yet.
+**Engine ideas: the look, built** (`gameLayer/laneLook`, a **Lane look**
+debug section):
 
-**Engine ideas:**
+- **Streaks** flow along every lane, both ways, as a lane carries either
+  way: soft bars of light, additive, scrolled with game time (a pause stops
+  them). Each streak's place across the lane, direction, speed (700–1,800)
+  and length (300–800) comes from a hash of its lane, segment and number,
+  with one per 900 units of lane. They fade in and out near a segment's
+  ends, where they wrap. The lane the player rides is 1.8× brighter. They're
+  vertex-coloured triangles on a white pixel, a 3 × 3 grid bright only at
+  its middle, so they need no gradient texture. That keeps the roadmap's
+  "fourth module to generate its own gradient texture" from happening, and
+  the shared helper stays speculative.
+- **FinalGlow blooms them** for free: their intensity is 1.4, above the
+  glow's threshold, so with the CRT on they burn white at the core with a
+  cyan halo.
+- **Speed on the ship:** while riding a lane or coasting out of one, the
+  hull stretches along its heading (the warp-out's stretch, whichever is
+  more) up to **1.35×**. The camera eases out (on the scope's principle,
+  scaling the zoom) to **1 / 1.3** at full. Both scale with how far past
+  its own top speed the ship is, full at 2.5×, and ease in and out at 2/s
+  on real time.
+- **A flash on entering**, in flight mode with the entry kick: a 0.3 s pulse
+  of the CRT's zoom blur (the warp-out's), at 0.35 strength, falling off as
+  the square. It stands in for the chromatic flash the idea named: no
+  chromatic effect exists yet, and the zoom blur is already a transition
+  the CRT runs with or without its filter.
 
-- streaks along the lane, made with the generated-gradient pattern the plume
-  and the bullet glow use, drawn additive and scrolled;
-- the warp stretch and the ram's afterimages on the ship at lane speed;
-- the camera zooming out with speed, since `camera::Zoom` eases toward a
-  target;
-- FinalGlow blooming the streaks;
-- a chromatic flash on entering, which is an F2 effect.
+**Verified** (temporary probe, removed): the player set beside `level5`'s
+highway in flight mode at 3,200, angled in.
+- It entered at frame 73 with the kick (3,603), and the flash went 0.35 →
+  0.17 → 0.02 over the next 17 frames.
+- The current then carried it up past 5,600 by frame 140. Zoom eased to
+  ×0.92 and stretch to ×1.10 on their way to the targets for that speed.
+- A capture at frame 140 shows the streaks flowing both ways, bloomed,
+  between the lane's edges.
+- Levels 1–5 run with no validation errors.
+
+**Not built:**
+
+- **Afterimages at lane speed:** the ram's trail is used only for the entry
+  kick (0.3 s). Running it continuously while riding might crowd the
+  screen.
+- **A true chromatic flash** (an F2 effect).
 
 **Open questions, for after playing:** is 2.5× fast enough to cross
 `level5` (170,000 units)? Should a ship at rest be carried, or only one

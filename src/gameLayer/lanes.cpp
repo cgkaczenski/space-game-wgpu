@@ -73,6 +73,7 @@ namespace
 }
 
 void start(const std::vector<level::Lane> &lanes) { current = lanes; }
+const std::vector<level::Lane> &all() { return current; }
 
 int laneAt(glm::vec2 point) { return find(current, point).lane; }
 

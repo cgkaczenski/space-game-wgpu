@@ -47,6 +47,7 @@ namespace lanes
 
 	// This round's lanes. Call when a round starts.
 	void start(const std::vector<level::Lane> &lanes);
+	const std::vector<level::Lane> &all();
 
 	// What `body` is flying through this frame: a lane's current, or the
 	// fields' and open space's (interior::at), with a lane's speed still

@@ -47,6 +47,7 @@
 #include <ramPath.h>
 #include <interior.h>
 #include <lanes.h>
+#include <laneLook.h>
 #include <gameState.h>
 #include <level.h>
 #include <arena.h>
@@ -259,6 +260,10 @@ float playerStunDrag = 4.f;
 // What `solid` does not cover: shots, the beam, missiles and blasts are not
 // bumps. Whether those reach a cloaked ship is energy::onHit's business.
 
+// How long the hull is drawn along its heading: the warp-out's stretch, or a
+// lane's speed (sight roadmap W4), whichever is more.
+float playerStretch() { return std::max(gameState::warpStretch(), laneLook::stretch()); }
+
 // The player's ship is solid unless cloaked. Called before each pass that can
 // bump the ship, because the cloak can drop partway through a frame -- firing
 // uncloaks.
@@ -385,6 +390,7 @@ const Feature features[] = {
 	{"resources",  resources::init,  nullptr,         resources::cleanup},
 	{"sfx",        sfx::init,        nullptr,         sfx::cleanup},
 	{"effects",    effects::init,    effects::reset,  effects::cleanup},
+	{"laneLook",   laneLook::init,   laneLook::reset, laneLook::cleanup},
 	// After shield and cloak: its reset raises one and lowers the other.
 	{"weapons",    nullptr,          [] { weapons::reset(playerWeapons); }, nullptr},
 };
@@ -759,6 +765,7 @@ void debugPanelUi()
 	debugPanel::section("Flight", [] { shipMode::debugUi(session.mode, session.energy); });
 	debugPanel::section("Interior", interior::debugUi);
 	debugPanel::section("Lanes", lanes::debugUi);
+	debugPanel::section("Lane look", laneLook::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -892,7 +899,9 @@ bool gameLogic(float deltaTime)
 			restartGame();
 		}
 		gameClock::setPaused(gameState::paused());
-		crt::setTransition(gameState::switchOff(), gameState::whiteOut(), gameState::warpBlur());
+		// The warp-out's zoom blur, or a lane's entry flash (W4).
+		crt::setTransition(gameState::switchOff(), gameState::whiteOut(),
+			std::max(gameState::warpBlur(), laneLook::flash()));
 	}
 	const bool controls = gameState::controlsLive();
 
@@ -1065,6 +1074,7 @@ bool gameLogic(float deltaTime)
 		{
 			session.ship.velocity += session.laneRider.direction * lanes::entryBoost();
 			session.laneTrailLeft = lanes::entryTrailSeconds();
+			laneLook::entered();
 		}
 		// Shift brakes: no thrust, and quickly, not at once, to a stop. In a
 		// lane in flight mode it slides instead, round toward the nose.
@@ -1241,8 +1251,12 @@ bool gameLogic(float deltaTime)
 	// Wall time, not game time: see zoomControl.h.
 	// With a level, nothing is removed for distance, so no ring bounds the zoom.
 	// Scoped (S4b), zoomed out further, toward the scope's zoom.
+	// Riding a lane, faster than the ship flies on its own, the hull
+	// stretches and the camera eases out (W4).
+	laneLook::update(glm::length(session.ship.velocity), movement::topSpeed(session.ship.move),
+		gameState::playerPresent() && (session.laneRider.lane >= 0 || session.laneRider.coasting), time.real);
 	renderer.currentCamera.zoom = scope::zoom(zoomControl::update(time.real,
-		{(float)w, (float)h}, levelLoaded ? 0.f : enemyDespawnDistance));
+		{(float)w, (float)h}, levelLoaded ? 0.f : enemyDespawnDistance)) * laneLook::zoomFactor();
 
 	// The field rocks round the view, now that it is placed (sight roadmap W3).
 	asteroids::stream(renderer.getViewRect());
@@ -1251,7 +1265,15 @@ bool gameLogic(float deltaTime)
 	if (levelLoaded && sceneryVisible) { scenery::draw(renderer, currentLevel.scenery); }
 	gate::drawBody(renderer); // in the world, under the ships
 	asteroids::draw(renderer);
-	lanes::draw(renderer, lanes::laneAt(session.ship.position)); // W4: under the ships, greyed by the fog
+	{
+		// W4: under the ships, greyed by the fog -- the lanes, and their
+		// streaks flowing both ways. Game time, so a pause stops them.
+		static float laneClock = 0.f;
+		laneClock += time.game;
+		const int riding = lanes::laneAt(session.ship.position);
+		lanes::draw(renderer, riding);
+		laneLook::drawStreaks(renderer, lanes::all(), riding, laneClock);
+	}
 #pragma endregion
 
 #pragma region handle bulets
@@ -2113,7 +2135,7 @@ bool gameLogic(float deltaTime)
 			* (1.f - asteroids::shadowOn(session.ship.position, game::shipHitbox(session.ship.position, shipSize).radius));
 		renderSpaceShip(renderer, session.ship.position, shipSize,
 			shipSheet, shipAtlas.get(3, 0), session.ship.facing,
-			{shade, shade, shade, cloak::shipAlpha()}, gameState::warpStretch());
+			{shade, shade, shade, cloak::shipAlpha()}, playerStretch());
 
 		// After the hull, so the rim reads as being in front of it. Not while
 		// warping: the bubble does not stretch with the hull.
@@ -2138,7 +2160,7 @@ bool gameLogic(float deltaTime)
 		else { outline::begin(renderer, pulse); }
 		renderSpaceShip(renderer, session.ship.position, shipSize,
 			shipSheet, shipAtlas.get(3, 0), session.ship.facing,
-			{1.f, 1.f, 1.f, cloak::shipAlpha()}, gameState::warpStretch());
+			{1.f, 1.f, 1.f, cloak::shipAlpha()}, playerStretch());
 		outline::end(renderer);
 	}
 
@@ -2265,7 +2287,7 @@ bool gameLogic(float deltaTime)
 	{
 		arena::drawBurnFlash(renderer, arena::burnFlash(), session.ship.position, shipSize,
 			shipSheet, shipAtlas.get(3, 0), session.ship.facing, cloak::shipAlpha(),
-			gameState::warpStretch());
+			playerStretch());
 	}
 	renderer.setBlendMode(wgpu2d::BlendMode::Alpha);
 
