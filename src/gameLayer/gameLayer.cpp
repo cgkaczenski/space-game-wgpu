@@ -19,6 +19,7 @@
 #include <utility>
 #include <controls.h>
 #include <hints.h>
+#include <hintScript.h>
 #include <menu.h>
 #include <playerSettings.h>
 #include <shipThruster.h>
@@ -102,6 +103,9 @@ struct Session
 	// Fight or flight (sight roadmap M1): Tab switches. A new round starts in
 	// fight mode, shield up.
 	shipMode::Mode mode = shipMode::Mode::Fight;
+
+	// Enemies killed this round, for a hint step that waits on kills (H2).
+	int kills = 0;
 
 	// Carried by a lane's current, or just out of one (sight roadmap W4), and
 	// how much longer flight mode's entry kick draws the ram's afterimages.
@@ -477,6 +481,9 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		gate::start(levelLoaded && g, g ? g->position : glm::vec2{});
 	}
 
+	// The level's hint script (H2), from its first step, every round.
+	hintScript::start(levelLoaded ? currentLevel.hints : std::vector<level::HintStep>{}, levelFile);
+
 	// What there is to mine this round (gameplay roadmap L3). Points banked by
 	// extracting are not a round's and survive.
 	resources::reset();
@@ -506,6 +513,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 // same way (gameplay roadmap C4). Leaving the despawn ring is not a death.
 void killEnemy(int index)
 {
+	session.kills++;
 	const Enemy &e = session.enemies[index];
 	effects::enemyKilled(e, shipSheet, shipAtlas.get(e.type.x, e.type.y));
 	const bool boss = e.behaviour == Enemy::Behaviour::Boss;
@@ -793,7 +801,7 @@ void debugPanelUi()
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Controls", controls::debugUi);
-	debugPanel::section("Hints", hints::debugUi);
+	debugPanel::section("Hints", [] { hintScript::debugUi(); ImGui::Separator(); hints::debugUi(); });
 	debugPanel::section("Enemies", enemiesDebugUi);
 	debugPanel::section("Ship bumps", []
 	{
@@ -1374,6 +1382,22 @@ bool gameLogic(float deltaTime)
 	// Clicks on the debug panel are the panel's.
 	// No firing while scoped (S4b): the scope is for finding, not fighting.
 	// Nor in a jump or the grace after it (W5).
+	// The level's hint script (H2): checks its step and hands it to the
+	// hints, before the trigger -- a click on the "disable hints" box in its
+	// bubble is the box's, not a shot -- and before hud::draw, which its
+	// highlight reaches.
+	{
+		hintScript::Context hc;
+		hc.ship = session.ship.position;
+		hc.selectedWeapon = playerWeapons.selected;
+		hc.held = resources::held();
+		hc.flight = session.mode == shipMode::Mode::Flight;
+		hc.cloaked = energy::isCloaked(session.energy);
+		hc.kills = session.kills;
+		hc.live = controls;
+		hc.gameDeltaTime = time.game;
+		if (hintScript::update(hc, w, h)) { triggerHeldOver = true; }
+	}
 	if (triggerHeldOver && !controls::held(controls::Action::Fire)) { triggerHeldOver = false; }
 	const bool trigger = controls && !stunnedNow && !scope::held() && !jumpGates::shielded()
 		&& controls::held(controls::Action::Fire) && !triggerHeldOver;

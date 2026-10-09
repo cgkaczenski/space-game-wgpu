@@ -28,10 +28,32 @@ namespace hints
 	//
 	// At a place in the level: the tail ends on `world`, and a ring of
 	// `ringRadius` world units pulses round it (0: no ring).
-	void atWorld(glm::vec2 world, const std::string &markup, float ringRadius = 0.f);
+	//
+	// `tag`, if not 0, keeps where the bubble's key-caps were drawn, for
+	// capsDrawn: what makes a cap in it clickable.
+	//
+	// `left` and `right`, if given, are small print in the bubble's bottom
+	// corners, on a row of their own.
+	struct Corners
+	{
+		std::string left;
+		std::string right;
+	};
+	void atWorld(glm::vec2 world, const std::string &markup, float ringRadius = 0.f, int tag = 0,
+		const Corners &corners = {});
 	// At a HUD element: the tail ends on its edge nearest the screen's
 	// centre, and the element is highlighted.
-	void atHud(hud::Element element, const std::string &markup);
+	void atHud(hud::Element element, const std::string &markup, int tag = 0, const Corners &corners = {});
+	// At nothing: a bubble with no tail, near the top of the screen.
+	void atScreen(const std::string &markup, int tag = 0, const Corners &corners = {});
+
+	// Where the key-caps of the bubble last drawn with `tag` were, in
+	// framebuffer pixels, in markup order. Empty if none was drawn.
+	const std::vector<glm::vec4> &capsDrawn(int tag);
+
+	// The style hints are drawn in, for anything else drawn to match them
+	// (hintScript's bar).
+	wgpu2d::CalloutStyle style(int height);
 
 	// The test hints, if any are switched on in the debug panel. Call before
 	// hud::draw, so their highlights reach it. `ship` and `facing` place the

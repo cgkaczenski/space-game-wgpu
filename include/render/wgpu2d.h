@@ -619,8 +619,9 @@ namespace wgpu2d
 	// The text is markup. `[4]` is a key-cap: the text in a small framed box.
 	// `[!4]` is the same cap lit, for a key being held. `[mouse:left]`,
 	// `[mouse:right]` and `[mouse:wheel]` draw a mouse with that part marked
-	// instead of a word (`[!mouse:left]` lit). '\n' starts a line. A '[' with
-	// no ']' is drawn as it is.
+	// instead of a word (`[!mouse:left]` lit), and words after it go in the
+	// same cap: `[mouse:wheel WHEEL]`. '\n' starts a line. Each line is
+	// centred in the box. A '[' with no ']' is drawn as it is.
 
 	struct CalloutStyle
 	{
@@ -637,6 +638,10 @@ namespace wgpu2d
 		Color4f capText = {1, 1, 1, 1};
 		Color4f capLit = {1, 1, 1, 1};     // a lit cap's fill; its text is `fill`'s colour
 
+		// The corner's text scale (drawCallout's `corner`); 0: the same as
+		// `scale`. A whole number for a pixel font.
+		float cornerScale = 0.f;
+
 		// In font pixels, so all of it scales with the text.
 		float padding = 4.f;        // text to the box's edge
 		float tailWidth = 10.f;     // where the tail leaves the box
@@ -652,8 +657,22 @@ namespace wgpu2d
 	// to the screen's edge, the tail pointing out toward it, and the box comes
 	// in from there. A target under the box (pushed there by the screen's
 	// edge) gets no tail. Returns the box drawn: x, y, width, height.
+	//
+	// `capRects`, if given, receives where each key-cap was drawn, in the
+	// order they appear in the markup, then the left corner's, then the
+	// right's: what a click on a cap is tested against, which makes a cap a
+	// button.
+	//
+	// `cornerLeft` and `cornerRight`, if given, are more markup at
+	// `cornerScale`, on a row of their own under the text, in the box's
+	// bottom-left and bottom-right corners -- small print, such as buttons to
+	// skip a bubble or switch them off. The box widens to keep them apart.
 	glm::vec4 drawCallout(Renderer2D &renderer, glm::vec2 target, glm::vec2 offset,
-		const char *markup, const CalloutStyle &style);
+		const char *markup, const CalloutStyle &style, std::vector<glm::vec4> *capRects = nullptr,
+		const char *cornerLeft = nullptr, const char *cornerRight = nullptr);
+
+	// The size of the markup alone, without the box's padding.
+	glm::vec2 measureMarkup(const char *markup, const CalloutStyle &style);
 
 	// The markup alone, without a box, anchored as renderText anchors: for a
 	// key-cap next to a HUD element.

@@ -36,6 +36,7 @@ namespace
 		bool lit = false;
 		Icon icon = Icon::None;
 		float width = 0.f;
+		std::string label;   // words beside a mouse icon, in the same cap
 	};
 
 	struct Line
@@ -80,14 +81,20 @@ namespace
 					r.cap = true;
 					std::string inside(c + 1, close);
 					if (!inside.empty() && inside[0] == '!') { r.lit = true; inside.erase(0, 1); }
-					if (inside == "mouse:left") { r.icon = Icon::MouseLeft; }
-					else if (inside == "mouse:right") { r.icon = Icon::MouseRight; }
-					else if (inside == "mouse:wheel") { r.icon = Icon::MouseWheel; }
+					// A mouse icon, and optionally words after it in the same
+					// cap: [mouse:wheel WHEEL].
+					const size_t space = inside.find(' ');
+					const std::string token = inside.substr(0, space);
+					if (token == "mouse:left") { r.icon = Icon::MouseLeft; }
+					else if (token == "mouse:right") { r.icon = Icon::MouseRight; }
+					else if (token == "mouse:wheel") { r.icon = Icon::MouseWheel; }
+					if (r.icon != Icon::None && space != std::string::npos) { r.label = inside.substr(space + 1); }
 					r.text = inside;
 					// A cap: two font pixels of air either side of its contents,
 					// and one more either side of the frame, to the next run.
-					const float contents = r.icon != Icon::None ? 8.f * u
+					float contents = r.icon != Icon::None ? 8.f * u
 						: measureText(*s.font, inside.c_str(), s.scale).x;
+					if (!r.label.empty()) { contents += 3.f * u + measureText(*s.font, r.label.c_str(), s.scale).x; }
 					r.width = contents + 8.f * u;
 					lines.back().runs.push_back(r);
 					lines.back().width += r.width;
@@ -135,7 +142,7 @@ namespace
 	}
 
 	void drawLines(Renderer2D &r, const std::vector<Line> &lines, glm::vec2 topLeft, float width,
-		float anchorX, const CalloutStyle &s)
+		float anchorX, const CalloutStyle &s, std::vector<glm::vec4> *capRects = nullptr)
 	{
 		const float u = unit(s);
 		const float lh = lineHeight(s);
@@ -154,7 +161,16 @@ namespace
 				else
 				{
 					const glm::vec4 cap = {x + u, std::round(mid - ch * 0.5f), run.width - 2.f * u, ch};
-					if (run.icon != Icon::None)
+					if (capRects) { capRects->push_back(cap); }
+					if (run.icon != Icon::None && !run.label.empty())
+					{
+						// Framed like a key, the mouse first and its words after.
+						outlinedRect(r, cap, u, s.capFrame, run.lit ? s.capLit : s.capFill);
+						drawMouse(r, {cap.x + 7.f * u, mid}, run.icon, run.lit, s);
+						r.renderText({cap.x + 14.f * u, mid}, run.label.c_str(), *s.font,
+							run.lit ? Color4f{s.fill.r, s.fill.g, s.fill.b, 1.f} : s.capText, s.scale, {0.f, 0.5f});
+					}
+					else if (run.icon != Icon::None)
 					{
 						drawMouse(r, {cap.x + cap.z * 0.5f, mid}, run.icon, run.lit, s);
 					}
@@ -185,6 +201,12 @@ glm::vec2 measureCallout(const char *markup, const CalloutStyle &style)
 	return contentSize(layout(markup, style), style) + glm::vec2(2.f * style.padding * unit(style));
 }
 
+glm::vec2 measureMarkup(const char *markup, const CalloutStyle &style)
+{
+	if (!style.font || style.font->glyphs.empty()) { return {}; }
+	return contentSize(layout(markup, style), style);
+}
+
 void renderMarkup(Renderer2D &renderer, glm::vec2 position, const char *markup,
 	const CalloutStyle &style, glm::vec2 anchor)
 {
@@ -195,15 +217,34 @@ void renderMarkup(Renderer2D &renderer, glm::vec2 position, const char *markup,
 }
 
 glm::vec4 drawCallout(Renderer2D &renderer, glm::vec2 target, glm::vec2 offset,
-	const char *markup, const CalloutStyle &style)
+	const char *markup, const CalloutStyle &style, std::vector<glm::vec4> *capRects,
+	const char *cornerLeft, const char *cornerRight)
 {
+	if (capRects) { capRects->clear(); }
 	if (!style.font || style.font->glyphs.empty()) { return {}; }
 
 	const float u = unit(style);
 	const glm::vec2 screen = {(float)renderer.windowW, (float)renderer.windowH};
 	const float margin = style.margin * u;
 	const std::vector<Line> lines = layout(markup, style);
-	const glm::vec2 content = contentSize(lines, style);
+	glm::vec2 content = contentSize(lines, style);
+
+	// The corners: smaller markup on a row of their own under the text, one
+	// in the bottom-left and one in the bottom-right. The box widens until
+	// the two have a gap between them.
+	CalloutStyle cornerStyle = style;
+	if (style.cornerScale > 0.f) { cornerStyle.scale = style.cornerScale; }
+	std::vector<Line> leftLines, rightLines;
+	glm::vec2 leftSize = {}, rightSize = {};
+	if (cornerLeft && *cornerLeft) { leftLines = layout(cornerLeft, cornerStyle); leftSize = contentSize(leftLines, cornerStyle); }
+	if (cornerRight && *cornerRight) { rightLines = layout(cornerRight, cornerStyle); rightSize = contentSize(rightLines, cornerStyle); }
+	const float textHeight = content.y;
+	const float rowGap = 2.f * u;
+	if (!leftLines.empty() || !rightLines.empty())
+	{
+		content.x = std::max(content.x, leftSize.x + rightSize.x + 8.f * u);
+		content.y += rowGap + std::max(leftSize.y, rightSize.y);
+	}
 	const glm::vec2 size = glm::round(content + glm::vec2(2.f * style.padding * u));
 
 	// `offset` is the gap from the tip to the box's nearest edge, so the box's
@@ -286,7 +327,18 @@ glm::vec4 drawCallout(Renderer2D &renderer, glm::vec2 target, glm::vec2 offset,
 		}
 	}
 
-	drawLines(renderer, lines, {box.x + style.padding * u, box.y + style.padding * u}, content.x, 0.5f, style);
+	drawLines(renderer, lines, {box.x + style.padding * u, box.y + style.padding * u}, content.x, 0.5f, style, capRects);
+	const float rowTop = box.y + style.padding * u + textHeight + rowGap;
+	if (!leftLines.empty())
+	{
+		drawLines(renderer, leftLines, glm::round(glm::vec2(box.x + style.padding * u, rowTop)),
+			leftSize.x, 0.f, cornerStyle, capRects);
+	}
+	if (!rightLines.empty())
+	{
+		drawLines(renderer, rightLines, glm::round(glm::vec2(box.x + box.z - style.padding * u - rightSize.x, rowTop)),
+			rightSize.x, 1.f, cornerStyle, capRects);
+	}
 	return box;
 }
 

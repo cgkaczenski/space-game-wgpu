@@ -8,6 +8,8 @@
 #include <weapons.h>
 #include <scenery.h>
 #include <shipSprite.h>
+#include <hintScript.h>
+#include <textLook.h>
 #include "platformInput.h"
 #include "imgui.h"
 
@@ -15,6 +17,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <sstream>
 #include <vector>
 
 namespace levelEditor
@@ -32,7 +36,7 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss, Lane, Jump };
+	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss, Lane, Jump, Hint };
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
@@ -50,6 +54,13 @@ namespace
 	bool jumpPending = false;
 	glm::vec2 jumpFirst = {};
 	const glm::vec4 jumpColour = {0.75f, 0.45f, 1.f, 0.9f};
+
+	// The Hints tool (hints roadmap H2): which step the panel edits, and
+	// its text and arguments being typed, synced when the step changes.
+	int hintSelected = -1;
+	int hintSynced = -2;
+	char hintText[256] = "";
+	char hintArgs[128] = "";
 
 	// A lane's points are picked by a handle a fixed size on screen.
 	constexpr float lanePointPixels = 12.f;
@@ -664,6 +675,17 @@ void update(level::Level &level, wgpu2d::Renderer2D &renderer, glm::vec2 mouse,
 		dragging = true;
 		dragOffset = positionOf(level, hit) - world;
 	}
+	// The Hints tool (H2): a click puts the selected step's point there.
+	else if (tool == Tool::Hint && mouseFree && platform::isLMousePressed())
+	{
+		if (hintSelected >= 0 && hintSelected < (int)level.hints.size())
+		{
+			level::HintStep &h = level.hints[(size_t)hintSelected];
+			h.where = level::HintStep::Where::World;
+			h.at = world;
+			edited = true;
+		}
+	}
 	// Left button: pick and drag, or place.
 	else if (mouseFree && platform::isLMousePressed())
 	{
@@ -765,6 +787,18 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		}
 	}
 
+	// Hint steps that point at a place (H2): a ring in the hints' colour, the
+	// selected one brighter, and the ring the step will pulse if it has one.
+	for (int i = 0; i < (int)level.hints.size(); i++)
+	{
+		const level::HintStep &h = level.hints[(size_t)i];
+		if (h.where != level::HintStep::Where::World) { continue; }
+		const bool picked = tool == Tool::Hint && i == hintSelected;
+		const glm::vec4 colour = {textLook::hintColour, picked ? 1.f : 0.45f};
+		renderer.renderCircleOutline(h.at, colour, 14.f * px, 3.f * px, 16);
+		if (h.ring > 0.f) { renderer.renderCircleOutline(h.at, colour, h.ring, 2.f * px, 64); }
+	}
+
 	// The closing circle's rings, in the order they close: largest first. Each
 	// a little whiter than the last, red if it is not inside the one before,
 	// with a handle at its centre.
@@ -830,6 +864,128 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 	}
 }
 
+namespace
+{
+	// The Hints tool's panel (H2): the level's script, step by step.
+	void hintsPanel(level::Level &level)
+	{
+		using level::HintStep;
+		std::vector<HintStep> &steps = level.hints;
+		ImGui::TextDisabled("Steps run in order every round. {action} in the text becomes its keys, e.g. {weapon4}");
+		ImGui::TextDisabled("L: put the selected step's point where you click");
+
+		if (ImGui::BeginListBox("##hintSteps", ImVec2(-1.f, 6.f * ImGui::GetTextLineHeightWithSpacing())))
+		{
+			for (int i = 0; i < (int)steps.size(); i++)
+			{
+				const std::string label = std::to_string(i + 1) + ". " + steps[(size_t)i].text + "##" + std::to_string(i);
+				if (ImGui::Selectable(label.c_str(), i == hintSelected)) { hintSelected = i; }
+			}
+			ImGui::EndListBox();
+		}
+		if (ImGui::Button("Add step"))
+		{
+			HintStep h;
+			h.text = "NEW STEP";
+			steps.insert(steps.begin() + (hintSelected >= 0 ? hintSelected + 1 : (int)steps.size()), h);
+			hintSelected = hintSelected >= 0 ? hintSelected + 1 : (int)steps.size() - 1;
+			edited = true;
+		}
+		const bool valid = hintSelected >= 0 && hintSelected < (int)steps.size();
+		ImGui::BeginDisabled(!valid);
+		ImGui::SameLine();
+		if (ImGui::Button("Delete") && valid)
+		{
+			steps.erase(steps.begin() + hintSelected);
+			hintSelected = std::min(hintSelected, (int)steps.size() - 1);
+			edited = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Up") && valid && hintSelected > 0)
+		{
+			std::swap(steps[(size_t)hintSelected], steps[(size_t)hintSelected - 1]);
+			hintSelected--;
+			edited = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Down") && valid && hintSelected + 1 < (int)steps.size())
+		{
+			std::swap(steps[(size_t)hintSelected], steps[(size_t)hintSelected + 1]);
+			hintSelected++;
+			edited = true;
+		}
+		ImGui::EndDisabled();
+		if (!valid) { hintSynced = -2; return; }
+
+		HintStep &h = steps[(size_t)hintSelected];
+		if (hintSynced != hintSelected)
+		{
+			hintSynced = hintSelected;
+			std::snprintf(hintText, sizeof(hintText), "%s", h.text.c_str());
+			std::string joined;
+			for (const std::string &a : h.args) { joined += (joined.empty() ? "" : " ") + a; }
+			std::snprintf(hintArgs, sizeof(hintArgs), "%s", joined.c_str());
+		}
+
+		if (ImGui::InputText("Text", hintText, sizeof(hintText)))
+		{
+			// No '#': the level file would read the rest of the line as a comment.
+			for (char *c = hintText; *c; c++) { if (*c == '#') { *c = ' '; } }
+			h.text = hintText;
+			edited = true;
+		}
+
+		int where = (int)h.where;
+		ImGui::RadioButton("Top of screen", &where, (int)HintStep::Where::Screen); ImGui::SameLine();
+		ImGui::RadioButton("A place", &where, (int)HintStep::Where::World); ImGui::SameLine();
+		ImGui::RadioButton("The HUD", &where, (int)HintStep::Where::Hud);
+		if (where != (int)h.where) { h.where = (HintStep::Where)where; edited = true; }
+		if (h.where == HintStep::Where::World)
+		{
+			if (ImGui::DragFloat2("Point", &h.at.x, 10.f, -1e6f, 1e6f, "%.0f")) { edited = true; }
+			if (ImGui::DragFloat("Ring", &h.ring, 10.f, 0.f, 50000.f, "%.0f")) { edited = true; }
+		}
+		if (h.where == HintStep::Where::Hud)
+		{
+			const std::vector<std::string> &names = hintScript::hudElements();
+			if (ImGui::BeginCombo("Element", h.hud.empty() ? "(choose)" : h.hud.c_str()))
+			{
+				for (const std::string &n : names)
+				{
+					if (ImGui::Selectable(n.c_str(), n == h.hud)) { h.hud = n; edited = true; }
+				}
+				ImGui::EndCombo();
+			}
+		}
+
+		const std::vector<std::string> &words = hintScript::conditions();
+		if (ImGui::BeginCombo("Until", h.until.empty() ? "(skip only)" : h.until.c_str()))
+		{
+			for (const std::string &w : words)
+			{
+				if (ImGui::Selectable(w.empty() ? "(skip only)" : w.c_str(), w == h.until)) { h.until = w; edited = true; }
+			}
+			ImGui::EndCombo();
+		}
+		if (ImGui::InputText("Arguments", hintArgs, sizeof(hintArgs)))
+		{
+			h.args.clear();
+			std::istringstream in(hintArgs);
+			std::string a;
+			while (in >> a) { h.args.push_back(a); }
+			edited = true;
+		}
+		ImGui::TextDisabled("%s", hintScript::conditionArgs(h.until));
+		if (h.until == "near" && h.where == HintStep::Where::World && ImGui::SmallButton("Near the step's point"))
+		{
+			const float r = h.ring > 0.f ? h.ring : 1500.f;
+			std::snprintf(hintArgs, sizeof(hintArgs), "%.0f %.0f %.0f", h.at.x, h.at.y, r);
+			h.args = {std::to_string((int)h.at.x), std::to_string((int)h.at.y), std::to_string((int)r)};
+			edited = true;
+		}
+	}
+}
+
 Request debugUi(level::Level &level, bool unsaved)
 {
 	Request request = Request::None;
@@ -860,8 +1016,10 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::RadioButton("Paint field", &t, (int)Tool::Paint); ImGui::SameLine();
 	ImGui::RadioButton("Scenery", &t, (int)Tool::Scenery); ImGui::SameLine();
 	ImGui::RadioButton("Lane", &t, (int)Tool::Lane); ImGui::SameLine();
-	ImGui::RadioButton("Jump gates", &t, (int)Tool::Jump);
+	ImGui::RadioButton("Jump gates", &t, (int)Tool::Jump); ImGui::SameLine();
+	ImGui::RadioButton("Hints", &t, (int)Tool::Hint);
 	tool = (Tool)t;
+	if (tool == Tool::Hint) { hintsPanel(level); }
 	if (tool == Tool::Jump)
 	{
 		ImGui::TextDisabled(jumpPending ? "L: place the other end" : "L: place one end of a pair, then the other");

@@ -16,17 +16,32 @@ namespace
 	struct Pending
 	{
 		bool world = false;
+		bool screen = false;
 		glm::vec2 at = {};            // world, or a HUD element's rect centre below
 		hud::Element element = hud::Element::Count;
 		std::string markup;
 		float ringRadius = 0.f;
+		int tag = 0;
+		Corners corners;
 	};
 	std::vector<Pending> pending;
+
+	// The caps of tagged bubbles, as last drawn.
+	std::vector<std::pair<int, std::vector<glm::vec4>>> tagged;
+
+	std::vector<glm::vec4> &capsFor(int tag)
+	{
+		for (auto &t : tagged) { if (t.first == tag) { return t.second; } }
+		tagged.push_back({tag, {}});
+		return tagged.back().second;
+	}
 
 	// The gap between what a bubble points at and the bubble's nearest edge,
 	// as a fraction of the screen's height: short enough that the tail reads
 	// as a pointer.
 	const float offsetPerc = 0.06f;
+	// Where a hint with nothing to point at ends, down the screen.
+	const float screenTopPerc = 0.24f;
 	// Up and to the right of a world point, by default: away from the HUD's
 	// weapon row along the bottom.
 	const glm::vec2 worldOffsetDir = glm::normalize(glm::vec2(0.6f, -1.f));
@@ -44,12 +59,16 @@ namespace
 		return 0.5f - 0.5f * std::cos(6.2831853f * 1.6f * t);
 	}
 
-	wgpu2d::CalloutStyle style(int height)
-	{
+}
+
+wgpu2d::CalloutStyle style(int height)
+{
 		const glm::vec3 c = textLook::hintColour;
 		wgpu2d::CalloutStyle s;
 		s.font = &textLook::font();
 		s.scale = textLook::screenScale(height);
+		// Small print a step down, as long as there is a step to go down.
+		s.cornerScale = std::max(1.f, s.scale - 1.f);
 		s.text = {0.92f, 1.f, 0.96f, 1.f};
 		s.frame = {c, 1.f};
 		s.fill = {0.02f, 0.07f, 0.06f, 1.f};
@@ -58,8 +77,10 @@ namespace
 		s.capText = {0.92f, 1.f, 0.96f, 1.f};
 		s.capLit = {c, 1.f};
 		return s;
-	}
+}
 
+namespace
+{
 	std::string cap(const actions::Binding &b, bool lit)
 	{
 		const std::string bang = lit ? "!" : "";
@@ -77,11 +98,12 @@ namespace
 			out += "[" + bang + (k ? k : "?") + "]";
 			break;
 		}
+		// The mouse drawn, and said: the icon alone left some players guessing.
 		case actions::Device::Mouse:
-			out += "[" + bang + (b.code == 0 ? "mouse:left" : "mouse:right") + "]";
+			out += "[" + bang + (b.code == 0 ? "mouse:left LEFT CLICK" : "mouse:right RIGHT CLICK") + "]";
 			break;
 		case actions::Device::Wheel:
-			out += "[" + bang + "mouse:wheel]";
+			out += "[" + bang + "mouse:wheel WHEEL]";
 			break;
 		}
 		return out;
@@ -104,9 +126,11 @@ std::string keys(controls::Action action)
 	return out.empty() ? std::string("(UNBOUND)") : out;
 }
 
-void atWorld(glm::vec2 world, const std::string &markup, float ringRadius)
+void atWorld(glm::vec2 world, const std::string &markup, float ringRadius, int tag, const Corners &corners)
 {
 	Pending p;
+	p.tag = tag;
+	p.corners = corners;
 	p.world = true;
 	p.at = world;
 	p.markup = markup;
@@ -114,13 +138,27 @@ void atWorld(glm::vec2 world, const std::string &markup, float ringRadius)
 	pending.push_back(p);
 }
 
-void atHud(hud::Element element, const std::string &markup)
+void atHud(hud::Element element, const std::string &markup, int tag, const Corners &corners)
 {
 	Pending p;
+	p.tag = tag;
+	p.corners = corners;
 	p.element = element;
 	p.markup = markup;
 	pending.push_back(p);
 	hud::highlight(element);
+}
+
+const std::vector<glm::vec4> &capsDrawn(int tag) { return capsFor(tag); }
+
+void atScreen(const std::string &markup, int tag, const Corners &corners)
+{
+	Pending p;
+	p.tag = tag;
+	p.corners = corners;
+	p.screen = true;
+	p.markup = markup;
+	pending.push_back(p);
 }
 
 void debugFrame(glm::vec2 ship, glm::vec2 facing)
@@ -144,6 +182,8 @@ void debugFrame(glm::vec2 ship, glm::vec2 facing)
 
 void draw(wgpu2d::Renderer2D &renderer, glm::vec4 view, int width, int height)
 {
+	// A tag not drawn this frame has no caps on screen to click.
+	for (auto &t : tagged) { t.second.clear(); }
 	if (pending.empty()) { return; }
 	const wgpu2d::CalloutStyle s = style(height);
 	const float offset = height * offsetPerc;
@@ -154,6 +194,14 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec4 view, int width, int height)
 	{
 		glm::vec2 target;
 		glm::vec2 dir;
+		if (p.screen)
+		{
+			// A tail needs something to point at; with no gap, the box sits
+			// on the point and has none.
+			wgpu2d::drawCallout(renderer, {width * 0.5f, height * screenTopPerc}, {}, p.markup.c_str(), s,
+				p.tag ? &capsFor(p.tag) : nullptr, p.corners.left.c_str(), p.corners.right.c_str());
+			continue;
+		}
 		if (p.world)
 		{
 			if (view.z == 0.f || view.w == 0.f) { continue; }
@@ -178,7 +226,8 @@ void draw(wgpu2d::Renderer2D &renderer, glm::vec4 view, int width, int height)
 			const float sy = dir.y != 0.f ? r.w * 0.5f / std::abs(dir.y) : 1e9f;
 			target = centre + dir * (std::min(sx, sy) + height * 0.012f);
 		}
-		wgpu2d::drawCallout(renderer, target, dir * offset, p.markup.c_str(), s);
+		wgpu2d::drawCallout(renderer, target, dir * offset, p.markup.c_str(), s, p.tag ? &capsFor(p.tag) : nullptr,
+			p.corners.left.c_str(), p.corners.right.c_str());
 	}
 	renderer.popCamera();
 	pending.clear();

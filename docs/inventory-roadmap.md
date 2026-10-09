@@ -192,7 +192,9 @@ such as a weapon slot that animates by changing size.
 - **A speech bubble with a tail**, not a box with a leader line: the tail is
   a pointed triangle from the box to the target.
 - **Mouse buttons and the wheel are drawn**: a small mouse with the meant
-  part filled. Other keys are key-caps with their names.
+  part filled, and words beside it in the same cap (`LEFT CLICK`,
+  `RIGHT CLICK`, `WHEEL`; markup `[mouse:wheel WHEEL]`). The words were added
+  after a first look. Other keys are key-caps with their names.
 - **Hints have their own colour**, a cyan-green used only for teaching
   (`textLook::hintColour`): bubbles, rings and HUD highlights.
 
@@ -256,7 +258,7 @@ such as a weapon slot that animates by changing size.
   the ship toward the target. A hint about flying somewhere can draw the
   player's hull faint where it should go, as `theirGhost` draws it.
 
-### H2. Hint scripts: steps, and what finishes each — *proposed*
+### H2. Hint scripts: steps, and what finishes each — *built*
 
 **Asked:** the beam example. When the level loads: select the beam, then
 mine.
@@ -278,10 +280,89 @@ mine.
   - Game: the conditions, the reading of the level file, and the editor
     tool.
 
-**Open questions**
-- Do ordinary levels have hints too, or only tutorial levels?
-- Is a hint shown once ever and remembered across runs, or on every load?
-- Is a "hints on/off" setting needed, and a "show hints again" button?
+**Decided**
+- **The game keeps running** while a step is up.
+- **A step ends when it is done, or on Skip hint**: a new rebindable action,
+  Enter by default.
+- **Any level with a script has hints.** A tutorial level is a level that
+  has one.
+- **A script runs on every load and every restart.** A **HINTS** row in
+  Settings turns them all off.
+- **The DISABLE HINTS box is inside the bubble**, on its last line beside the
+  skip key. It switches off **this level's** hints, the rest of the script and
+  on every later load, and is remembered in `settings.cfg`
+  (`hintsOff level4.txt`). Other levels keep theirs. Switching Settings >
+  Hints back on brings every level's back.
+
+**Built**
+- **`engine/sequence`:** the current step, its time, a finished step's
+  linger (0.7 s, showing a lit DONE) before the next, a skip that does not
+  linger, and one event per frame: Entered, Finished, Done.
+- **The file format**, `hint "TEXT" [at x y [ring r] | hud element]
+  [until word args...]`, in `level.h`:
+  - The text is quoted by hand: only `\"` is escaped. A typed `\n` stays
+    two characters and becomes a line break when drawn. `std::quoted` would
+    have read it as `n`.
+  - `{action}` in the text becomes that action's key-caps (`{weapon4}`,
+    `{fire}`), so a step follows rebinding.
+- **`gameLayer/hintScript`** gives the words a meaning:
+  - `pressed <action>`, `selected <slot>`, `hold <ore>`, `near x y r`,
+    `mode flight|fight`, `cloaked`, `kills n` (since the step began),
+    `seconds s`, or nothing, so only a skip ends it.
+  - A word it does not know waits for a skip rather than failing.
+  - It runs before the trigger is read, so a click on DISABLE HINTS is the
+    box's, not a shot.
+- **Two small buttons** on a row of their own under the text, one text step
+  smaller: `[SKIP]` in the bottom-left corner, `[ ] DISABLE HINTS` in the
+  bottom-right. Each lights under the pointer, and a click on either is the
+  button's, not a shot. SKIP moves on as the Skip hint key (Enter) does; the
+  key still works but is not printed.
+  - `drawCallout` takes `cornerLeft` and `cornerRight`: markup at
+    `cornerScale` in the bottom corners. The box widens to keep them apart.
+  - _(Was `[ENTER] SKIP` centred on the last line; changed at the author's
+    request.)_
+  - The box is the bubble's last key-cap. `drawCallout` can report where it
+    drew each cap (`capRects`), so a cap can be a button. `hints` keeps them
+    for a tagged bubble, and the script tests a click against last frame's,
+    which a click never notices.
+  - _(Was a bar at the top of the screen, switching every level's hints off;
+    moved and narrowed to the level at the author's request.)_
+- **The editor's Hints tool:**
+  - a list of steps (add, delete, up, down);
+  - the text, and where it points: the top of the screen, a place (click to
+    put it there, ring width), or a HUD element;
+  - the condition from a list, its arguments typed, with what it expects
+    shown under it;
+  - "Near the step's point" fills `near` from the place.
+
+  The editor draws each step's place as a ring in the hints' colour.
+- **Debug panel → Hints:** the current step, its time and condition, and
+  "Restart the script".
+- `session.kills` counts enemies killed this round.
+- Checked:
+  - a test of `engine/sequence` outside the game: entering, finishing,
+    lingering, skipping out of a linger, Done once, no linger, an empty
+    script;
+  - in the game, with temporary scaffolding since removed: a three-step
+    script saved and loaded back identical. The first try was not: a line
+    break in the text split the line, which is how the escaping above came
+    about.
+  - selecting slot 4 finished step 1 (DONE shown) and step 2 began: its
+    bubble at its place with the ring, two lines of text;
+  - the bar drew at the top.
+
+  - level 4 with the box in its bubble: switching the level off saved
+    `hintsOff level4.txt` and the bubble went. Hovering could not be tested
+    offscreen: GLFW only moves the cursor in a focused window.
+
+  Not yet played with real input. Skipping, clicking the box and the
+  editor panel have not been driven by hand.
+
+**Still open**
+- A world hint's bubble can sit over the HUD (the haul line, the bars). It
+  could steer clear of the HUD's rectangles.
+- Starting something when a step begins (spawning an enemy) is not built.
+  T1 will show whether a tutorial needs it.
 
 **Engine ideas**
 - Most finishing conditions are one read of state that already exists (see

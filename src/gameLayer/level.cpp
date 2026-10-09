@@ -33,6 +33,36 @@ namespace
 		return a;
 	}
 
+	// A hint's text: from one '"' to the next that is not escaped as \".
+	// Nothing else is unescaped, so `\n` stays two characters, as typed,
+	// and hintScript turns it into a line break when it draws. (std::quoted
+	// would read `\n` as `n`.)
+	bool readQuoted(std::istringstream &in, std::string &out)
+	{
+		char c = 0;
+		if (!(in >> c) || c != '"') { return false; }
+		out.clear();
+		while (in.get(c))
+		{
+			if (c == '\\' && in.peek() == '"') { in.get(c); out += '"'; continue; }
+			if (c == '"') { return true; }
+			out += c;
+		}
+		return false; // no closing quote
+	}
+
+	void writeQuoted(std::ostream &out, const std::string &text)
+	{
+		out << '"';
+		for (char c : text)
+		{
+			if (c == '"') { out << "\\\""; }
+			else if (c == '\n') { out << "\\n"; } // a real line break would end the line
+			else { out << c; }
+		}
+		out << '"';
+	}
+
 	// One line, already stripped of its comment. False if it does not parse.
 	bool parseLine(std::istringstream &in, const std::string &word, Level &out)
 	{
@@ -198,6 +228,35 @@ namespace
 			out.lanes.back().points.push_back(at);
 			return true;
 		}
+		if (word == "hint")
+		{
+			HintStep h;
+			if (!readQuoted(in, h.text)) { return false; }
+			std::string w;
+			while (in >> w)
+			{
+				if (w == "at")
+				{
+					if (!(in >> h.at.x >> h.at.y)) { return false; }
+					h.where = HintStep::Where::World;
+				}
+				else if (w == "ring") { if (!(in >> h.ring)) { return false; } }
+				else if (w == "hud")
+				{
+					if (!(in >> h.hud)) { return false; }
+					h.where = HintStep::Where::Hud;
+				}
+				else if (w == "until")
+				{
+					if (!(in >> h.until)) { return false; }
+					std::string a;
+					while (in >> a) { h.args.push_back(a); }
+				}
+				else { return false; }
+			}
+			out.hints.push_back(h);
+			return true;
+		}
 		if (word == "scenery")
 		{
 			Scenery s;
@@ -326,6 +385,24 @@ bool save(const char *path, const Level &level)
 	{
 		file << "\nlane " << l.width << " " << l.speed << "\n";
 		for (const glm::vec2 &p : l.points) { file << "point " << p.x << " " << p.y << "\n"; }
+	}
+	if (!level.hints.empty()) { file << "\n"; }
+	for (const HintStep &h : level.hints)
+	{
+		file << "hint ";
+		writeQuoted(file, h.text);
+		if (h.where == HintStep::Where::World)
+		{
+			file << " at " << h.at.x << " " << h.at.y;
+			if (h.ring > 0.f) { file << " ring " << h.ring; }
+		}
+		if (h.where == HintStep::Where::Hud) { file << " hud " << h.hud; }
+		if (!h.until.empty())
+		{
+			file << " until " << h.until;
+			for (const std::string &a : h.args) { file << " " << a; }
+		}
+		file << "\n";
 	}
 	return (bool)file;
 }

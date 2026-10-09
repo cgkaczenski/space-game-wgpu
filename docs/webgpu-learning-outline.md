@@ -1643,6 +1643,34 @@ comes from the order things are drawn in, not from a new primitive.
 `src/render/callout.cpp` · `hud::highlight` / `elementRect` /
 `drawHighlights` · `src/gameLayer/hints.cpp`
 
+### H2. A script of steps — *built*
+
+**Concepts:** A tutorial is a sequence with conditions. Split it into the
+part that sequences, the part that reads the game, and the part on disk.
+
+- **The sequence knows nothing.** `engine/sequence` is told each frame
+  whether the step's condition holds and whether it was skipped, and says
+  what happened. One event per frame, and Entered always comes first, so a
+  step that measures from its start ("kills since") takes its baseline on
+  the right frame, even when its condition already holds.
+- **Linger, but not on a skip.** A finished step stays up a moment, marked
+  DONE, so it is seen to go. A skipped one goes at once: the player asked.
+- **Conditions as words.** The level keeps `until hold 0.5` as words, and
+  only `hintScript` knows what they mean. The file round-trips exactly, the
+  editor edits it as text, and a word from a newer build waits for a skip
+  instead of breaking the level.
+- **Escaping is a decision.** `std::quoted` unescapes every backslash, so a
+  hand-typed `\n` would have come back as `n`. Escaping only `"` keeps the
+  file as it is typed. A round-trip test found it, in its first run.
+- **Input order inside a frame.** The script runs before the trigger is
+  read, so a click on its box can claim the button. The same idea as the
+  menu's "a choice lands next frame", applied in the other direction.
+
+**Code:** `include/engine/sequence.h` / `src/engine/sequence.cpp` ·
+`HintStep`, `readQuoted` / `writeQuoted` in `src/gameLayer/level.cpp` ·
+`src/gameLayer/hintScript.cpp` · `hintsPanel` in
+`src/gameLayer/levelEditor.cpp`
+
 ---
 
 ## What comes next

@@ -187,6 +187,13 @@ Choice update(wgpu2d::Renderer2D &renderer, int w, int h, bool takeInput)
 		changed |= m.slider("VOLUME", set.volume, 0.f, 1.f, 0.1f);
 		changed |= m.slider("CRT", set.crt, 0.f, 1.f, 0.1f);
 		changed |= m.toggle("FULLSCREEN", set.fullscreen);
+		// Switched back on, every level's hints come back, including those
+		// switched off from a hint's own box.
+		if (m.toggle("HINTS", set.hints))
+		{
+			changed = true;
+			if (set.hints) { set.hintsOff.clear(); }
+		}
 		if (m.button("CONTROLS")) { page = Page::Controls; controlsMenu.selected = 0; }
 		m.space(0.5f);
 		if (m.button("BACK") || m.backPressed()) { page = Page::Main; }

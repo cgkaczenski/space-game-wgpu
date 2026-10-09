@@ -40,6 +40,17 @@
 //   scenery Planet1 -6000 9000 2700 0                art x y size depth
 //   jump -60000 20000 40000 -50000          x y x y: a pair of jump gates (sight
 //                                           roadmap W5): into one, out of the other
+//   hint "PRESS {weapon4} FOR THE BEAM" hud weapon4 until selected 4
+//                                           a step of the level's hint script
+//                                           (hints roadmap H2), in order: its
+//                                           text in quotes ({action} becomes
+//                                           that action's keys); where it
+//                                           points -- `at x y` (optionally
+//                                           `ring r`), `hud element`, or
+//                                           nothing for the top of the screen;
+//                                           and `until` what finishes it --
+//                                           see hintScript.h. No `#` in the
+//                                           text: it starts a comment.
 //   lane 1300 2.5                           width speed: a high-speed lane (sight
 //   point -15000 0                          roadmap W4), then its points in order,
 //   point -9000 -1500                       as stamps follow a field. Speed is a
@@ -114,6 +125,21 @@ namespace level
 		uint32_t seed = 1;
 	};
 
+	// One step of the level's hint script (hints roadmap H2). Kept as words,
+	// as written: hintScript reads the condition, the editor edits it, and
+	// the file round-trips exactly.
+	struct HintStep
+	{
+		std::string text;          // markup as written: {action} placeholders, `\n` for a line break
+		enum class Where { Screen, World, Hud };
+		Where where = Where::Screen;
+		glm::vec2 at = {};         // World
+		float ring = 0.f;          // World: a ring this wide round `at`, 0 for none
+		std::string hud;           // Hud: the element's name, e.g. weapon4
+		std::string until;         // the condition's word; empty: only a skip ends it
+		std::vector<std::string> args;
+	};
+
 	// An asteroid field (A1b): an area painted with a brush, and rocks
 	// scattered through it from a seed. The area is the brush's stamps, in
 	// order -- a point is in the field if the last stamp covering it painted
@@ -180,6 +206,7 @@ namespace level
 		std::vector<Scenery> scenery;
 		std::vector<Lane> lanes;
 		std::vector<JumpPair> jumps;
+		std::vector<HintStep> hints;
 	};
 
 	// Reads `path` into `out`. False only if the file cannot be opened; a line

@@ -45,6 +45,7 @@ namespace controls
 		Mode,         // fight or flight
 		Scope,
 		Map,
+		SkipHint,     // hints roadmap H2: on to the next step
 
 		Zoom,         // wheel: steps
 		ZoomIn,       // held
@@ -84,6 +85,8 @@ namespace controls
 	bool rebindable(Action action);
 
 	const char *label(Action action);  // "Weapon 1"
+	// The action a settings or level file names ("weapon4"), or Count.
+	Action fromId(const std::string &id);
 	actions::Binding binding(Action action, int slot);
 	std::string slotName(Action action, int slot);  // "" when unbound
 

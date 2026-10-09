@@ -3,6 +3,7 @@
 
 #include "imgui.h"
 #include <engine/actions.h>
+#include <cctype>
 #include <cstdlib>
 #include <ostream>
 #include <sstream>
@@ -21,7 +22,7 @@ namespace
 	const char *const ids[(int)Action::Count] = {
 		"forward", "back", "left", "right", "brake",
 		"fire", "weapon1", "weapon2", "weapon3", "weapon4", "cycleWeapon",
-		"ram", "cloak", "mode", "scope", "map",
+		"ram", "cloak", "mode", "scope", "map", "skipHint",
 		"zoom", "zoomIn", "zoomOut",
 		"pause",
 		"menuUp", "menuDown", "menuLeft", "menuRight", "menuConfirm", "menuBack",
@@ -68,6 +69,7 @@ namespace
 		bind(t, Action::Mode, "Fight / flight", {key(B::Tab)});
 		bind(t, Action::Scope, "Scope", {key(B::V)});
 		bind(t, Action::Map, "Map", {key(B::M)});
+		bind(t, Action::SkipHint, "Skip hint", {key(B::Enter)});
 
 		// Vertical, or horizontal for a wheel that reports it that way.
 		bind(t, Action::Zoom, "Zoom", {wheel(0, B::LeftCtrl), wheel(1, B::LeftCtrl)});
@@ -183,6 +185,19 @@ bool rebindable(Action a)
 }
 
 const char *label(Action a) { return table.actions[(int)a].name; }
+
+Action fromId(const std::string &id)
+{
+	for (int i = 0; i < (int)Action::Count; i++)
+	{
+		// Either case: a level file writes {Weapon4} as readily as {weapon4}.
+		const char *a = ids[i];
+		size_t k = 0;
+		while (a[k] && k < id.size() && std::tolower((unsigned char)a[k]) == std::tolower((unsigned char)id[k])) { k++; }
+		if (!a[k] && k == id.size()) { return (Action)i; }
+	}
+	return Action::Count;
+}
 
 Binding binding(Action a, int slot)
 {

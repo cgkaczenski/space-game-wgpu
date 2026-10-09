@@ -282,3 +282,20 @@ erase -14625 1312 650
 erase -14750 875 650
 erase -14875 438 650
 erase -15000 0 650
+
+# The hint script (hints roadmap H2): one step at a time, in order. {action}
+# shows that action's keys as bound now; \n breaks a line. Enter skips a step.
+# The beam only mines in flight mode, so Tab comes before mining.
+hint "PRESS {weapon4} OR {cycleWeapon}\nFOR THE BEAM" hud weapon4 until selected 4
+hint "THE BEAM ONLY MINES IN FLIGHT MODE\nPRESS {mode} FOR FLIGHT" hud mode until mode flight
+hint "HOLD {fire} ON A ROCK TO MINE IT\nTHE ORE FLIES TO YOU" hud haul until hold 0.5
+hint "FLIGHT IS FAST, BUT HAS NO SHIELD\nPRESS {mode} FOR FIGHT BEFORE A FIGHT" hud mode until mode fight
+hint "FLY WITH {forward} {left} {back} {right}\nHOLD {brake} TO BRAKE. HEAD FOR THE GAP" at -12375 -1350 ring 650 until near -12375 -1350 900
+hint "HOLD {map} FOR THE WHOLE MAP" until pressed map
+hint "THE CIRCLE IS CLOSING ON THIS WAY\nGET INSIDE BEFORE IT DOES, OR BURN" at 6000 1000 until near 6000 1000 13000
+hint "AN ENEMY. {cloak} CLOAKS YOU:\nUNSEEN, BUT YOU DRIFT" at -1800 -1300 ring 800 until cloaked
+hint "{weapon1} {weapon2} {weapon3} {weapon4} PICK A WEAPON\nHOLD {fire} TO SHOOT. KILL ONE" hud weapon1 until kills 1
+hint "HOLD {ram} TO AIM THE RAM\nLET GO TO STRIKE" hud ram until pressed ram
+hint "HOLD {scope} TO SEE FAR AHEAD" until pressed scope
+hint "THE GATE OPENS ON THE LAST RING\nHOVER IN IT TO LEAVE WITH YOUR ORE" at 14500 1500 ring 1500 until near 14500 1500 1500
+hint "BANK YOUR ORE: FLY INTO THE GATE\nWHEN IT GLOWS GOLD" hud haul until seconds 8
