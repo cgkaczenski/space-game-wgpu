@@ -21,6 +21,7 @@
 #include <hints.h>
 #include <hintScript.h>
 #include <inventory.h>
+#include <loadoutMenu.h>
 #include <menu.h>
 #include <playerSettings.h>
 #include <shipThruster.h>
@@ -510,6 +511,8 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 		if (feature.reset) { feature.reset(); }
 	}
 
+	loadoutMenu::close(); // a new round starts flying
+
 	// The round's weapons (I1): taken out of the stash, built into the
 	// loadout, and ready -- a round does not start on a swap's cooldown.
 	inventory::roundStart();
@@ -811,7 +814,7 @@ void debugPanelUi()
 	debugPanel::section("Jump gates", jumpGates::debugUi);
 	debugPanel::section("Map", explorationMap::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons, playerKinds); });
-	debugPanel::section("Inventory", inventory::debugUi);
+	debugPanel::section("Inventory", [] { inventory::debugUi(); ImGui::SeparatorText("Loadout menu"); loadoutMenu::debugUi(); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Damage numbers", damageNumbers::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -956,7 +959,21 @@ bool gameLogic(float deltaTime)
 	// The menu is the pause (U2): open while paused, and it owns Escape then.
 	const bool menuWasOpen = gameState::paused();
 	{
-		const bool escape = !menuWasOpen && controls::pressed(controls::Action::Pause);
+		bool escape = !menuWasOpen && controls::pressed(controls::Action::Pause);
+		// The loadout menu (I2) first: I opens and closes it, and an Escape
+		// that closes it does not also pause the game.
+		{
+			loadoutMenu::Frame lf;
+			lf.width = w;
+			lf.height = h;
+			lf.live = gameState::controlsLive();
+			lf.paused = gameState::paused();
+			lf.ship = session.ship.position;
+			lf.facing = session.ship.facing;
+			bool taken = false;
+			loadoutMenu::update(lf, escape, taken);
+			if (taken) { escape = false; }
+		}
 		if (gameState::update(deltaTime, {escape, platform::isFocused()}))
 		{
 			restartGame();
@@ -985,6 +1002,10 @@ bool gameLogic(float deltaTime)
 			std::max({gameState::warpBlur(), laneLook::flash(), jumpGates::warpBlur()}));
 	}
 	const bool controls = gameState::controlsLive();
+	// The player's own hands on the ship: not while the loadout menu is open
+	// (I2), where the ship coasts. `controls` still says the round is being
+	// played, which the burn, the gates and death go by.
+	const bool piloting = controls && !loadoutMenu::isOpen();
 
 	// Before anything is drawn: setting this is what routes the frame through
 	// a target, and the target has to exist before the first quad lands.
@@ -1019,7 +1040,7 @@ bool gameLogic(float deltaTime)
 	// The long-range scope (sight roadmap S4b): hold V, in control and not
 	// rammed. While it is held the view leans off the ship, so the aim is
 	// measured from where the ship is on screen, not from the screen's centre.
-	scope::update(controls && session.stunned <= 0.f
+	scope::update(piloting && session.stunned <= 0.f
 		&& controls::held(controls::Action::Scope), (mousePos - screenCenter) / screenCenter, time.real);
 	if (scope::held())
 	{
@@ -1045,13 +1066,13 @@ bool gameLogic(float deltaTime)
 	// no flying, firing, ramming or cloaking until the stun runs out.
 	const bool stunnedNow = session.stunned > 0.f;
 	session.effectImmune = std::max(0.f, session.effectImmune - time.game);
-	if (controls && !stunnedNow && controls::pressed(controls::Action::Cloak) && !ram::barrierUp(session.ram))
+	if (piloting && !stunnedNow && controls::pressed(controls::Action::Cloak) && !ram::barrierUp(session.ram))
 	{
 		energy::cloak(session.energy);
 	}
 	// Tab: fight or flight (M1). Into flight the shield drops; into fight the
 	// bar starts empty, so the shield comes back only once it has refilled.
-	if (controls && !stunnedNow
+	if (piloting && !stunnedNow
 		&& controls::pressed(controls::Action::Mode))
 	{
 		shipMode::toggle(session.mode, session.energy);
@@ -1073,8 +1094,8 @@ bool gameLogic(float deltaTime)
 	// scoped, the aim is dropped.
 	// Out of control -- paused, dying, leaving -- a wind-up keeps the heading
 	// it had rather than following the mouse.
-	ram::update(session.ram, time.game, controls ? mouseDirection : ram::direction(session.ram));
-	const bool canAimRam = controls && !stunnedNow && !scope::held(); // no ramming while scoped (S4b)
+	ram::update(session.ram, time.game, piloting ? mouseDirection : ram::direction(session.ram));
+	const bool canAimRam = piloting && !stunnedNow && !scope::held(); // no ramming while scoped (S4b)
 	if (!canAimRam) { session.aimingRam = false; }
 	else if (controls::pressed(controls::Action::Ram)) { session.aimingRam = true; }
 	if (session.aimingRam && !controls::held(controls::Action::Ram))
@@ -1103,6 +1124,14 @@ bool gameLogic(float deltaTime)
 	{
 		// Paused, the hull holds still -- playerMove would snap it to the
 		// mouse even with no time passing. Dying, it is not drawn.
+	}
+	else if (!piloting)
+	{
+		// The loadout menu is open (I2): the ship coasts on what it had, no
+		// thrust and no falloff -- the cloak's drift -- and keeps its heading.
+		session.ship.thrust = {};
+		movement::integrate(session.ship.position, session.ship.velocity, {},
+			movement::momentum(0.f, 0.f), time.game);
 	}
 	else if (session.stunned > 0.f)
 	{
@@ -1398,7 +1427,7 @@ bool gameLogic(float deltaTime)
 	// Only while playing: paused, the selection holds like everything else.
 	// The equipped weapons, as the inventory has them and the kinds are tuned.
 	inventory::applyTo(playerWeapons, playerKinds);
-	if (controls) { weapons::handleInput(playerWeapons); }
+	if (piloting) { weapons::handleInput(playerWeapons); }
 
 	// Held, not clicked: the selected weapon fires whenever it is ready.
 	// Clicks on the debug panel are the panel's.
@@ -1421,7 +1450,7 @@ bool gameLogic(float deltaTime)
 		if (hintScript::update(hc, w, h)) { triggerHeldOver = true; }
 	}
 	if (triggerHeldOver && !controls::held(controls::Action::Fire)) { triggerHeldOver = false; }
-	const bool trigger = controls && !stunnedNow && !scope::held() && !jumpGates::shielded()
+	const bool trigger = piloting && !loadoutMenu::claimsMouse() && !stunnedNow && !scope::held() && !jumpGates::shielded()
 		&& controls::held(controls::Action::Fire) && !triggerHeldOver;
 	// What the player can see from where the ship now is (sight roadmap S2):
 	// rebuilt once a frame, before anything asks -- a missile's lock first.
@@ -2419,7 +2448,9 @@ bool gameLogic(float deltaTime)
 	// And what the player has never seen, black (W6's explored map).
 	worldGrade::Explored explored;
 	const bool haveExplored = fogged && explorationMap::exploredMask(explored.texture, explored.worldRect);
-	worldGrade::apply(renderer, gameState::pauseLook(), arena::radius() > 0.f ? &safe : nullptr, w, h,
+	// Paused, the full grade; the loadout menu open (I2), a lighter one.
+	worldGrade::apply(renderer, std::max(gameState::pauseLook(), loadoutMenu::look()),
+		arena::radius() > 0.f ? &safe : nullptr, w, h,
 		fogged ? &sight::playerDrawnMap() : nullptr, fogged ? &lit : nullptr, haveExplored ? &explored : nullptr);
 
 	// Burn ticks flash hulls red, drawn over the grade so the red survives it.
@@ -2563,6 +2594,10 @@ bool gameLogic(float deltaTime)
 		const bool full = controls::held(controls::Action::Map);
 		explorationMap::draw(renderer, w, h, marks, full);
 	}
+
+	// The loadout menu (I2), over the HUD and the map, under hints and the
+	// pause menu.
+	loadoutMenu::draw(renderer, w, h);
 
 	// Hints over the HUD and the map, unshaken; under the menu.
 	hints::draw(renderer, hintView, w, h);

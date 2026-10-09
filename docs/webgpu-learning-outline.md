@@ -1696,6 +1696,33 @@ question it is asked is a loop over a shape's squares.
 **Code:** `include/engine/hold.h` / `src/engine/hold.cpp` ·
 `src/gameLayer/inventory.cpp` · `weapons::refit` and `Weapon::empty`
 
+### I2. Dragging between containers — *built*
+
+**Concepts:** Drag and drop is a small state machine over two kinds of
+place: the slots and the grid. Most of the work is making a move all or
+nothing.
+
+- **Pick up, carry, resolve.** A press over a piece starts a drag, which
+  remembers where it came from and how it is turned. While the button is
+  held, nothing is moved, only drawn. The release decides: hold, slot,
+  panel or outside. The model changes once, on the release.
+- **Hold it by its middle.** The square nearest the shape's centroid is
+  kept under the pointer, and stays so when a turn changes the shape. The
+  target is that square's cell minus its offset in the shape.
+- **All or nothing.** A move into a slot first takes the dragged weapon out,
+  then tries to put the slot's weapon where it was. If that fails, the first
+  is put back exactly and the move is refused. Nothing is left half-done.
+- **Two flags, not one.** "The round is being played" and "the player has
+  their hands on the ship" were one flag until the menu. Splitting them
+  kept the burn, the gates and death running while the inputs stopped.
+- **Thrown-out ore has a memory.** An orb dropped from the hold waits until
+  the ship has been out of its reach once. Without that, the room just
+  freed pulls it straight back.
+
+**Code:** `src/gameLayer/loadoutMenu.cpp` · the moves in
+`src/gameLayer/inventory.cpp` · `wgpu2d::GridView` in `src/render/menu.cpp` ·
+`piloting` in `src/gameLayer/gameLayer.cpp`
+
 ---
 
 ## What comes next

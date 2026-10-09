@@ -84,5 +84,38 @@ namespace inventory
 	const hold::Grid &holdGrid();
 	hold::Shape shapeOf(int kind);
 
+	// ---- Moving things (I2) -------------------------------------------------
+	//
+	// Every move either happens whole or not at all: a refused move changes
+	// nothing. A weapon moved into a slot starts on its cooldown (the asked
+	// swap cost), and the slots as they now are become what the next round
+	// equips.
+
+	// What is in the hold under a piece's id.
+	struct Held
+	{
+		bool isOre = false;
+		Item item;       // a weapon
+		int ore = 0;     // a stack's orbs
+	};
+	bool heldAt(int id, Held &out);
+	bool equippedAt(int slot, Item &out);   // false: the slot is empty
+
+	// Within the hold: to `at`, turned `turns` from the piece's own shape.
+	bool moveInHold(int id, int turns, glm::ivec2 at);
+	// A weapon from the hold into a slot. What was in the slot goes to the
+	// hold, where the moved weapon was if it fits there, else wherever it
+	// fits; with nowhere for it, the move is refused.
+	bool holdToSlot(int id, int slot);
+	// A slot's weapon into the hold, at `at`, turned `turns`.
+	bool slotToHold(int slot, int turns, glm::ivec2 at);
+	// Two slots trade weapons (an empty one too).
+	bool swapSlots(int a, int b);
+
+	// Thrown out: gone from the hold or the slot. Returns what it was, for
+	// the caller to leave in space -- ore as orbs, a weapon as salvage (I3).
+	bool jettisonHeld(int id, Held &out);
+	bool jettisonSlot(int slot, Item &out);
+
 	void debugUi();
 }

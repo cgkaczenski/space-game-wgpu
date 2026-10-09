@@ -46,6 +46,7 @@ namespace controls
 		Scope,
 		Map,
 		SkipHint,     // hints roadmap H2: on to the next step
+		Loadout,      // inventory roadmap I2: the live loadout menu
 
 		Zoom,         // wheel: steps
 		ZoomIn,       // held
@@ -61,6 +62,7 @@ namespace controls
 		MenuRight,
 		MenuConfirm,
 		MenuBack,
+		MenuRotate,   // turns a piece being dragged (I2)
 
 		Count
 	};

@@ -679,6 +679,36 @@ namespace wgpu2d
 	void renderMarkup(Renderer2D &renderer, glm::vec2 position, const char *markup,
 		const CalloutStyle &style, glm::vec2 anchor = {0, 0});
 
+	// ---- A grid of squares on screen (inventory roadmap I2) ---------------
+	//
+	// Where each square of a grid laid on screen is, which square a point is
+	// in, and the squares drawn. What is in them is the caller's: an
+	// inventory, a board, a level-select map. Pixels in the current camera.
+	struct GridView
+	{
+		glm::vec2 topLeft = {};
+		float cell = 32.f;        // a square's side
+		float gap = 2.f;          // between squares
+		int columns = 1;
+		int rows = 1;
+
+		glm::vec4 bounds() const;               // the whole grid: x, y, width, height
+		glm::vec4 square(glm::ivec2 c) const;   // one square
+		// The square `p` is over; false outside the grid or in a gap's middle.
+		bool squareAt(glm::vec2 p, glm::ivec2 &out) const;
+		// The square `p` is nearest, clamped into the grid: for dropping a
+		// piece by its middle, which may be over a gap.
+		glm::ivec2 nearestSquare(glm::vec2 p) const;
+
+		// Every square, `fill` with a `line` round it.
+		void draw(Renderer2D &renderer, Color4f fill, Color4f line, float lineWidth) const;
+		// Squares `cells` (offsets) from `at`, filled, the gaps between
+		// neighbours filled too, so a piece reads as one shape. Squares
+		// outside the grid are drawn where they would be.
+		void fillCells(Renderer2D &renderer, const glm::ivec2 *cells, size_t count, glm::ivec2 at,
+			Color4f colour) const;
+	};
+
 	// ---- Menus (gameplay roadmap U2) --------------------------------------
 	//
 	// An immediate-mode menu, the way ImGui is one: each frame the caller

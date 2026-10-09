@@ -232,4 +232,66 @@ void Menu::end()
 	renderer = nullptr;
 }
 
+// ---- GridView (inventory roadmap I2) -------------------------------------
+
+glm::vec4 GridView::bounds() const
+{
+	return {topLeft.x, topLeft.y, columns * cell + (columns - 1) * gap, rows * cell + (rows - 1) * gap};
+}
+
+glm::vec4 GridView::square(glm::ivec2 c) const
+{
+	return {topLeft.x + c.x * (cell + gap), topLeft.y + c.y * (cell + gap), cell, cell};
+}
+
+bool GridView::squareAt(glm::vec2 p, glm::ivec2 &out) const
+{
+	const glm::vec2 local = p - topLeft;
+	if (local.x < 0.f || local.y < 0.f) { return false; }
+	const glm::ivec2 c = {(int)(local.x / (cell + gap)), (int)(local.y / (cell + gap))};
+	if (c.x >= columns || c.y >= rows) { return false; }
+	out = c;
+	return true;
+}
+
+glm::ivec2 GridView::nearestSquare(glm::vec2 p) const
+{
+	const glm::vec2 local = (p - topLeft) / (cell + gap);
+	return {std::clamp((int)std::floor(local.x), 0, columns - 1), std::clamp((int)std::floor(local.y), 0, rows - 1)};
+}
+
+void GridView::draw(Renderer2D &r, Color4f fill, Color4f line, float lineWidth) const
+{
+	for (int y = 0; y < rows; y++)
+	{
+		for (int x = 0; x < columns; x++)
+		{
+			const glm::vec4 s = square({x, y});
+			r.renderRectangle({s.x - lineWidth, s.y - lineWidth, s.z + 2.f * lineWidth, s.w + 2.f * lineWidth}, line);
+			r.renderRectangle(s, fill);
+		}
+	}
+}
+
+void GridView::fillCells(Renderer2D &r, const glm::ivec2 *cells, size_t count, glm::ivec2 at, Color4f colour) const
+{
+	auto has = [&](glm::ivec2 c)
+	{
+		for (size_t i = 0; i < count; i++) { if (cells[i] == c) { return true; } }
+		return false;
+	};
+	for (size_t i = 0; i < count; i++)
+	{
+		const glm::vec4 s = square(at + cells[i]);
+		r.renderRectangle(s, colour);
+		// Bridge the gap to a neighbour right and below, and the corner when
+		// all four meet, so a piece is one shape rather than tiles.
+		const bool right = has(cells[i] + glm::ivec2(1, 0));
+		const bool below = has(cells[i] + glm::ivec2(0, 1));
+		if (right) { r.renderRectangle({s.x + s.z, s.y, gap, s.w}, colour); }
+		if (below) { r.renderRectangle({s.x, s.y + s.w, s.z, gap}, colour); }
+		if (right && below && has(cells[i] + glm::ivec2(1, 1))) { r.renderRectangle({s.x + s.z, s.y + s.w, gap, gap}, colour); }
+	}
+}
+
 }

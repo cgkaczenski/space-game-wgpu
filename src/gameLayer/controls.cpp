@@ -22,10 +22,10 @@ namespace
 	const char *const ids[(int)Action::Count] = {
 		"forward", "back", "left", "right", "brake",
 		"fire", "weapon1", "weapon2", "weapon3", "weapon4", "cycleWeapon",
-		"ram", "cloak", "mode", "scope", "map", "skipHint",
+		"ram", "cloak", "mode", "scope", "map", "skipHint", "loadout",
 		"zoom", "zoomIn", "zoomOut",
 		"pause",
-		"menuUp", "menuDown", "menuLeft", "menuRight", "menuConfirm", "menuBack",
+		"menuUp", "menuDown", "menuLeft", "menuRight", "menuConfirm", "menuBack", "menuRotate",
 	};
 
 	Binding key(int code) { return {Device::Key, code, -1}; }
@@ -70,6 +70,7 @@ namespace
 		bind(t, Action::Scope, "Scope", {key(B::V)});
 		bind(t, Action::Map, "Map", {key(B::M)});
 		bind(t, Action::SkipHint, "Skip hint", {key(B::Enter)});
+		bind(t, Action::Loadout, "Loadout", {key(B::I)});
 
 		// Vertical, or horizontal for a wheel that reports it that way.
 		bind(t, Action::Zoom, "Zoom", {wheel(0, B::LeftCtrl), wheel(1, B::LeftCtrl)});
@@ -84,6 +85,7 @@ namespace
 		bind(t, Action::MenuRight, "Menu right", {key(B::Right), key(B::D)});
 		bind(t, Action::MenuConfirm, "Menu confirm", {key(B::Enter), key(B::Space)});
 		bind(t, Action::MenuBack, "Menu back", {key(B::Escape)});
+		bind(t, Action::MenuRotate, "Menu rotate", {key(B::R), mouse(1)});
 
 		// Every rebindable action has both slots, the second empty if it has
 		// no second default, so the menu has a cell to put one in.
@@ -177,6 +179,7 @@ bool rebindable(Action a)
 	case Action::MenuRight:
 	case Action::MenuConfirm:
 	case Action::MenuBack:
+	case Action::MenuRotate:
 	case Action::Count:
 		return false;
 	default:

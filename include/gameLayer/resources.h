@@ -52,6 +52,12 @@ namespace resources
 	// An orb of ore worth `value`, thrown from `at` along `direction` (unit).
 	void emitOrb(glm::vec2 at, glm::vec2 direction, float value);
 
+	// Ore thrown out of the hold (inventory roadmap I2): `units` orbs' worth,
+	// thrown from `at` along `direction`. They do not come back until the
+	// ship has been out of their reach once -- or they would turn round at
+	// once, there being room for them again.
+	void jettison(glm::vec2 at, glm::vec2 direction, int units);
+
 	// A dead enemy's fragments, and a dead player's hold.
 	void enemyDropped(glm::vec2 position);
 	void playerDropped(glm::vec2 position);

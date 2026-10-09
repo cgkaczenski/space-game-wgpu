@@ -26,6 +26,7 @@ namespace
 
 	std::vector<Item> stash;
 	Slot equipped[weapons::slotCount];
+	bool swappedIn[weapons::slotCount] = {};   // put in this frame: applyTo starts its cooldown
 	Slot lastLoadout[weapons::slotCount];   // what the next round equips (until I4)
 
 	const int holdWidth = 5;
@@ -256,6 +257,116 @@ int takeOre()
 	return n;
 }
 
+namespace
+{
+	// The slots as they now are are what the next round equips.
+	void remember()
+	{
+		for (int i = 0; i < weapons::slotCount; i++) { lastLoadout[i] = equipped[i]; }
+	}
+
+	bool validSlot(int s) { return s >= 0 && s < weapons::slotCount; }
+
+	// A weapon into the hold at a place, or anywhere: false if neither.
+	bool stowAt(const Item &it, int turns, glm::ivec2 at, bool anywhere)
+	{
+		const hold::Shape shape = shapeOf(it.kind);
+		int id = nextId;
+		if (!hold::place(grid, id, shape, turns, at))
+		{
+			if (!anywhere || !hold::findSpot(grid, shape, at, turns)) { return false; }
+			hold::place(grid, id, shape, turns, at);
+		}
+		nextId++;
+		Content c;
+		c.item = it;
+		contents.push_back({id, c});
+		return true;
+	}
+}
+
+bool heldAt(int id, Held &out)
+{
+	const Content *c = contentOf(id);
+	if (!c) { return false; }
+	out = {c->isOre, c->item, c->ore};
+	return true;
+}
+
+bool equippedAt(int slot, Item &out)
+{
+	if (!validSlot(slot) || !equipped[slot].filled) { return false; }
+	out = equipped[slot].item;
+	return true;
+}
+
+bool moveInHold(int id, int turns, glm::ivec2 at)
+{
+	const Content *c = contentOf(id);
+	if (!c) { return false; }
+	hold::Shape shape;
+	if (c->isOre) { shape.cells = {{0, 0}}; }
+	else { shape = shapeOf(c->item.kind); }
+	return hold::place(grid, id, shape, turns, at);
+}
+
+bool holdToSlot(int id, int slot)
+{
+	Content *c = contentOf(id);
+	const hold::Piece *piece = hold::find(grid, id);
+	if (!c || c->isOre || !piece || !validSlot(slot)) { return false; }
+	const Item moving = c->item;
+	const glm::ivec2 wasAt = piece->at;
+	const int wasTurns = piece->turns;
+
+	// Out of the hold first, so the slot's weapon can take its place.
+	forget(id);
+	if (equipped[slot].filled && !stowAt(equipped[slot].item, wasTurns, wasAt, true))
+	{
+		// Nowhere for it: put the moved weapon back as it was, and refuse.
+		stowAt(moving, wasTurns, wasAt, true);
+		return false;
+	}
+	equipped[slot] = {true, moving};
+	swappedIn[slot] = true;
+	remember();
+	return true;
+}
+
+bool slotToHold(int slot, int turns, glm::ivec2 at)
+{
+	if (!validSlot(slot) || !equipped[slot].filled) { return false; }
+	if (!stowAt(equipped[slot].item, turns, at, false)) { return false; }
+	equipped[slot] = {};
+	remember();
+	return true;
+}
+
+bool swapSlots(int a, int b)
+{
+	if (!validSlot(a) || !validSlot(b) || a == b) { return false; }
+	std::swap(equipped[a], equipped[b]);
+	swappedIn[a] = equipped[a].filled;
+	swappedIn[b] = equipped[b].filled;
+	remember();
+	return true;
+}
+
+bool jettisonHeld(int id, Held &out)
+{
+	if (!heldAt(id, out)) { return false; }
+	forget(id);
+	return true;
+}
+
+bool jettisonSlot(int slot, Item &out)
+{
+	if (!equippedAt(slot, out)) { return false; }
+	equipped[slot] = {};
+	remember();
+	return true;
+}
+
 void applyTo(weapons::Loadout &loadout, const weapons::Weapon *tuned)
 {
 	for (int i = 0; i < weapons::slotCount; i++)
@@ -275,6 +386,10 @@ void applyTo(weapons::Loadout &loadout, const weapons::Weapon *tuned)
 			w.empty = true;
 		}
 		weapons::refit(loadout, i, w);
+		// Put in by hand: on its cooldown, even if it is the same kind as
+		// what it replaced -- a swap always costs one.
+		if (swappedIn[i] && !w.empty) { loadout.cooldownLeft[i] = w.cooldown; }
+		swappedIn[i] = false;
 	}
 }
 

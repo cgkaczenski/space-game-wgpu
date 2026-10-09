@@ -33,6 +33,7 @@ namespace
 		int units = 1;          // what it is in the hold (I1)
 		float pauseLeft = 0.f;  // thrown clear, motor off
 		bool homing = false;
+		bool dumped = false;    // thrown out: waits until the ship has left it once
 		float chase = 0.f;      // seconds of chase, for the turn's growth
 		float phase = 0.f;      // its own, so a cloud does not pulse as one
 	};
@@ -142,12 +143,15 @@ void update(float dt, glm::vec2 playerPos, bool playerPresent)
 		const float distance = playerPresent ? glm::distance(o.position, playerPos) : 1e30f;
 		const bool room = inventory::oreRoom() > 0;
 
+		// Thrown out of the hold: it waits for the ship to leave it first.
+		if (o.dumped && distance > orbWakeRadius) { o.dumped = false; }
+
 		if (!o.homing)
 		{
 			// It waits exactly where it stopped. Nothing reaches out for it;
 			// the ship has to come -- with room in the hold (I1).
 			o.velocity = {};
-			if (distance <= orbWakeRadius && room) { o.homing = true; }
+			if (distance <= orbWakeRadius && room && !o.dumped) { o.homing = true; }
 			continue;
 		}
 
@@ -212,6 +216,20 @@ void playerDropped(glm::vec2 position)
 	{
 		const float angle = randomBetween(0.f, 6.2831853f);
 		emit(position, {std::cos(angle), std::sin(angle)}, std::min(spillUnits, left) * orePerUnit);
+	}
+}
+
+void jettison(glm::vec2 at, glm::vec2 direction, int units)
+{
+	const int perOrb = unitsOf(spillOrbValue);
+	for (int left = units; left > 0; left -= perOrb)
+	{
+		// Fanned a little about the throw, so a stack does not land as one dot.
+		const float turn = randomBetween(-0.5f, 0.5f);
+		const glm::vec2 d = {direction.x * std::cos(turn) - direction.y * std::sin(turn),
+			direction.x * std::sin(turn) + direction.y * std::cos(turn)};
+		emit(at, d, std::min(perOrb, left) * orePerUnit);
+		orbs.back().dumped = true;
 	}
 }
 

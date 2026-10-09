@@ -620,38 +620,95 @@ at yet except the debug panel.
   what a player has.
 - Saving, when it is wanted: `safeSave` is linked and keeps backups.
 
-### I2. The live loadout menu — *proposed*
+### I2. The live loadout menu — *built*
 
 **Asked:** it does not pause. Controls are off, the ship coasts, and the
 world runs. Swaps start on cooldown.
 
-**Proposed**
-- A key opens and closes it. 1–4, Tab, M and V are taken, so I is one
-  option.
-- **Two areas:** the 4 equipped slots, drawn as the HUD draws them, and the
-  carried items as a grid of icons. Move an item into a slot by keyboard or
-  by dragging. Whatever was in the slot goes back to carried.
-- An item's name and modifiers are shown as text when it is selected.
-- The menu takes the keyboard and the mouse while open. That is what
-  "controls off" means here: no thrust, no aim, no fire, no mode switch.
-- Closing it, or being hit hard enough, hands control back. _(Whether a hit
-  closes it is a suggestion, to confirm.)_
-- **Lands:** a grid widget in `wgpu2d` beside `Menu`'s list. It is general,
-  because any game's inventory is a grid. The page itself goes in game.
+**Decided**
+- **I opens and closes it** (the Loadout action, rebindable). Escape closes
+  it too, rather than pausing over it.
+- **Mouse drag; R or the right button turns the piece** while dragging. Its
+  icon follows the pointer. Only over the hold does its shape show, where it
+  would go, green where it fits and red where not; it is held by its middle.
+  _(The shape followed the pointer everywhere at first; changed at the
+  author's request.)_
+- **The HUD's weapon row is the same four slots** while the menu is open:
+  drag from it, drop on it, slot to slot, to and from the hold. A slot a
+  weapon was lifted from is covered; one under a drag is framed green, or
+  red for ore.
+- **With the menu closed, the HUD's row can still be rearranged** (asked):
+  drag one slot onto another and they swap (on their cooldowns, as any
+  swap). Let go anywhere else and it goes back; nothing is dropped and
+  there is no hold. A press that starts on a slot does not fire, and the
+  ship flies on meanwhile.
+- **Text:** the line under the grid says `[R] OR [RIGHT CLICK] TO ROTATE`
+  while a weapon is dragged. About to be dropped, `LET GO TO DROP` goes
+  along under the item. _(Was "LET GO TO JETTISON" on that line.)_
+- _(A rotate button on each weapon in the hold was tried and taken out at
+  the author's request: R while dragging is enough.)_ The HUD drag with
+  the menu closed has not been played.
+- **Dropped outside the panel, it is jettisoned** behind the ship. Ore goes
+  as orbs, which wait until the ship has left them once, or they would fly
+  straight back into the room just made. A weapon is gone, until salvage
+  (I3) can leave it in space as a pickup.
+- **A hit does not close it.** The player chose to open it mid-fight.
+- **Defaults taken:** the HUD stays visible, and the world takes a light
+  grey (0.45 of the paused grade, tunable) so it reads as "not flying".
 
-**Open questions**
-- Can items be dropped from the menu (left in space as salvage)?
-- Does the HUD stay visible underneath, so health can be watched while the
-  menu is open?
+**Built**
+- **`gameLayer/loadoutMenu`:** a panel of the four slots and the 5 x 4 hold.
+  - Each weapon is a coloured shape with its bullet's icon; ore stacks are
+    amber squares with their count.
+  - A line under the grid names what the pointer is over, and "LET GO TO
+    JETTISON" outside the panel.
+  - **Drops:**
+    - on the hold: moved there;
+    - on a slot: equipped, and what was there goes to the hold, where the
+      dragged weapon was if it fits, else anywhere, else the move is
+      refused;
+    - slot to slot: swapped;
+    - ore on a slot: refused.
+  - Closes by itself when the round stops being played, and on a restart.
+- **The ship while it is open:** a new `piloting` (live and the menu
+  closed) gates the player's hands: flying, aiming, firing, the ram, the
+  cloak, fight/flight, the scope. `controls` still says the round is being
+  played, which the burn, the gates and death go by. The ship coasts: no
+  thrust, no falloff, the cloak's drift.
+- **Swap cost:** a weapon put in a slot by hand starts on its cooldown even
+  when it is the same kind as what it replaced (`swappedIn`, applied by
+  `applyTo`).
+- **`inventory`:** `heldAt`, `equippedAt`, `moveInHold`, `holdToSlot`,
+  `slotToHold`, `swapSlots`, `jettisonHeld`, `jettisonSlot`. Each happens
+  whole or not at all, and the slots as they then are become what the next
+  round equips.
+- **`resources::jettison`:** orbs marked as thrown out.
+- **`wgpu2d::GridView`:**
+  - which square is where, the square under a point, the nearest square,
+    the grid drawn;
+  - `fillCells` draws a piece's squares with the gaps between neighbours
+    filled, so it reads as one shape.
+- **Controls:** Loadout (I) and Menu rotate (R or the right button) actions.
+- Checked, with temporary scaffolding since removed:
+  - the moves a drop makes, from code:
+    - the missile from the hold into slot 1;
+    - slots 2 and 4 swapped;
+    - the heavy into slot 2 sent the beam back into the hold where the
+      heavy had been;
+    - a move onto an occupied place refused, nothing changed;
+    - a stack of 36 jettisoned;
+  - a capture of the menu open over a stocked hold, the world greyed, and
+    the HUD's slot 2 shaded on its swap's cooldown.
 
-**Engine ideas**
-- **The world stays readable but reads as "not flying".** `worldGrade`'s
-  paused grade at a fraction of its strength would do it: the same grey and
-  dim, lighter. No new effect.
-- **The menu slides in** under a `LayerEffect` transform, the mechanism the
-  HUD shake uses. No new effect.
-- `MenuInput` already carries a held pointer and a drag (the sliders). The
-  grid's drag-and-drop is the same pattern.
+  The capture came out at 1920 x 1080: with fullscreen on by default, the
+  run went fullscreen on the primary display. A drag itself cannot be
+  driven offscreen and has not been played.
+
+**Still open**
+- A swap refills a missile's ammo, since ammo is not kept on the item. A
+  missile swapped out and back is full again. Worth keeping ammo on the
+  item if it matters.
+- Keyboard-only use (arrows and Enter) is not built; the mouse is the way.
 
 ### I3. Getting weapons: salvage, pickups, the shop — *proposed*
 
