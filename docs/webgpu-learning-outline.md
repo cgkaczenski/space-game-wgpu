@@ -1671,6 +1671,31 @@ part that sequences, the part that reads the game, and the part on disk.
 `src/gameLayer/hintScript.cpp` · `hintsPanel` in
 `src/gameLayer/levelEditor.cpp`
 
+### I1. A packing grid — *built*
+
+**Concepts:** An inventory where things have shapes is a grid of ids. Every
+question it is asked is a loop over a shape's squares.
+
+- **A shape is a list of squares**, and a quarter turn clockwise on a y-down
+  grid is `(x, y) → (−y, x)`. Turning moves the squares off the origin, so
+  every turn is followed by sliding the smallest x and y back to 0. Four
+  turns then come back exactly to where they began, which the test checks.
+- **A grid of ids, not of pieces.** Each square holds the id of the piece on
+  it. `fits` is a lookup per square, `remove` is clearing an id, and
+  moving a piece is `fits` with its own squares counted as empty, then
+  remove and place.
+- **First fit in reading order**, every turn at each square: what an
+  automatic pickup will use. It is not optimal packing, which is NP-hard
+  in general. It is predictable, and a player can repack by hand.
+- **An item is a kind, not a copy.** The stash holds "heavy with stun", and
+  the numbers come from the tuned kind when it is equipped. Tuning stays
+  live, and a saved item will be a few words.
+- **Positions that survive gaps.** An empty slot is a weapon marked empty,
+  not a shorter list, so key 3 means slot 3 whatever is missing.
+
+**Code:** `include/engine/hold.h` / `src/engine/hold.cpp` ·
+`src/gameLayer/inventory.cpp` · `weapons::refit` and `Weapon::empty`
+
 ---
 
 ## What comes next

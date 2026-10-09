@@ -189,7 +189,7 @@ const char *conditionArgs(const std::string &c)
 {
 	if (c == "pressed") { return "an action: cloak, weapon4, mode..."; }
 	if (c == "selected") { return "a weapon slot, 1-4"; }
-	if (c == "hold") { return "ore in the hold, e.g. 0.5"; }
+	if (c == "hold") { return "orbs of ore in the hold, e.g. 1"; }
 	if (c == "near") { return "x y radius"; }
 	if (c == "mode") { return "flight or fight"; }
 	if (c == "kills") { return "how many, since the step began"; }

@@ -63,6 +63,11 @@ namespace weapons
 		bool stun = false;       // the hit stuns the target, as a ram does
 		bool lockdown = false;   // the hit shuts the target's weapons down, then they cool down
 		int spread = 0;          // extra shots, fanned either side; not on a beam
+
+		// No weapon in this slot (inventory roadmap I1): the player's slots
+		// keep their places -- key 3 is slot 3 -- with gaps between. It cannot
+		// be selected or fired, and the HUD draws the slot empty.
+		bool empty = false;
 	};
 
 	// The laser this frame, as `update` left it. The beam is not a bullet: the
@@ -146,6 +151,13 @@ namespace weapons
 	// A loadout of these weapons, refilled and ready.
 	Loadout loadoutOf(const Weapon *weapons, int count);
 
+	// Puts `weapon` in slot `index` of `loadout`, keeping the slot's state --
+	// cooldown, ammo, the laser's charge -- if it is the same kind of weapon
+	// as before, so the debug panel's tuning can be applied every frame. A
+	// different kind starts on its cooldown, full of ammo: a swap costs a
+	// cooldown (inventory roadmap, asked). Selection moves off an emptied slot.
+	void refit(Loadout &loadout, int index, const Weapon &weapon);
+
 	// A new round: ammo refilled, cooldowns cleared, the laser full, a
 	// lockdown lifted. The weapons themselves, and which is selected, are
 	// kept: tuning and a choice, not something that happened.
@@ -215,9 +227,11 @@ namespace weapons
 		int maxAmmo = -1;
 		bool selected = false;
 		bool usable = true;  // has ammo, and fires in this build
+		bool empty = false;  // no weapon in the slot (I1)
 	};
 	SlotView slot(const Loadout &loadout, int index);
 
-	// The weapons in `loadout` (the player's), and the shared tuning.
-	void debugUi(Loadout &loadout);
+	// The player's weapon kinds as tuned (`tuned`, slotCount of them: burst,
+	// heavy, missile, laser), the state of `loadout`, and the shared tuning.
+	void debugUi(Loadout &loadout, Weapon *tuned);
 }

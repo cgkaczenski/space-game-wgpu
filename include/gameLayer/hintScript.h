@@ -8,7 +8,7 @@
 //
 //   pressed <action>     the action is pressed: pressed cloak
 //   selected <slot>      weapon slot 1-4 is selected: selected 4
-//   hold <ore>           the hold has at least this much: hold 0.5
+//   hold <orbs>          the hold has at least this many orbs of ore: hold 1
 //   near <x> <y> <r>     the ship is within r of x y: near 15000 -1000 1500
 //   mode <flight|fight>  the ship is in that mode
 //   cloaked              the ship is cloaked

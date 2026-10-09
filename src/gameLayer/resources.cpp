@@ -1,4 +1,5 @@
 #include <resources.h>
+#include <inventory.h>
 #include <tuning.h>
 
 #include "imgui.h"
@@ -28,7 +29,8 @@ namespace
 	{
 		glm::vec2 position = {};
 		glm::vec2 velocity = {};
-		float value = 0.f;
+		float value = 0.f;      // ore, as the rock counts it: how big it looks
+		int units = 1;          // what it is in the hold (I1)
 		float pauseLeft = 0.f;  // thrown clear, motor off
 		bool homing = false;
 		float chase = 0.f;      // seconds of chase, for the turn's growth
@@ -37,8 +39,12 @@ namespace
 
 	std::vector<Orb> orbs;
 
-	float hold = 0.f;
-	float points = 0.f;     // banked by extracting; not a round's, so reset leaves it
+	int points = 0;         // banked by extracting; not a round's, so reset leaves it
+
+	// One unit in the hold: an orb as the beam sheds them (asteroids'
+	// orbValue). A fragment rounds up to 1, a boss orb is 2, a spilled orb 4.
+	const float orePerUnit = 0.25f;
+	int unitsOf(float value) { return std::max(1, (int)std::lround(value / orePerUnit)); }
 	float interruptLeft = 0.f;
 
 	// Tuning.
@@ -92,6 +98,7 @@ namespace
 		o.position = at;
 		o.velocity = direction * (orbEjectSpeed * randomBetween(0.7f, 1.3f));
 		o.value = value;
+		o.units = unitsOf(value);
 		o.pauseLeft = orbPauseSeconds * randomBetween(0.8f, 1.4f);
 		o.phase = randomBetween(0.f, 6.28f);
 		orbs.push_back(o);
@@ -112,7 +119,6 @@ void cleanup()
 void reset()
 {
 	orbs.clear();
-	hold = 0.f;
 	interruptLeft = 0.f;
 }
 
@@ -134,23 +140,29 @@ void update(float dt, glm::vec2 playerPos, bool playerPresent)
 		}
 
 		const float distance = playerPresent ? glm::distance(o.position, playerPos) : 1e30f;
+		const bool room = inventory::oreRoom() > 0;
 
 		if (!o.homing)
 		{
 			// It waits exactly where it stopped. Nothing reaches out for it;
-			// the ship has to come.
+			// the ship has to come -- with room in the hold (I1).
 			o.velocity = {};
-			if (distance <= orbWakeRadius) { o.homing = true; }
+			if (distance <= orbWakeRadius && room) { o.homing = true; }
 			continue;
 		}
 
-		if (!playerPresent) { o.homing = false; continue; } // nothing to chase
+		if (!playerPresent || !room) { o.homing = false; continue; } // nothing to chase, or nowhere to go
 
 		if (distance <= orbPickupRadius)
 		{
-			hold += o.value;
-			orbs.erase(orbs.begin() + i);
-			i--;
+			// As much as fits. What does not stays an orb, waiting.
+			o.units -= inventory::addOre(o.units);
+			if (o.units <= 0)
+			{
+				orbs.erase(orbs.begin() + i);
+				i--;
+			}
+			else { o.homing = false; }
 			continue;
 		}
 
@@ -192,27 +204,24 @@ void enemyDropped(glm::vec2 position)
 
 void playerDropped(glm::vec2 position)
 {
-	if (hold <= 0.f) { return; }
-
 	// What was carried scatters from the wreck, still ore. The round restarts
 	// on death, so this lasts only as long as the wreck is watched -- it was a
 	// deposit, until asteroids replaced deposits (A4).
-	for (float left = hold; left > 0.001f; left -= spillOrbValue)
+	const int spillUnits = unitsOf(spillOrbValue);
+	for (int left = inventory::takeOre(); left > 0; left -= spillUnits)
 	{
 		const float angle = randomBetween(0.f, 6.2831853f);
-		emit(position, {std::cos(angle), std::sin(angle)}, std::min(spillOrbValue, left));
+		emit(position, {std::cos(angle), std::sin(angle)}, std::min(spillUnits, left) * orePerUnit);
 	}
-	hold = 0.f;
 }
 
 void extracted()
 {
-	points += hold;
-	hold = 0.f;
+	points += inventory::takeOre();
 }
 
-float held() { return hold; }
-float banked() { return points; }
+int held() { return inventory::ore(); }
+int banked() { return points; }
 
 void drawGlow(wgpu2d::Renderer2D &renderer, float time)
 {
@@ -251,13 +260,13 @@ const tuning::Group tunables("resources", {
 
 void debugUi()
 {
-	ImGui::Text("Hold %.2f   banked %.2f", hold, points);
+	ImGui::Text("Hold %d   banked %d (orbs; the hold is under Inventory)", inventory::ore(), points);
 	int waiting = 0, chasing = 0;
 	for (const Orb &o : orbs) { (o.homing ? chasing : waiting)++; }
 	ImGui::Text("%d orbs (%d waiting, %d chasing)", (int)orbs.size(), waiting, chasing);
 	if (interruptLeft > 0.f) { ImGui::TextColored({1.f, 0.5f, 0.3f, 1.f}, "Mining interrupted"); }
 	ImGui::SameLine();
-	if (ImGui::SmallButton("Clear points")) { points = 0.f; }
+	if (ImGui::SmallButton("Clear points")) { points = 0; }
 
 	tune::SliderFloat("Interrupt s", &interruptSeconds, 0.f, 3.f);
 	tune::SliderFloat("Spill orb value", &spillOrbValue, 0.1f, 5.f);

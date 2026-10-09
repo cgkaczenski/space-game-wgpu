@@ -20,6 +20,7 @@
 #include <controls.h>
 #include <hints.h>
 #include <hintScript.h>
+#include <inventory.h>
 #include <menu.h>
 #include <playerSettings.h>
 #include <shipThruster.h>
@@ -155,27 +156,34 @@ wgpu2d::TextureAtlasPadding shipAtlas;
 constexpr float shipSize = 250.f;
 
 // The player's weapons (gameplay roadmap B1): a loadout like every enemy's,
-// but not part of the Session -- what is in it is tuned in the debug panel
-// and chosen with 1-4, and both survive a restart. A new round only resets
-// its cooldowns, ammo, charge and a lockdown (weapons::reset).
+// but not part of the Session -- what is in its slots is the inventory's
+// (I1), built from the kinds below each frame, and chosen with 1-4. A new
+// round only resets its cooldowns, ammo, charge and a lockdown
+// (weapons::reset).
 weapons::Loadout playerWeapons = weapons::playersLoadout();
 
-// Its weapons' tuning (platform/tuning.h), by each weapon's file key -- the
-// player's loadout is where the panel tunes them.
+// The player's weapon kinds as tuned -- burst, heavy, missile, laser -- which
+// every equipped weapon of that kind is built from (inventory::applyTo).
+// Enemies' come from weapons::shipWeapon, untuned, as before.
+weapons::Weapon playerKinds[weapons::slotCount] = {
+	weapons::shipWeapon(0), weapons::shipWeapon(1), weapons::shipWeapon(2), weapons::shipWeapon(3)};
+
+// Their tuning (platform/tuning.h), by each kind's file key. The same keys
+// as when the panel tuned the loadout's slots, so a saved set still loads.
 const tuning::Group tunedBurst("weapons.burst", {
-	{"cooldown", playerWeapons.slots[0].cooldown}, {"damage", playerWeapons.slots[0].damage},
-	{"speed", playerWeapons.slots[0].speed}, {"burstGap", playerWeapons.slots[0].burstGap},
+	{"cooldown", playerKinds[0].cooldown}, {"damage", playerKinds[0].damage},
+	{"speed", playerKinds[0].speed}, {"burstGap", playerKinds[0].burstGap},
 });
 const tuning::Group tunedHeavy("weapons.heavy", {
-	{"cooldown", playerWeapons.slots[1].cooldown}, {"damage", playerWeapons.slots[1].damage},
-	{"speed", playerWeapons.slots[1].speed},
+	{"cooldown", playerKinds[1].cooldown}, {"damage", playerKinds[1].damage},
+	{"speed", playerKinds[1].speed},
 });
 const tuning::Group tunedMissile("weapons.missile", {
-	{"cooldown", playerWeapons.slots[2].cooldown}, {"damage", playerWeapons.slots[2].damage},
-	{"speed", playerWeapons.slots[2].speed},
+	{"cooldown", playerKinds[2].cooldown}, {"damage", playerKinds[2].damage},
+	{"speed", playerKinds[2].speed},
 });
 const tuning::Group tunedLaser("weapons.laser", {
-	{"cooldown", playerWeapons.slots[3].cooldown}, {"damage", playerWeapons.slots[3].damage},
+	{"cooldown", playerKinds[3].cooldown}, {"damage", playerKinds[3].damage},
 });
 const glm::vec4 enemyPlumeColour = {1.f, 0.45f, 0.18f, 1.f}; // the player's is blue
 
@@ -447,7 +455,8 @@ int startedFeatures = 0;
 void startExtraction()
 {
 	if (gameState::current() != gameState::State::Playing) { return; }
-	resources::extracted();
+	resources::extracted();   // the hold's ore becomes points
+	inventory::extracted();   // and everything carried goes to the stash
 	gameState::extract();
 }
 
@@ -500,6 +509,12 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	{
 		if (feature.reset) { feature.reset(); }
 	}
+
+	// The round's weapons (I1): taken out of the stash, built into the
+	// loadout, and ready -- a round does not start on a swap's cooldown.
+	inventory::roundStart();
+	inventory::applyTo(playerWeapons, playerKinds);
+	weapons::reset(playerWeapons);
 
 	// Zero dead zone and zero leash: snap straight onto the player.
 	cameraBase = camera::follow(
@@ -795,7 +810,8 @@ void debugPanelUi()
 	debugPanel::section("Lane look", laneLook::debugUi);
 	debugPanel::section("Jump gates", jumpGates::debugUi);
 	debugPanel::section("Map", explorationMap::debugUi);
-	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons); });
+	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons, playerKinds); });
+	debugPanel::section("Inventory", inventory::debugUi);
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Damage numbers", damageNumbers::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -893,6 +909,10 @@ bool initGame()
 		gameState::reset();
 		restartGame();
 	});
+
+	// A new player's weapons (I1): the default loadout, from the tuning just
+	// loaded.
+	inventory::newPlayer();
 
 	recallLevel();
 	loadLevel();
@@ -1376,6 +1396,8 @@ bool gameLogic(float deltaTime)
 
 
 	// Only while playing: paused, the selection holds like everything else.
+	// The equipped weapons, as the inventory has them and the kinds are tuned.
+	inventory::applyTo(playerWeapons, playerKinds);
 	if (controls) { weapons::handleInput(playerWeapons); }
 
 	// Held, not clicked: the selected weapon fires whenever it is ready.
@@ -1730,7 +1752,8 @@ bool gameLogic(float deltaTime)
 		asteroids::blast(session.ship.position);
 		effects::shake(1.f);
 		session.ship.velocity = {};
-		resources::playerDropped(session.ship.position); // the hold spills at the wreck
+		resources::playerDropped(session.ship.position); // the hold's ore spills at the wreck
+		inventory::died();                               // and every weapon carried is gone
 		energy::uncloak(session.energy);
 		session.ram = {};
 		weapons::reset(playerWeapons); // no burst's second shot from the wreck
@@ -2507,7 +2530,7 @@ bool gameLogic(float deltaTime)
 	for (int s = 0; s < weapons::slotCount; s++)
 	{
 		const weapons::SlotView v = weapons::slot(playerWeapons, s);
-		slots[s] = {v.style, v.ready, v.ammo, v.maxAmmo, v.selected, v.usable};
+		slots[s] = {v.style, v.ready, v.ammo, v.maxAmmo, v.selected, v.usable, v.empty};
 	}
 
 	// Damage numbers: screen space, over the world and under the HUD, so

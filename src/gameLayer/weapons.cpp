@@ -99,12 +99,12 @@ namespace
 
 	bool usable(const Loadout &l, int i)
 	{
-		return l.slots[i].maxAmmo < 0 || l.ammo[i] > 0;
+		return !l.slots[i].empty && (l.slots[i].maxAmmo < 0 || l.ammo[i] > 0);
 	}
 
 	void select(Loadout &l, int i)
 	{
-		if (i == l.selected || i < 0 || i >= l.count) { return; }
+		if (i == l.selected || i < 0 || i >= l.count || l.slots[i].empty) { return; }
 		l.selected = i;
 		l.pendingShots = 0; // a burst belongs to the weapon that started it
 	}
@@ -255,6 +255,27 @@ int shipWeaponSlot(const char *key)
 	return -1;
 }
 
+void refit(Loadout &l, int index, const Weapon &w)
+{
+	if (index < 0 || index >= slotCount) { return; }
+	const Weapon &was = l.slots[index];
+	const bool sameKind = was.empty == w.empty && was.style == w.style && was.motion == w.motion
+		&& was.beam == w.beam && was.maxAmmo == w.maxAmmo;
+	l.slots[index] = w;
+	l.count = slotCount;
+	if (!sameKind)
+	{
+		l.cooldownLeft[index] = w.empty ? 0.f : w.cooldown;
+		l.ammo[index] = w.maxAmmo;
+		if (l.pendingSlot == index) { l.pendingShots = 0; }
+	}
+	// Off an empty slot, to the first weapon there is.
+	if (l.slots[l.selected].empty)
+	{
+		for (int i = 0; i < slotCount; i++) { if (!l.slots[i].empty) { l.selected = i; break; } }
+	}
+}
+
 void reset(Loadout &l)
 {
 	for (int i = 0; i < slotCount; i++)
@@ -285,9 +306,18 @@ void handleInput(Loadout &l)
 	if (l.count > 0)
 	{
 		wheel += controls::steps(controls::Action::CycleWeapon);
-		// Wheel up goes back a slot, down goes forward, and both wrap.
-		while (wheel >= 1.f) { select(l, (l.selected + l.count - 1) % l.count); wheel -= 1.f; }
-		while (wheel <= -1.f) { select(l, (l.selected + 1) % l.count); wheel += 1.f; }
+		// Wheel up goes back a slot, down goes forward, and both wrap --
+		// past empty slots, to the next weapon there is.
+		auto step = [&](int by)
+		{
+			for (int k = 1; k <= l.count; k++)
+			{
+				const int i = ((l.selected + by * k) % l.count + l.count) % l.count;
+				if (!l.slots[i].empty) { select(l, i); return; }
+			}
+		};
+		while (wheel >= 1.f) { step(-1); wheel -= 1.f; }
+		while (wheel <= -1.f) { step(1); wheel += 1.f; }
 	}
 }
 
@@ -477,7 +507,8 @@ SlotView slot(const Loadout &l, int index)
 	view.ready = l.lockedFor > 0.f ? 0.f : w.cooldown > 0.f ? 1.f - l.cooldownLeft[index] / w.cooldown : 1.f;
 	view.ammo = w.maxAmmo < 0 ? -1 : l.ammo[index];
 	view.maxAmmo = w.maxAmmo;
-	view.selected = index == l.selected;
+	view.selected = index == l.selected && !w.empty;
+	view.empty = w.empty;
 	view.usable = usable(l, index) && l.lockedFor <= 0.f; // locked down: dimmed
 	return view;
 }
@@ -501,7 +532,7 @@ const tuning::Group tunables("weapons", {
 	{"turnRateGrowth", turnRateGrowth},
 });
 
-void debugUi(Loadout &l)
+void debugUi(Loadout &l, Weapon *tuned)
 {
 	if (l.lockedFor > 0.f) { ImGui::TextColored({1.f, 0.5f, 0.9f, 1.f}, "Locked down: %.1f s", l.lockedFor); }
 	if (ImGui::TreeNode("Modifiers (B2)"))
@@ -513,12 +544,14 @@ void debugUi(Loadout &l)
 		tune::SliderFloat("Grace", &effectGrace, 0.f, 5.f, "%.1f s before another takes");
 		ImGui::TreePop();
 	}
-	for (int i = 0; i < l.count; i++)
+	// The kinds as tuned: every one of that kind the player equips is built
+	// from these, with its own modifiers (inventory roadmap I1).
+	ImGui::TextDisabled("Tuning by kind; the slots are chosen under Inventory");
+	for (int i = 0; i < slotCount; i++)
 	{
-		Weapon &w = l.slots[i];
+		Weapon &w = tuned[i];
 		ImGui::PushID(i);
-		const bool open = ImGui::TreeNode("weapon", "%d  %s%s", i + 1, w.name,
-			i == l.selected ? "  (selected)" : "");
+		const bool open = ImGui::TreeNode("weapon", "%s", w.name);
 		if (open)
 		{
 			tune::SliderFloat("Cooldown", &w.cooldown, 0.1f, 10.f, "%.2f s");
@@ -530,9 +563,15 @@ void debugUi(Loadout &l)
 			}
 			if (w.maxAmmo >= 0)
 			{
-				ImGui::Text("Ammo %d / %d", l.ammo[i], w.maxAmmo);
-				ImGui::SameLine();
-				if (ImGui::SmallButton("Refill")) { l.ammo[i] = w.maxAmmo; }
+				for (int s = 0; s < l.count; s++)
+				{
+					if (l.slots[s].empty || l.slots[s].style != w.style || l.slots[s].motion != w.motion) { continue; }
+					ImGui::Text("Slot %d: ammo %d / %d", s + 1, l.ammo[s], l.slots[s].maxAmmo);
+					ImGui::SameLine();
+					ImGui::PushID(s);
+					if (ImGui::SmallButton("Refill")) { l.ammo[s] = l.slots[s].maxAmmo; }
+					ImGui::PopID();
+				}
 			}
 			if (w.beam)
 			{

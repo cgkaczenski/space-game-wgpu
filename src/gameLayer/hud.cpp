@@ -63,8 +63,8 @@ namespace
 	// ---- Text (U1) ------------------------------------------------------
 
 	bool haulShown = false;
-	float haulHeld = 0.f;
-	float haulBanked = 0.f;
+	int haulHeld = 0;
+	int haulBanked = 0;
 	const glm::vec4 haulColour = {0.85f, 0.95f, 1.f, 0.9f};
 	const float haulGapPerc = 0.25f; // under the energy bar, of a bar's height
 
@@ -74,7 +74,7 @@ namespace
 		if (haulShown)
 		{
 			char line[64];
-			std::snprintf(line, sizeof(line), "HOLD %.1f   BANKED %.1f", haulHeld, haulBanked);
+			std::snprintf(line, sizeof(line), "HOLD %d   BANKED %d", haulHeld, haulBanked);
 			textLook::draw(renderer, {energyRect.x, energyRect.y + energyRect.w * (1.f + haulGapPerc)},
 				line, haulColour, scale);
 		}
@@ -269,6 +269,7 @@ namespace
 				s.selected ? slotFrameSelected : slotFrame);
 			renderer.renderRectangle(glm::vec4{x, top, size, size}, slotBackground);
 
+			if (s.empty) { continue; } // the frame and the dark, nothing in it
 			bulletLook::drawIcon(renderer, {x + size * 0.5f, top + size * 0.5f}, size * 0.8f, s.style);
 
 			// Cooling down, the icon is shaded from the top and uncovered as it
@@ -447,7 +448,7 @@ void showMode(bool flight)
 	modeFlight = flight;
 }
 
-void showHaul(float held, float banked)
+void showHaul(int held, int banked)
 {
 	haulShown = true;
 	haulHeld = held;
@@ -495,7 +496,7 @@ glm::vec4 elementRect(Element element, int width, int height)
 		// The line's own box: drawText's position and the text it prints.
 		const float scale = textLook::screenScale(height);
 		char line[64];
-		std::snprintf(line, sizeof(line), "HOLD %.1f   BANKED %.1f", haulHeld, haulBanked);
+		std::snprintf(line, sizeof(line), "HOLD %d   BANKED %d", haulHeld, haulBanked);
 		const glm::vec2 size = wgpu2d::measureText(textLook::font(), line, scale);
 		return {energy.x, energy.y + energy.w * (1.f + haulGapPerc), size.x, size.y};
 	}

@@ -18,8 +18,14 @@
 //               stays where it is, so a rock worked from cover has to be
 //               collected afterwards.
 //   Fragments   a dead enemy leaves the same orbs, worth very little.
-//   Death       the hold scatters from the wreck as orbs.
-//   Extraction  the hold becomes points, which survive the next round.
+//   The hold    ore is counted in orbs (inventory roadmap I1): one orb is one
+//               unit, whatever it was worth on the rock -- its value over
+//               orePerUnit, rounded, at least 1. It goes in the ship's hold
+//               (inventory.h), in stacks of 64 a square, beside any spare
+//               weapons. With no room, orbs stop coming and wait in space.
+//   Death       the hold's ore scatters from the wreck as orbs.
+//   Extraction  the hold's ore becomes points, one a unit, which survive the
+//               next round.
 //
 // Until A4 the level placed deposits -- glowing rocks that were only ore.
 // Asteroids replaced them: every rock is ore now, and cover, and in the way.
@@ -31,8 +37,8 @@ namespace resources
 	bool init();
 	void cleanup();
 
-	// A new round: an empty hold and no orbs. Points banked by extracting are
-	// not a round's, and stay.
+	// A new round: no orbs. Points banked by extracting are not a round's,
+	// and stay. The hold is the inventory's, emptied by its roundStart.
 	void reset();
 
 	// Game time. Moves the orbs and their pull toward the player, and runs out
@@ -50,11 +56,11 @@ namespace resources
 	void enemyDropped(glm::vec2 position);
 	void playerDropped(glm::vec2 position);
 
-	// The hold becomes points.
+	// The hold's ore becomes points.
 	void extracted();
 
-	float held();    // this round, not yet banked
-	float banked();  // points, across rounds
+	int held();    // orbs in the hold, not yet banked
+	int banked();  // points, across rounds
 
 	// The orbs. **Caller must have set BlendMode::Additive.**
 	void drawGlow(wgpu2d::Renderer2D &renderer, float time);

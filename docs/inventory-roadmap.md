@@ -531,42 +531,94 @@ player dies and becomes points when they extract. Weapons join it.
 | The game clock's speed | `gameClock` | Slow motion, if the live menu ever wants it. |
 | The world grade, the CRT's switch-off and white-out | `worldGrade`, `crt` | Looks for the live menu and for extraction. |
 
-### I1. Items: the stash, what is carried, what is equipped — *proposed*
+### I1. Items: the stash, the hold, what is equipped — *built*
 
 The model, and the rules that move things between its parts. Nothing to look
 at yet except the debug panel.
 
-**Proposed**
-- Three containers:
-  - **Stash:** owned, between missions.
-  - **Carried:** in the ship this mission, not equipped.
-  - **Equipped:** the 4 slots, which are the `Loadout`.
-- **An item starts as a `Weapon`**, modifiers and all.
-- **Extraction** moves carried and equipped items into the stash. **Death**
-  empties both.
-- **Debug panel:** add any weapon with any modifiers to the stash or to
-  carried, empty a container, and show all three. This is the test bench
-  until I3 gives the player ways to find items.
-- **Lands:**
-  - `engine/`: containers, moving an item between them, capacity. Another
-    game's inventory would want this unchanged.
-  - Game: that an item is a `Weapon`, and the extraction and death rules.
+**Decided**
+- **An item is a weapon kind and its modifiers** (`heavy` with `stun`), not a
+  copy of a weapon's numbers. Its stats come from the kind as tuned, so the
+  debug panel's weapon tuning reaches every one of that kind. Modifiers do
+  not change an item's shape.
+- **The beam is free and never lost.** A round without one gets a plain one,
+  so a player can always mine their way back.
+- **The hold is a 5 x 4 grid.** Everything carried but not equipped goes in
+  it, as a shape that can be turned to fit:
+  - burst 2 x 2 (4), missile an L (5), heavy 3 x 2 (6), beam 4 x 2 (8);
+  - 23 squares in all, so the four never all fit spare at once;
+  - the shapes are tunable, as tick boxes in the panel, saved with the
+    tuning.
+- **Ore takes squares too**, in stacks of up to 64 a square, so ore and spare
+  weapons compete for room.
+  - **One orb is one unit**: an orb's value over 0.25, rounded, at least
+    1. A fragment is 1, a boss orb 2, a spilled orb 4.
+  - Points are banked in the same units.
+  - The HUD reads whole numbers: `HOLD 37   BANKED 120`.
+  - **With no room, orbs stop coming and wait in space.** An orb that only
+    partly fits leaves the rest waiting.
+- **Not saved yet.** The stash lasts while the game runs, as points do.
+- **A new player has the beam only**, in slot 4.
+  - The debug panel's **Inventory → Slots** has a pick list per weapon
+    slot, with stun, lockdown and spread. Saved with the tuning, it is the
+    default loadout.
+  - A change there equips at once, so it can be tried.
+  - **Kept through death** (asked): a slot the pick list sets is refilled
+    with its default every round the stash cannot fill it. It is a test
+    bench, and a death should not cost what is being tested. Extracting
+    banks it and the next round takes it back, so it is never doubled.
+    Checked: a picked heavy laser with spread stayed through a death,
+    two deaths and an extraction, the stash staying empty.
+- **Until I4**, a round equips what was equipped last time, taken out of the
+  stash as far as the stash still has it.
 
-**Open questions**
-- **Running out.** With equipped weapons lost on death, a bad run can leave
-  the stash empty. Is there a free, unlimited basic weapon that is never
-  lost, such as the burst laser?
-- **Capacity.** How many weapons can the ship carry beyond its 4 slots: a
-  fixed number, or limited by the hold? Do ore and weapons share the hold?
-- **Saving.** Should the stash and banked points survive quitting the game?
-  (Points do not today.)
-- **What a modifier is.** Is it part of an item, or a thing of its own that
-  is fitted to a weapon? That decides what I3's shop can sell, and whether a
-  modifier can be moved between weapons.
+**Built**
+- **`engine/hold`:** a packing grid.
+  - Shapes as squares and quarter turns (`turned` normalises to the
+    top-left).
+  - `fits`, `place` (which moves a piece already there), `remove`, `find`,
+    `findSpot` (reading order, every turn at each square) and
+    `freeSquares`.
+  - It knows ids and squares, nothing of what a piece is.
+- **`gameLayer/inventory`:**
+  - the stash, four equipped slots, the hold's grid with what each piece
+    is (a weapon, or an ore stack);
+  - `roundStart`, `extracted`, `died`;
+  - ore: `ore`, `oreRoom`, `addOre`, `takeOre`;
+  - `applyTo` builds the equipped slots into the player's `Loadout` every
+    frame, from the tuned kinds and each item's modifiers.
+- **Weapons:**
+  - **A slot can be empty** (`Weapon::empty`), so key 3 is still slot 3:
+    it cannot be selected or fired, and the wheel skips it.
+  - `weapons::refit` puts a weapon in a slot, keeping its state if it is
+    the same kind. A different kind starts on its cooldown (the asked swap
+    cost). A new round still starts everything ready.
+  - The debug panel's **Weapons** tunes the kinds (`playerKinds` in the
+    game), with the same tuning keys as before. Enemies still take
+    `shipWeapon`, untuned, as they did.
+- **The HUD** draws an empty slot as its frame alone.
+- `resources`: ore enters the hold as units, orbs wait when it is full,
+  death spills the hold's ore, extraction banks it.
+- Level 4's script: "hold 0.5" became "hold 1".
+- Checked:
+  - a test of `engine/hold` outside the game: turning, fitting, refusing an
+    overlap without changing anything, moving, removing. With the beam
+    standing and the heavy in, the L no longer fits but the burst does.
+  - in the game, with a temporary self-test since removed:
+    - a new player has the beam alone;
+    - the hold takes 1280 orbs empty, and 640 with two weapons in it;
+    - extracting banks all three into the stash, and the next round takes
+      the beam back out;
+    - dying loses them, and the next round gets the free beam;
+    - an owned heavy laser with lockdown is equipped, and lost on death.
+  - a capture: slots 1-3 empty, the beam in slot 4, `HOLD 0   BANKED 0`.
 
-**Engine ideas**
-- `safeSave` is already linked and keeps backups. A stash file beside
-  `settings.cfg` is a small step once saving is decided.
+**Still open**
+- Level 4's first step ("press 4 for the beam") finishes at once now,
+  because the beam is the only weapon and already selected. Its weapons
+  step assumes four weapons. The script wants a look once I2 or I3 changes
+  what a player has.
+- Saving, when it is wanted: `safeSave` is linked and keeps backups.
 
 ### I2. The live loadout menu — *proposed*
 

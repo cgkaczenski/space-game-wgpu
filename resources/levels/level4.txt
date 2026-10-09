@@ -288,7 +288,7 @@ erase -15000 0 650
 # The beam only mines in flight mode, so Tab comes before mining.
 hint "PRESS {weapon4} OR {cycleWeapon}\nFOR THE BEAM" hud weapon4 until selected 4
 hint "THE BEAM ONLY MINES IN FLIGHT MODE\nPRESS {mode} FOR FLIGHT" hud mode until mode flight
-hint "HOLD {fire} ON A ROCK TO MINE IT\nTHE ORE FLIES TO YOU" hud haul until hold 0.5
+hint "HOLD {fire} ON A ROCK TO MINE IT\nTHE ORE FLIES TO YOU" hud haul until hold 1
 hint "FLIGHT IS FAST, BUT HAS NO SHIELD\nPRESS {mode} FOR FIGHT BEFORE A FIGHT" hud mode until mode fight
 hint "FLY WITH {forward} {left} {back} {right}\nHOLD {brake} TO BRAKE. HEAD FOR THE GAP" at -12375 -1350 ring 650 until near -12375 -1350 900
 hint "HOLD {map} FOR THE WHOLE MAP" until pressed map

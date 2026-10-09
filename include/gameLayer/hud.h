@@ -27,6 +27,7 @@ namespace hud
 		int maxAmmo = -1;
 		bool selected = false;
 		bool usable = true;
+		bool empty = false;  // no weapon in the slot (I1): the frame alone
 	};
 
 	// Loads the HUD's textures. Call once from initGame, after the renderer
@@ -61,7 +62,7 @@ namespace hud
 
 	// What the player is carrying and has banked (gameplay roadmap L3), for
 	// the next draw: a line of text under the energy bar. Not called, no line.
-	void showHaul(float held, float banked);
+	void showHaul(int held, int banked);
 
 	// The HUD's elements, for a hint to point at and highlight (hints roadmap
 	// H1).
