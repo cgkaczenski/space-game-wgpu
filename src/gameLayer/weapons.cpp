@@ -272,19 +272,17 @@ void reset(Loadout &l)
 
 void handleInput(Loadout &l)
 {
-	const ImGuiIO &io = ImGui::GetIO();
-
-	if (!io.WantCaptureKeyboard)
+	// Whether the debug panel has the input is the action table's to say
+	// (controls.cpp), by device.
+	for (int i = 0; i < l.count; i++)
 	{
-		for (int i = 0; i < l.count; i++)
-		{
-			if (controls::pressed((controls::Action)((int)controls::Action::Weapon1 + i))) { select(l, i); }
-		}
+		if (controls::pressed((controls::Action)((int)controls::Action::Weapon1 + i))) { select(l, i); }
 	}
 
 	// The plain wheel: Ctrl + wheel is zoom's, and the action table hands it
-	// the wheel while Ctrl is held (controls.cpp).
-	if (!io.WantCaptureMouse && l.count > 0)
+	// the wheel while Ctrl is held. Over the debug panel the wheel scrolls the
+	// panel instead.
+	if (l.count > 0)
 	{
 		wheel += controls::steps(controls::Action::CycleWeapon);
 		// Wheel up goes back a slot, down goes forward, and both wrap.

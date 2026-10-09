@@ -684,6 +684,18 @@ namespace wgpu2d
 		// frame `value` changes.
 		bool slider(const char *label, float &value, float min, float max, float step);
 
+		// The label on the left, then `count` cells in equal columns on the
+		// right, each one selectable: left and right move between them, and
+		// the pointer selects the one it is over. The column is kept as the
+		// selection moves up and down, so a page of these reads as a table.
+		// Returns the cell pressed this frame, or -1. `colours`, if given,
+		// overrides each cell's text colour; a colour with 0 alpha keeps the
+		// usual one.
+		int fields(const char *label, const char *const *values, int count, const Color4f *colours = nullptr);
+
+		// A line of text, centred, not selectable: a message under a page.
+		void note(const char *text, Color4f colour);
+
 		// `back` was pressed this frame.
 		bool backPressed() const { return input.back; }
 
@@ -700,5 +712,6 @@ namespace wgpu2d
 		int rowCount = 0;         // selectable rows last frame
 		float lastHeight = 0.f;   // the whole menu's, last frame, for the panel
 		int dragging = -1;        // the slider the pointer is dragging
+		int field = 0;            // the selected cell in a fields row
 	};
 }

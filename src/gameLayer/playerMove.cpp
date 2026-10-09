@@ -105,10 +105,12 @@ glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDelta
 	return mouseDirection;
 }
 
+Controls scheme() { return controls; }
+void setScheme(Controls c) { controls = c; }
+
 // The tunables this file offers (platform/tuning.h): registered at start-up,
 // after everything above, so each one's default is the value it is declared with.
 const tuning::Group tunables("player", {
-	{"controls", controls},
 	{"turnSpeed", turnSpeed},
 	{"brakeHalfLife", brakeHalfLife},
 	{"useMomentum", useMomentum},
@@ -120,13 +122,12 @@ const tuning::Group tunables("player", {
 
 void debugUi()
 {
+	// The player's setting since K2 (menu: Settings > Controls), not tuning:
+	// changed here, it lasts until the game is closed.
 	int c = (int)controls;
-	{
-		tune::Highlight h(&controls); // the radios edit a copy
-		ImGui::RadioButton("W/S toward mouse", &c, (int)Controls::MouseThrust);
-		ImGui::RadioButton("A/D turn, mouse aims", &c, (int)Controls::TurnWithKeys);
-		ImGui::RadioButton("WASD screen directions", &c, (int)Controls::ScreenDirections);
-	}
+	ImGui::RadioButton("W/S toward mouse", &c, (int)Controls::MouseThrust);
+	ImGui::RadioButton("A/D turn, mouse aims", &c, (int)Controls::TurnWithKeys);
+	ImGui::RadioButton("WASD screen directions", &c, (int)Controls::ScreenDirections);
 	controls = (Controls)c;
 
 	if (controls == Controls::TurnWithKeys)

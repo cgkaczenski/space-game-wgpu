@@ -56,14 +56,10 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 	}
 	firstUpdate = false;
 
-	const ImGuiIO &io = ImGui::GetIO();
-
-	// Ctrl + wheel: the wheel alone switches weapons (weapons.h), and Shift
-	// is the brake (playerMove). Scrolling over the debug panel scrolls the
-	// panel.
-	// Ctrl + wheel, vertical or horizontal, is the Zoom action's binding
-	// (controls.cpp).
-	if (!io.WantCaptureMouse)
+	// Ctrl + wheel, vertical or horizontal, is the Zoom action's binding; the
+	// wheel alone switches weapons. Over the debug panel the wheel scrolls the
+	// panel, and typing a '-' into a panel field types it: the action table
+	// decides both (controls.cpp).
 	{
 		const float scroll = controls::steps(controls::Action::Zoom);
 		if (scroll != 0.f)
@@ -73,8 +69,6 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 		}
 	}
 
-	// And typing a '-' into a panel field types it.
-	if (!io.WantCaptureKeyboard)
 	{
 		float keySteps = 0.f;
 		if (controls::held(controls::Action::ZoomIn)) { keySteps += 1.f; }

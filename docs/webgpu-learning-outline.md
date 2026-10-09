@@ -1587,6 +1587,32 @@ released, shadowing, names, and out-of-range actions.
 `platform::actionSource` / `buttonName` in `src/platform/platformInput.cpp` ·
 `src/gameLayer/controls.cpp`
 
+### K2. Rebinding — *built*
+
+**Concepts:** Rebinding is three small problems: waiting for a key without
+taking the wrong one, a conflict rule, and saving only what changed.
+
+- **Wait for silence, then listen.** The Enter or click that opened a wait
+  is still down the next frame. The wait arms only once nothing is held,
+  then binds the first press. The frame it ends feeds the menu nothing, or
+  the cancelling Escape would also be read as Back.
+- **An empty slot is a binding.** `code` −1, skipped by every query. A
+  conflict clears a slot, and the page blocks leaving until it is filled,
+  so the empty state is visible and short-lived.
+- **Save the difference.** Only slots that differ from the defaults are
+  written. A default changed in code still reaches every player who left
+  that action alone.
+- **Who has the input follows the device.** A key belongs to the debug panel
+  only while text is typed into it (`WantTextInput`), a mouse button or the
+  wheel only while the pointer is over it (`WantCaptureMouse`). This is
+  decided in the table's `Source`, so it moves with a rebinding.
+- **A table in an immediate-mode menu.** `fields` keeps one column index
+  across rows, so up and down move straight down a column.
+
+**Code:** `controls::bind` / `write` / `read` / `firstPressed` ·
+`Menu::fields` / `note` in `src/render/menu.cpp` · the Controls page and
+`listen` in `src/gameLayer/menu.cpp`
+
 ---
 
 ## What comes next

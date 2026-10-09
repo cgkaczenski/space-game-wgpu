@@ -30,8 +30,14 @@ namespace actions
 	struct Binding
 	{
 		Device device = Device::Key;
-		int code = -1;
+		int code = -1;       // -1: unbound, a slot with nothing in it
 		int modifier = -1;   // a key code, or -1 for none
+
+		bool bound() const { return code >= 0; }
+		bool operator==(const Binding &o) const
+		{
+			return device == o.device && code == o.code && modifier == o.modifier;
+		}
 	};
 
 	constexpr int maxBindings = 4;
@@ -74,6 +80,7 @@ namespace actions
 
 	// A binding as a player reads it: "4", "LEFT MOUSE", "CTRL + WHEEL".
 	std::string name(const Source &source, const Binding &binding);
-	// Every binding of an action, joined by `separator`: "4 / WHEEL".
+	// Every bound binding of an action, joined by `separator`: "4 / WHEEL".
+	// Unbound slots are left out.
 	std::string names(const Table &table, const Source &source, int action, const char *separator = " / ");
 }

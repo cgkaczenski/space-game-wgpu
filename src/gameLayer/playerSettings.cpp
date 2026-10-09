@@ -1,6 +1,8 @@
 #include <playerSettings.h>
 #include <crt.h>
+#include <controls.h>
 #include <gameLayer.h>
+#include <playerMove.h>
 
 #include <raudio.h>
 #include <glm/glm.hpp>
@@ -21,15 +23,18 @@ namespace
 		SetMasterVolume(current.volume);
 		crt::setPlayerStrength(current.crt);
 		platform::setFullScreen(current.fullscreen);
+		playerMove::setScheme((playerMove::Controls)current.scheme);
 	}
+}
 
-	void save()
-	{
-		std::ofstream out(file);
-		out << "volume " << current.volume << "\n"
-			<< "crt " << current.crt << "\n"
-			<< "fullscreen " << (current.fullscreen ? 1 : 0) << "\n";
-	}
+void save()
+{
+	std::ofstream out(file);
+	out << "volume " << current.volume << "\n"
+		<< "crt " << current.crt << "\n"
+		<< "fullscreen " << (current.fullscreen ? 1 : 0) << "\n"
+		<< "scheme " << current.scheme << "\n";
+	controls::write(out);
 }
 
 bool init()
@@ -38,6 +43,7 @@ bool init()
 	std::string line;
 	while (std::getline(in, line))
 	{
+		if (controls::read(line)) { continue; }
 		std::istringstream words(line);
 		std::string key;
 		float value = 0.f;
@@ -45,6 +51,7 @@ bool init()
 		if (key == "volume") { current.volume = glm::clamp(value, 0.f, 1.f); }
 		else if (key == "crt") { current.crt = glm::clamp(value, 0.f, 1.f); }
 		else if (key == "fullscreen") { current.fullscreen = value != 0.f; }
+		else if (key == "scheme") { current.scheme = glm::clamp((int)value, 0, 2); }
 	}
 	apply();
 	return true;

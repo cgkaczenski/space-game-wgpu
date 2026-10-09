@@ -147,7 +147,7 @@ written by hand, and is wrong as soon as a key is rebound.
   keyboard whenever the panel is focused, so one blanket rule would stop the
   ship flying while tuning. The checks are uneven today. Movement and cloak
   have none; Tab, Shift, V and M check the keyboard. That is worth settling
-  in K2, where a rebound action can change device.
+  in K2, where a rebound action can change device. _(Settled in K2.)_
 - One difference, in practice unseen: zoom sums the wheel's two axes, where
   it used to take horizontal only when vertical was 0. They differ only when
   both move in one frame.
@@ -270,28 +270,70 @@ mine.
 - The editor already places enemies, gates, lanes and jump gates, so the
   tutorial levels can be built with the tools that exist, plus H2's tool.
 
-### K2. The controls in the menu — *proposed*
+### K2. The controls in the menu — *built*
 
 **Asked:** controls settings in the menu.
 
-**Proposed**
-- A **CONTROLS** page under Settings:
-  - the control scheme, as a choice row (MouseThrust, TurnWithKeys,
-    ScreenDirections);
-  - one row per action showing its binding. Pressing a row waits for the
-    next key or mouse button and binds it;
-  - **Reset to defaults**.
-- Saved in `settings.cfg` with the rest of the player's settings.
-- **Lands:** game. The rows are `wgpu2d::Menu` rows, and the bindings are
-  K1's table.
+**Decided**
+- **The scheme and rebinding.** A **CONTROLS** page under Settings: the
+  control scheme as a choice row, then one row per gameplay action, then
+  **Reset to defaults** and **Back**.
+- **Two slots per action**, a primary and a secondary, as two columns. Left
+  and right pick the column; pressing a cell shows PRESS A KEY and waits for
+  the next key or mouse button. Escape cancels.
+- **A key another action has is taken from it** (the author's rule). The
+  other action's slot is cleared and shows NEEDS A KEY in red, and the page
+  cannot be left until that slot has a key again. **Reset to defaults** always
+  clears it.
+- **The debug panel has a key only while text is typed into it**, and a
+  mouse button or the wheel only while the pointer is over it. This is
+  decided by the binding's device, in one place, so a rebound action follows
+  its new device. Every call site's own check is gone.
+  - _Changed:_ Tab, Shift, V, M, 1–4, = and −, and Escape now work while the
+    panel has focus but nothing is being typed. Before, they did not.
+- **What is not rebindable:** Escape and the menu's keys, which are the way
+  back out of a bad binding, and the wheel's actions (Cycle weapon, Zoom),
+  which need a wheel.
+- **Keys** stay the platform's 48 (A–Z, 0–9, Space, Enter, the arrows, Left
+  Ctrl, Tab, −, =, Shift), plus the two mouse buttons. Teaching the platform
+  the rest of the keyboard is still open.
+- **Saved** in `settings.cfg` as the scheme, plus one `bind` line for each
+  slot that differs from its default (`bind cloak 0 key W`,
+  `bind forward 0 none`). A changed default therefore still reaches a
+  player who never touched that action.
+- **The scheme is the player's now**, not tuning: it left the tuning file and
+  is saved with the settings. The debug panel's radio buttons still change it
+  for the session.
+
+**Built**
+- `actions::Binding` can be **unbound** (`code` −1), skipped by every query
+  and by `names`. A cleared slot needs this.
+- `wgpu2d::Menu::fields`: a label and several selectable cells, the column
+  kept as the selection moves, so a page of them reads as a table.
+  `Menu::note`: an unselectable line of text.
+- `controls`: `rebindable`, `binding`, `slotName`, `bind` (returns the slot
+  it took), `resetDefaults`, `firstPressed` / `anythingHeld` for the wait,
+  and `write` / `read` for the file. The ImGui rule lives in its `Source`.
+- `playerMove::scheme` / `setScheme`; `playerSettings::save`.
+- The wait for a key arms only once everything is let go, so the click or
+  Enter that opened it is not taken as the binding. The frame the wait ends
+  gives the menu no input, so the Escape that cancels does not also leave
+  the page.
+- Checked, with temporary injected actions since removed:
+  - from the pause menu to Controls;
+  - W bound to Cloak took Forward's primary slot (Forward kept UP);
+  - Back was refused with "GIVE FORWARD A KEY FIRST";
+  - `settings.cfg` held exactly the two changed slots;
+  - all 17 rows fit at 1440;
+  - the engine test also covers unbound bindings.
+
+  Not yet played with real input.
 
 **Open questions**
-- Full rebinding, or the control scheme only for now?
-- What happens when a key is bound twice: refused, or swapped with the
-  action that had it?
-- The keys the platform knows are A–Z, 0–9, Space, Enter, Escape, the
-  arrows, Left Ctrl, Tab, −, = and Shift. Is that enough, or should the
-  platform learn the rest of the keyboard?
+- Should the platform learn the rest of the keyboard (F-keys, punctuation,
+  Alt, the right-hand modifiers), and the middle mouse button?
+- A page this long would need to scroll on a much smaller window. Fine at
+  500 to 1440 tall today.
 
 **Engine ideas**
 - `wgpu2d::Menu` already has a choice row, so the scheme is one row.

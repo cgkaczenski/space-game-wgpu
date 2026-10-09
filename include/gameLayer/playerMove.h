@@ -28,6 +28,11 @@ namespace playerMove
 		ScreenDirections,
 	};
 
+	// The control scheme. The player's setting (playerSettings, hints roadmap
+	// K2), not tuning; the debug panel's radio buttons change it too.
+	Controls scheme();
+	void setScheme(Controls c);
+
 	// Reads the keys into an intent for the player's body and steps it by
 	// `gameDeltaTime` (gameplay roadmap P1: every ship is a movement::Body,
 	// moved by movement::step). `mouseDirection` is a unit vector from the

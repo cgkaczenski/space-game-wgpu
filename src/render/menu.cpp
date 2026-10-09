@@ -58,6 +58,8 @@ namespace
 		return r;
 	}
 
+	bool pointerOver(const MenuInput &in, glm::vec4 rect) { return in.pointerActive && inside(rect, in.pointer); }
+
 	Color4f rowColour(const Menu &m, const Row &r) { return r.selected ? m.style.selected : m.style.text; }
 
 	float pad(const Menu &m) { return std::round(m.style.font->lineHeight() * m.style.scale * m.style.padding); }
@@ -178,6 +180,48 @@ bool Menu::slider(const char *label, float &value, float min, float max, float s
 	renderer->renderRectangle({bar.x, bar.y, std::round(bar.z * t), bar.w},
 		r.selected ? style.fill : Color4f{style.fill.r, style.fill.g, style.fill.b, style.fill.a * 0.7f});
 	return value != before;
+}
+
+int Menu::fields(const char *label, const char *const *values, int count, const Color4f *colours)
+{
+	const Row r = beginRow(*this);
+	const float p = pad(*this);
+	const Color4f c = rowColour(*this, r);
+	text(*this, {r.rect.x + p, middle(r)}, label, c, style.scale, {0.f, 0.5f});
+	if (count <= 0) { return -1; }
+
+	// The cells take the right 60% of the row, split evenly.
+	const float cellsW = std::round(r.rect.z * 0.6f) - p;
+	const float cellW = std::floor(cellsW / count);
+	const float cellsX = r.rect.x + r.rect.z - p - cellW * count;
+
+	if (r.selected && input.left) { field--; }
+	if (r.selected && input.right) { field++; }
+	field = std::clamp(field, 0, count - 1);
+
+	int pressedCell = -1;
+	for (int i = 0; i < count; i++)
+	{
+		const glm::vec4 cell = {cellsX + cellW * i, r.rect.y, cellW, r.rect.w};
+		const bool over = pointerOver(input, cell);
+		if (over && (input.pointerMoved || input.pointerPressed)) { field = i; }
+		const bool chosen = r.selected && field == i;
+		if (chosen)
+		{
+			renderer->renderRectangle({cell.x + 1.f, cell.y + 1.f, cell.z - 2.f, cell.w - 2.f}, style.highlight);
+			if (input.confirm || (over && input.pointerPressed)) { pressedCell = i; }
+		}
+		const Color4f tc = colours && colours[i].a > 0.f ? colours[i] : (chosen ? style.selected : style.text);
+		text(*this, {cell.x + cell.z * 0.5f, middle(r)}, values[i], tc, style.scale, {0.5f, 0.5f});
+	}
+	return pressedCell;
+}
+
+void Menu::note(const char *s, Color4f colour)
+{
+	const float h = std::round(style.font->lineHeight() * style.scale * style.rowHeight);
+	text(*this, {topCentre.x, y + h * 0.5f}, s, colour, style.scale, {0.5f, 0.5f});
+	y += h;
 }
 
 void Menu::end()

@@ -22,7 +22,7 @@ namespace
 			for (int i = 0; i < a.count; i++)
 			{
 				const Binding &o = a.bindings[i];
-				if (o.modifier >= 0 && o.device == b.device && o.code == b.code && modifierHeld(s, o.modifier))
+				if (o.bound() && o.modifier >= 0 && o.device == b.device && o.code == b.code && modifierHeld(s, o.modifier))
 				{
 					return true;
 				}
@@ -33,7 +33,7 @@ namespace
 
 	bool live(const Table &table, const Source &s, const Binding &b)
 	{
-		return modifierHeld(s, b.modifier) && !shadowed(table, s, b);
+		return b.bound() && modifierHeld(s, b.modifier) && !shadowed(table, s, b);
 	}
 
 	float wheelOf(const Source &s, const Binding &b)
@@ -106,6 +106,7 @@ float steps(const Table &table, const Source &source, int action)
 std::string name(const Source &source, const Binding &b)
 {
 	std::string out;
+	if (!b.bound()) { return out; }
 	if (b.modifier >= 0)
 	{
 		const char *m = source.keyName ? source.keyName(b.modifier) : nullptr;
@@ -133,7 +134,8 @@ std::string names(const Table &table, const Source &source, int action, const ch
 	std::string out;
 	for (int i = 0; i < a.count; i++)
 	{
-		if (i > 0) { out += separator; }
+		if (!a.bindings[i].bound()) { continue; }
+		if (!out.empty()) { out += separator; }
 		out += name(source, a.bindings[i]);
 	}
 	return out;

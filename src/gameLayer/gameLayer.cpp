@@ -926,8 +926,7 @@ bool gameLogic(float deltaTime)
 	// The menu is the pause (U2): open while paused, and it owns Escape then.
 	const bool menuWasOpen = gameState::paused();
 	{
-		const bool escape = !menuWasOpen && !ImGui::GetIO().WantCaptureKeyboard
-			&& controls::pressed(controls::Action::Pause);
+		const bool escape = !menuWasOpen && controls::pressed(controls::Action::Pause);
 		if (gameState::update(deltaTime, {escape, platform::isFocused()}))
 		{
 			restartGame();
@@ -990,7 +989,7 @@ bool gameLogic(float deltaTime)
 	// The long-range scope (sight roadmap S4b): hold V, in control and not
 	// rammed. While it is held the view leans off the ship, so the aim is
 	// measured from where the ship is on screen, not from the screen's centre.
-	scope::update(controls && session.stunned <= 0.f && !ImGui::GetIO().WantCaptureKeyboard
+	scope::update(controls && session.stunned <= 0.f
 		&& controls::held(controls::Action::Scope), (mousePos - screenCenter) / screenCenter, time.real);
 	if (scope::held())
 	{
@@ -1022,7 +1021,7 @@ bool gameLogic(float deltaTime)
 	}
 	// Tab: fight or flight (M1). Into flight the shield drops; into fight the
 	// bar starts empty, so the shield comes back only once it has refilled.
-	if (controls && !stunnedNow && !ImGui::GetIO().WantCaptureKeyboard
+	if (controls && !stunnedNow
 		&& controls::pressed(controls::Action::Mode))
 	{
 		shipMode::toggle(session.mode, session.energy);
@@ -1047,7 +1046,7 @@ bool gameLogic(float deltaTime)
 	ram::update(session.ram, time.game, controls ? mouseDirection : ram::direction(session.ram));
 	const bool canAimRam = controls && !stunnedNow && !scope::held(); // no ramming while scoped (S4b)
 	if (!canAimRam) { session.aimingRam = false; }
-	else if (controls::pressed(controls::Action::Ram) && !ImGui::GetIO().WantCaptureMouse) { session.aimingRam = true; }
+	else if (controls::pressed(controls::Action::Ram)) { session.aimingRam = true; }
 	if (session.aimingRam && !controls::held(controls::Action::Ram))
 	{
 		session.aimingRam = false;
@@ -1130,7 +1129,7 @@ bool gameLogic(float deltaTime)
 		}
 		// Shift brakes: no thrust, and quickly, not at once, to a stop. In a
 		// lane in flight mode it slides instead, round toward the nose.
-		const bool shift = !ImGui::GetIO().WantCaptureKeyboard && controls::held(controls::Action::Brake);
+		const bool shift = controls::held(controls::Action::Brake);
 		const bool sliding = shift && flying && inLane;
 		session.aim = playerMove::update(session.ship, mouseDirection, time.game,
 			energy::isCloaked(session.energy) || scope::held(), shift && !sliding, session.mode);
@@ -1375,7 +1374,7 @@ bool gameLogic(float deltaTime)
 	// Nor in a jump or the grace after it (W5).
 	if (triggerHeldOver && !controls::held(controls::Action::Fire)) { triggerHeldOver = false; }
 	const bool trigger = controls && !stunnedNow && !scope::held() && !jumpGates::shielded()
-		&& controls::held(controls::Action::Fire) && !ImGui::GetIO().WantCaptureMouse && !triggerHeldOver;
+		&& controls::held(controls::Action::Fire) && !triggerHeldOver;
 	// What the player can see from where the ship now is (sight roadmap S2):
 	// rebuilt once a frame, before anything asks -- a missile's lock first.
 	// Scoped, its long narrow cone joins the sight and the all-round sight
@@ -2507,7 +2506,7 @@ bool gameLogic(float deltaTime)
 		marks.facing = session.ship.facing;
 		marks.seen = &sight::playerMap();
 		for (const Enemy &e : session.enemies) { if (inSight(e)) { marks.enemies.push_back(e.body.position); } }
-		const bool full = !ImGui::GetIO().WantCaptureKeyboard && controls::held(controls::Action::Map);
+		const bool full = controls::held(controls::Action::Map);
 		explorationMap::draw(renderer, w, h, marks, full);
 	}
 
