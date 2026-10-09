@@ -1,4 +1,5 @@
 #include <playerMove.h>
+#include <controls.h>
 #include <tuning.h>
 
 #include <engine/movement.h>
@@ -38,9 +39,9 @@ namespace
 	// Below this the brake finishes the job, rather than halving for ever.
 	const float stoppedSpeed = 15.f;
 
-	float held(int a, int b)
+	float oneIfHeld(controls::Action a)
 	{
-		return (platform::isButtonHeld(a) || platform::isButtonHeld(b)) ? 1.f : 0.f;
+		return controls::held(a) ? 1.f : 0.f;
 	}
 
 	// Screen space is y-down, so a positive angle turns clockwise on screen.
@@ -55,9 +56,9 @@ namespace
 glm::vec2 update(movement::Body &ship, glm::vec2 mouseDirection, float gameDeltaTime, bool drifting,
 	bool braking, shipMode::Mode mode)
 {
-	using platform::Button;
-	const float right = held(Button::D, Button::Right) - held(Button::A, Button::Left);
-	const float forward = held(Button::W, Button::Up) - held(Button::S, Button::Down);
+	using controls::Action;
+	const float right = oneIfHeld(Action::Right) - oneIfHeld(Action::Left);
+	const float forward = oneIfHeld(Action::Forward) - oneIfHeld(Action::Back);
 
 	// Turning is the same whether or not the ship is drifting: the cloak takes
 	// thrust away, not the hull's heading.

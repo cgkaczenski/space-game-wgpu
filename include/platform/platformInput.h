@@ -1,6 +1,7 @@
 #pragma once
 #include <GLFW/glfw3.h>
 #include "gameLayer.h"
+#include <engine/actions.h>
 #include <string>
 
 namespace platform
@@ -119,6 +120,15 @@ namespace platform
 
 	ControllerButtons getControllerButtons();
 	std::string getTypedInput();
+
+	// This input layer as an action table's Source (hints roadmap K1): keys
+	// are Button codes, mouse 0 and 1 the left and right buttons, wheel 0 and
+	// 1 getScrollY and getScrollX.
+	actions::Source actionSource();
+
+	// A Button code as a player reads it: "W", "4", "SPACE". Null if the code
+	// is not a key.
+	const char *buttonName(int key);
 
 	// Vertical scroll since the last frame, in wheel notches: positive is away
 	// from the user. A trackpad sends many fractional values; they are summed.

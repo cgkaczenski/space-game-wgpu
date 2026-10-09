@@ -97,7 +97,7 @@ K2 reopens that.
 
 ## Now: actions, hints, tutorial levels, and the controls in the menu
 
-### K1. Actions: one table between the keys and the game — *proposed*
+### K1. Actions: one table between the keys and the game — *built*
 
 Today each feature reads its own keys. A hint that says "press 4" is then
 written by hand, and is wrong as soon as a key is rebound.
@@ -117,10 +117,53 @@ written by hand, and is wrong as soon as a key is rebound.
   - Platform: that function.
   - Game: the actions and their default bindings.
 
+**Built**
+- `engine/actions`:
+  - a `Table` of actions, each with up to 4 bindings;
+  - a binding is a key, a mouse button or a wheel axis, optionally with a
+    modifier key held;
+  - `held`, `pressed`, `released`, `repeated` (for menus) and `steps` (wheel
+    notches);
+  - `name` and `names` for hints ("4 / WHEEL", "CTRL + WHEEL").
+
+  It reads input only through a `Source` of plain function pointers, so it
+  never sees GLFW.
+- **Most specific wins:** a plain binding is shadowed while a binding on the
+  same input has its modifier held. With Ctrl + wheel bound to Zoom, holding
+  Ctrl takes the wheel from weapon cycling. That replaced the weapons
+  module's own "not with Ctrl" check, and is the general form of it.
+- `platform::actionSource()` and `platform::buttonName`.
+- `gameLayer/controls`: 26 actions with the defaults, key for key what the
+  game read before. The menu's keys are their own actions (Menu up, Menu
+  confirm...), defaulting to the same keys, so rebinding flying does not
+  move the menu.
+- Every gameplay input reads actions now: `gameLayer`, `playerMove`,
+  `weapons`, `zoomControl` and `menu`. Still raw: the level editor (a tool),
+  the menu's pointer, and the debug panel.
+- A **Controls** section in the debug panel lists every action, its bindings,
+  and lights the ones held.
+- **Not moved: whether ImGui has the input.** Each call site keeps its own
+  check, as before. With ImGui's keyboard navigation on, ImGui claims the
+  keyboard whenever the panel is focused, so one blanket rule would stop the
+  ship flying while tuning. The checks are uneven today. Movement and cloak
+  have none; Tab, Shift, V and M check the keyboard. That is worth settling
+  in K2, where a rebound action can change device.
+- One difference, in practice unseen: zoom sums the wheel's two axes, where
+  it used to take horizontal only when vertical was 0. They differ only when
+  both move in one frame.
+- Checked:
+  - a test of the engine's rules with a fake input layer: every combination
+    of Ctrl and both wheel axes against the old hand-written rule;
+    any-binding holds; pressed, held and released on the mouse; the wheel
+    shadowed under Ctrl; names; out-of-range actions;
+  - the game builds and runs with no errors.
+
+  Not yet played with real input.
+
 **Open questions**
 - Is a controller ever likely? The platform layer already reads GLFW
   gamepads (`ControllerButtons`), so an action table is where that would
-  plug in.
+  plug in: a `Device::Pad` and one more function in the `Source`.
 
 ### H1. Hints on screen: in the level, and on the HUD — *proposed*
 

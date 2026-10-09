@@ -1,4 +1,5 @@
 #include <zoomControl.h>
+#include <controls.h>
 
 #include <engine/cameraZoom.h>
 #include "imgui.h"
@@ -60,11 +61,11 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 	// Ctrl + wheel: the wheel alone switches weapons (weapons.h), and Shift
 	// is the brake (playerMove). Scrolling over the debug panel scrolls the
 	// panel.
-	if (!io.WantCaptureMouse && platform::isButtonHeld(platform::Button::LeftCtrl))
+	// Ctrl + wheel, vertical or horizontal, is the Zoom action's binding
+	// (controls.cpp).
+	if (!io.WantCaptureMouse)
 	{
-		// Vertical, or horizontal for a wheel that reports it that way.
-		float scroll = platform::getScrollY();
-		if (scroll == 0.f) { scroll = platform::getScrollX(); }
+		const float scroll = controls::steps(controls::Action::Zoom);
 		if (scroll != 0.f)
 		{
 			camera::zoomBy(zoom, scroll, params);
@@ -76,8 +77,8 @@ float update(float realDeltaTime, glm::vec2 framebufferSize, float despawnDistan
 	if (!io.WantCaptureKeyboard)
 	{
 		float keySteps = 0.f;
-		if (platform::isButtonHeld(platform::Button::Equal)) { keySteps += 1.f; }
-		if (platform::isButtonHeld(platform::Button::Minus)) { keySteps -= 1.f; }
+		if (controls::held(controls::Action::ZoomIn)) { keySteps += 1.f; }
+		if (controls::held(controls::Action::ZoomOut)) { keySteps -= 1.f; }
 		if (keySteps != 0.f)
 		{
 			camera::zoomBy(zoom, keySteps * keyStepsPerSecond * realDeltaTime, params);

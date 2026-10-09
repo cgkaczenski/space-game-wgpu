@@ -1442,7 +1442,7 @@ sight into a target every frame and never clearing it.
 
 ---
 
-## Text: the concepts
+## Text, menus and controls: the concepts
 
 ### U1. A bitmap font — *built*
 
@@ -1550,6 +1550,42 @@ and the frame used one pipeline fewer, because the CRT pass was skipped.
 `src/gameLayer/playerSettings.cpp` · `gameState::resume` ·
 `crt::setPlayerStrength` · `menuChoice` / `triggerHeldOver` in
 `src/gameLayer/gameLayer.cpp`
+
+### K1. An action table — *built*
+
+**Concepts:** The game asks for an action ("is Fire held"), not for a key.
+The table in between is what makes rebinding, second bindings, and hints
+that name their key possible without touching the code that reads input.
+
+- **Input through a Source.** `engine/actions` never sees a window library.
+  The application hands it plain function pointers (is this key held,
+  pressed, released; this mouse button; the wheel; a key's name). Plain
+  pointers rather than `std::function`, so a Source is a value and costs
+  nothing to call.
+- **A wheel is not a button.** It has no up or down, only a frame it moved.
+  So it is held, pressed and repeated on that frame, never released, and
+  `steps` sums its notches. A trackpad sends fractions, and the weapons'
+  accumulator still turns those into whole steps.
+- **Most specific wins.** Ctrl + wheel zooms, and the plain wheel cycles
+  weapons. Rather than each feature checking for the other's modifier, a
+  plain binding is shadowed while any binding on the same input has its
+  modifier held. It is the rule most input systems use, and it removes a
+  cross-feature dependency (`weapons` used to check for Ctrl).
+- **Separate actions for the same keys.** The menu's Up is not flying's
+  Forward, though both default to W. Rebinding one should not move the other.
+- **What did not move: who owns the input.** ImGui's capture checks stay at
+  each call site. With keyboard navigation on, `WantCaptureKeyboard` is true
+  whenever the debug panel is focused, not only when typing. A blanket rule
+  would have changed how the game plays while tuning.
+
+**How it was checked:** a test of the engine against a fake input layer
+compiled outside the game. It checked every combination of Ctrl and the
+two wheel axes against the old hand-written rule, plus held, pressed and
+released, shadowing, names, and out-of-range actions.
+
+**Code:** `include/engine/actions.h` / `src/engine/actions.cpp` ·
+`platform::actionSource` / `buttonName` in `src/platform/platformInput.cpp` ·
+`src/gameLayer/controls.cpp`
 
 ---
 

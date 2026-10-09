@@ -194,3 +194,30 @@ void platform::internal::resetTypedInput()
 {
 	typedInput.clear();
 }
+
+const char *platform::buttonName(int key)
+{
+	static const char *const names[Button::BUTTONS_COUNT] = {
+		"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
+		"T", "U", "V", "W", "X", "Y", "Z",
+		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+		"SPACE", "ENTER", "ESC", "UP", "DOWN", "LEFT", "RIGHT", "CTRL", "TAB", "-", "=", "SHIFT",
+	};
+	if (key < Button::A || key >= Button::BUTTONS_COUNT) { return nullptr; }
+	return names[key];
+}
+
+actions::Source platform::actionSource()
+{
+	actions::Source s;
+	s.keyHeld = [](int k) { return isButtonHeld(k) != 0; };
+	s.keyPressed = [](int k) { return isButtonPressedOn(k) != 0; };
+	s.keyReleased = [](int k) { return isButtonReleased(k) != 0; };
+	s.keyRepeated = [](int k) { return isButtonTyped(k) != 0; };
+	s.mouseHeld = [](int b) { return (b == 0 ? isLMouseHeld() : b == 1 ? isRMouseHeld() : 0) != 0; };
+	s.mousePressed = [](int b) { return (b == 0 ? isLMousePressed() : b == 1 ? isRMousePressed() : 0) != 0; };
+	s.mouseReleased = [](int b) { return (b == 0 ? isLMouseReleased() : b == 1 ? isRMouseReleased() : 0) != 0; };
+	s.wheel = [](int axis) { return axis == 0 ? getScrollY() : axis == 1 ? getScrollX() : 0.f; };
+	s.keyName = buttonName;
+	return s;
+}

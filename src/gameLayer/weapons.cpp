@@ -1,4 +1,5 @@
 #include <weapons.h>
+#include <controls.h>
 #include <tuning.h>
 
 #include <enemy.h>
@@ -277,13 +278,15 @@ void handleInput(Loadout &l)
 	{
 		for (int i = 0; i < l.count; i++)
 		{
-			if (platform::isButtonPressedOn(platform::Button::NR1 + i)) { select(l, i); }
+			if (controls::pressed((controls::Action)((int)controls::Action::Weapon1 + i))) { select(l, i); }
 		}
 	}
 
-	if (!io.WantCaptureMouse && !platform::isButtonHeld(platform::Button::LeftCtrl) && l.count > 0)
+	// The plain wheel: Ctrl + wheel is zoom's, and the action table hands it
+	// the wheel while Ctrl is held (controls.cpp).
+	if (!io.WantCaptureMouse && l.count > 0)
 	{
-		wheel += platform::getScrollY();
+		wheel += controls::steps(controls::Action::CycleWeapon);
 		// Wheel up goes back a slot, down goes forward, and both wrap.
 		while (wheel >= 1.f) { select(l, (l.selected + l.count - 1) % l.count); wheel -= 1.f; }
 		while (wheel <= -1.f) { select(l, (l.selected + 1) % l.count); wheel += 1.f; }

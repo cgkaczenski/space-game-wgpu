@@ -1,4 +1,5 @@
 #include <menu.h>
+#include <controls.h>
 #include <playerSettings.h>
 #include <textLook.h>
 #include <gameLayer.h>
@@ -57,13 +58,13 @@ namespace
 		const ImGuiIO &io = ImGui::GetIO();
 		if (!io.WantCaptureKeyboard)
 		{
-			using B = platform::Button;
-			in.up = platform::isButtonTyped(B::Up) || platform::isButtonTyped(B::W);
-			in.down = platform::isButtonTyped(B::Down) || platform::isButtonTyped(B::S);
-			in.left = platform::isButtonTyped(B::Left) || platform::isButtonTyped(B::A);
-			in.right = platform::isButtonTyped(B::Right) || platform::isButtonTyped(B::D);
-			in.confirm = platform::isButtonPressedOn(B::Enter) || platform::isButtonPressedOn(B::Space);
-			in.back = platform::isButtonPressedOn(B::Escape);
+			using controls::Action;
+			in.up = controls::repeated(Action::MenuUp);
+			in.down = controls::repeated(Action::MenuDown);
+			in.left = controls::repeated(Action::MenuLeft);
+			in.right = controls::repeated(Action::MenuRight);
+			in.confirm = controls::pressed(Action::MenuConfirm);
+			in.back = controls::pressed(Action::MenuBack);
 		}
 		if (!io.WantCaptureMouse)
 		{
