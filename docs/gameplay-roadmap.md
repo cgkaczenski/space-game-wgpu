@@ -432,6 +432,15 @@ A playable level exists. What comes next is two threads that meet at the end:
 The two threads meet at the empty level: it is the test bench for the physics
 and for bosses. Nothing in this section is decided yet.
 
+Two more threads have their own file,
+[`inventory-roadmap.md`](inventory-roadmap.md):
+
+- **Teaching the controls** (K, H, T): hints in the level and on the HUD,
+  tutorial levels, and the controls in the menu. This comes first.
+- **An inventory and loadout** (I1–I4): a stash, what is carried in,
+  salvage, and losing it all on death. Its between-missions screen (I4) is
+  where U3's level select would sit.
+
 ### U1. Text
 
 Nothing in the game can draw a word; every string on screen today is ImGui's.
