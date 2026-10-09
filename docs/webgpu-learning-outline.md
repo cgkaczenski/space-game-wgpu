@@ -1613,6 +1613,36 @@ taking the wrong one, a conflict rule, and saving only what changed.
 `Menu::fields` / `note` in `src/render/menu.cpp` · the Controls page and
 `listen` in `src/gameLayer/menu.cpp`
 
+### H1. A speech bubble — *built*
+
+**Concepts:** A bubble is a box and a tail that read as one shape. That
+comes from the order things are drawn in, not from a new primitive.
+
+- **Frame, then fill.** The frame colour is drawn as a full rectangle and a
+  full triangle, then the fill over both, inset by one font pixel. The
+  tail's fill reaches back into the box, covering the frame between them,
+  so no seam shows. That only works with an opaque fill: a translucent one
+  would let the frame show through.
+- **Where the tail leaves the box.** The line from the box's centre to the
+  target crosses the box's edge. Whichever of `half.x / |d.x|` and
+  `half.y / |d.y|` is smaller says which edge. The base then slides along
+  that edge to stay clear of the corners.
+- **Offset to the edge, not the centre.** A box's reach along a direction
+  is `|d.x|·half.x + |d.y|·half.y`. Placing the centre that much further
+  out keeps a wide box off its own tip. A capture found that the first
+  version covered it.
+- **Off screen is a clamp onto a rectangle.** The same ray-to-rectangle
+  sum as the gate's chevron puts the tip on the screen's inset edge.
+- **Markup instead of a layout engine.** `[4]` and `[mouse:left]` are runs
+  in a line, each with a width. Laying a line out is adding widths.
+- **The HUD's geometry in one place.** To end a tail on a slot, the hint
+  needs the slot's rectangle. The drawing and `elementRect` share one
+  layout function, so the two cannot disagree.
+
+**Code:** `drawCallout` / `measureCallout` / `renderMarkup` in
+`src/render/callout.cpp` · `hud::highlight` / `elementRect` /
+`drawHighlights` · `src/gameLayer/hints.cpp`
+
 ---
 
 ## What comes next

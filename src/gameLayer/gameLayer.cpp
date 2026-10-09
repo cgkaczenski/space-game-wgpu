@@ -18,6 +18,7 @@
 #include <damageNumbers.h>
 #include <utility>
 #include <controls.h>
+#include <hints.h>
 #include <menu.h>
 #include <playerSettings.h>
 #include <shipThruster.h>
@@ -792,6 +793,7 @@ void debugPanelUi()
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
 	debugPanel::section("Camera", zoomControl::debugUi);
 	debugPanel::section("Controls", controls::debugUi);
+	debugPanel::section("Hints", hints::debugUi);
 	debugPanel::section("Enemies", enemiesDebugUi);
 	debugPanel::section("Ship bumps", []
 	{
@@ -2491,6 +2493,11 @@ bool gameLogic(float deltaTime)
 		? damageNumbers::Shown([](glm::vec2 p) { return sight::playerSeesShip(p, 60.f); })
 		: damageNumbers::Shown());
 
+	// Hints (H1): the world camera's view, read before the HUD pushes its
+	// own, and the test hints, before hud::draw so their highlights reach it.
+	const glm::vec4 hintView = renderer.getViewRect();
+	if (gameState::playerPresent()) { hints::debugFrame(session.ship.position, session.ship.facing); }
+
 	hud::showMode(session.mode == shipMode::Mode::Flight);
 	if (gameState::playerPresent()) { hud::showHaul(resources::held(), resources::banked()); }
 	// Flushes the world, then the HUD.
@@ -2509,6 +2516,9 @@ bool gameLogic(float deltaTime)
 		const bool full = controls::held(controls::Action::Map);
 		explorationMap::draw(renderer, w, h, marks, full);
 	}
+
+	// Hints over the HUD and the map, unshaken; under the menu.
+	hints::draw(renderer, hintView, w, h);
 
 	// The menu, over everything (U2). The frame the pause began, it draws
 	// without reading input: that frame's Escape is the one that opened it.

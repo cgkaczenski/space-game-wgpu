@@ -165,7 +165,7 @@ written by hand, and is wrong as soon as a key is rebound.
   gamepads (`ControllerButtons`), so an action table is where that would
   plug in: a `Device::Pad` and one more function in the `Source`.
 
-### H1. Hints on screen: in the level, and on the HUD — *proposed*
+### H1. Hints on screen: in the level, and on the HUD — *built*
 
 **Asked:** a hint hovers at a place in the level, and highlights the HUD,
 such as a weapon slot that animates by changing size.
@@ -188,11 +188,63 @@ such as a weapon slot that animates by changing size.
   - Game: `hud::highlight(element, strength)`, the colours, which hints
     exist.
 
-**Open questions**
-- Does a hint pause the game, slow it, or leave it running?
-- Does a hint go away only when the player does the thing, or also on a key,
-  a click or a timeout?
-- Mouse buttons and the wheel as drawn icons, or as words?
+**Decided**
+- **A speech bubble with a tail**, not a box with a leader line: the tail is
+  a pointed triangle from the box to the target.
+- **Mouse buttons and the wheel are drawn**: a small mouse with the meant
+  part filled. Other keys are key-caps with their names.
+- **Hints have their own colour**, a cyan-green used only for teaching
+  (`textLook::hintColour`): bubbles, rings and HUD highlights.
+
+**Built**
+- `wgpu2d::drawCallout`, `measureCallout` and `renderMarkup`, in
+  `src/render/callout.cpp`:
+  - The bubble is two triangles and some rectangles. The frame colour is
+    drawn first, then the fill inset by one font pixel over both, the
+    tail's fill reaching into the box so the seam is covered.
+  - The text is markup: `[4]` a key-cap, `[!4]` lit, `[mouse:left]`,
+    `[mouse:right]` and `[mouse:wheel]` icons, `\n` between lines.
+  - `offset` is the gap between the target and the box's nearest edge, so
+    a wide box never covers its own tip.
+  - Off screen, the tip is held at the screen's edge and the box comes in
+    from there.
+  - Sizes are in font pixels times the scale, so a pixel font's bubble stays
+    on the font's grid.
+- `hud::highlight(element)` and `hud::elementRect(element, w, h)`:
+  - Elements are the four weapon slots, the ram, the mode, health, energy
+    and the haul line.
+  - A highlighted element grows by up to 14% about its centre at 1.6 Hz on
+    real time, so a pause doesn't freeze it, and gets a frame in the hint
+    colour. The haul line, being text, gets the frame only.
+  - The slot row's geometry is one function now, shared by drawing and by
+    `elementRect`, so a tail ends exactly on the slot.
+- `gameLayer/hints`:
+  - `keys(action)` turns an action's current bindings into caps
+    ("[4] OR [mouse:wheel]"), lit while the action is held, so hints follow
+    rebinding.
+  - `atWorld(point, markup, ring)` adds a pulsing ring round a world point.
+    `atHud(element, markup)` points the tail at the element's edge nearest
+    the screen's centre and highlights the element.
+  - Hints are drawn in screen space over the HUD and the map, unshaken,
+    under the menu.
+- **Debug panel → Hints:** three test hints. The beam ahead of the ship,
+  weapon 4 and the ram on the HUD, and a point far off screen.
+- Checked with offscreen captures at 2560 × 1440, all three tests on:
+  - each bubble's tail ends on its target: the ring, slot 4, the ram slot,
+    and the screen's edge toward the far point;
+  - the slots carry the highlight frame;
+  - the mouse icon shows its button.
+
+  The first capture found the off-screen bubble covering its own tip, which
+  is why the offset is measured to the box's edge.
+
+**Not done, for H2**
+- Whether a hint pauses, slows or leaves the game running, and what
+  dismisses it.
+- Outlining the target itself (a rock, an enemy) with `outline`. The ring
+  stands in for now.
+- A highlight on the map, which `explorationMap` draws: it would need to
+  expose its rectangle.
 
 **Engine ideas**
 - The size animation is cheap: `hud` draws slots as rectangles, so a pulse

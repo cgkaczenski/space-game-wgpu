@@ -63,6 +63,28 @@ namespace hud
 	// the next draw: a line of text under the energy bar. Not called, no line.
 	void showHaul(float held, float banked);
 
+	// The HUD's elements, for a hint to point at and highlight (hints roadmap
+	// H1).
+	enum class Element
+	{
+		Weapon1, Weapon2, Weapon3, Weapon4,
+		Ram,
+		Mode,
+		Health,
+		Energy,
+		Haul,
+		Count
+	};
+
+	// For the next draw: `element` pulses larger about its centre and gets a
+	// frame in the hint colour. The haul line, being text, gets the frame
+	// only -- a pixel font scales by whole numbers.
+	void highlight(Element element);
+
+	// Where `element` is drawn on a `width` x `height` screen, at rest: x, y,
+	// width, height. For a hint's tail to end on it.
+	glm::vec4 elementRect(Element element, int width, int height);
+
 	// Draws the HUD and puts it on screen.
 	//
 	// Flushes whatever the renderer has pending first, on purpose: the HUD is

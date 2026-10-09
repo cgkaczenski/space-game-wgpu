@@ -10,6 +10,11 @@
 
 namespace textLook
 {
+	// The hints' colour (hints roadmap H1): kept for teaching alone -- hint
+	// bubbles, their rings, and HUD highlights -- so a hint is never taken for
+	// danger, loot or the gate.
+	inline const glm::vec3 hintColour = {0.35f, 1.f, 0.72f};
+
 	// Loads the font. Call once from initGame, after the renderer exists.
 	bool init();
 	void cleanup();

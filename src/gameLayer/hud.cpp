@@ -159,29 +159,74 @@ namespace
 	const glm::vec4 pipFull = {0.55f, 1.0f, 0.40f, 1.f};
 	const glm::vec4 pipEmpty = {0.18f, 0.20f, 0.22f, 0.9f};
 
+	// The row's geometry, shared by drawing and by elementRect.
+	struct SlotRow
+	{
+		float size, gap, left, top, total;
+	};
+
+	SlotRow slotRow(int count, int width, int height)
+	{
+		SlotRow r;
+		r.size = height * slotSizePerc;
+		r.gap = r.size * slotGapPerc;
+		r.total = count * r.size + (count - 1) * r.gap;
+		r.left = (width - r.total) * 0.5f;
+		r.top = height - r.size - height * slotBottomPerc;
+		return r;
+	}
+
+	// ---- Highlights (hints roadmap H1) ----------------------------------
+	//
+	// A highlighted element pulses larger about its centre and gets a frame
+	// in the hint colour. Real time, so a pause does not freeze a hint's
+	// pulse. The text is left its size -- a pixel font only scales by whole
+	// numbers -- and gets the frame alone.
+
+	bool highlighted[(int)Element::Count] = {};
+	int lastSlotCount = 4;
+	const float growBy = 0.14f;        // at the top of the pulse
+	const float pulseHz = 1.6f;
+
+	float pulse()
+	{
+		static const auto start = std::chrono::steady_clock::now();
+		const float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+		return 0.5f - 0.5f * std::cos(6.2831853f * pulseHz * t);
+	}
+
+	float grow(Element e)
+	{
+		if (!highlighted[(int)e] || e == Element::Haul) { return 1.f; }
+		return 1.f + growBy * pulse();
+	}
+
+	glm::vec4 grown(glm::vec4 r, float g)
+	{
+		const glm::vec2 extra = glm::vec2(r.z, r.w) * (g - 1.f);
+		return {r.x - extra.x * 0.5f, r.y - extra.y * 0.5f, r.z + extra.x, r.w + extra.y};
+	}
+
 	void drawSlots(wgpu2d::Renderer2D &renderer, const WeaponSlot *slots, int count,
 		float ramReady, int width, int height)
 	{
 		if (!slots || count <= 0) { return; }
+		lastSlotCount = count;
 
-		const float size = height * slotSizePerc;
-		const float gap = size * slotGapPerc;
-		const float total = count * size + (count - 1) * gap;
-		const float left = (width - total) * 0.5f;
-		const float top = height - size - height * slotBottomPerc;
+		const SlotRow row = slotRow(count, width, height);
 
 		// The ram, set apart to the left: not a weapon you select, a move you
 		// make, so it sits outside the row.
 		{
-			const float x = left - size - gap * 3.f;
-			const float border = size * 0.035f;
-			renderer.renderRectangle(glm::vec4{x - border, top - border,
-				size + 2.f * border, size + 2.f * border}, slotFrame);
-			renderer.renderRectangle(glm::vec4{x, top, size, size}, slotBackground);
-			shield::drawIcon(renderer, {x + size * 0.5f, top + size * 0.5f}, size * 0.8f);
+			const glm::vec4 r = grown({row.left - row.size - row.gap * 3.f, row.top, row.size, row.size}, grow(Element::Ram));
+			const float border = r.z * 0.035f;
+			renderer.renderRectangle(glm::vec4{r.x - border, r.y - border,
+				r.z + 2.f * border, r.w + 2.f * border}, slotFrame);
+			renderer.renderRectangle(r, slotBackground);
+			shield::drawIcon(renderer, {r.x + r.z * 0.5f, r.y + r.w * 0.5f}, r.z * 0.8f);
 			if (ramReady < 1.f)
 			{
-				renderer.renderRectangle(glm::vec4{x, top, size, size * (1.f - ramReady)}, cooldownShade);
+				renderer.renderRectangle(glm::vec4{r.x, r.y, r.z, r.w * (1.f - ramReady)}, cooldownShade);
 			}
 		}
 
@@ -189,22 +234,22 @@ namespace
 		// either, a stance the ship is in.
 		if (modeShown)
 		{
-			const float x = left + total + gap * 3.f;
-			const float border = size * 0.035f;
-			renderer.renderRectangle(glm::vec4{x - border, top - border,
-				size + 2.f * border, size + 2.f * border}, slotFrame);
-			renderer.renderRectangle(glm::vec4{x, top, size, size}, slotBackground);
-			shield::drawIcon(renderer, {x + size * 0.5f, top + size * 0.5f}, size * 0.8f);
+			const glm::vec4 r = grown({row.left + row.total + row.gap * 3.f, row.top, row.size, row.size}, grow(Element::Mode));
+			const float border = r.z * 0.035f;
+			renderer.renderRectangle(glm::vec4{r.x - border, r.y - border,
+				r.z + 2.f * border, r.w + 2.f * border}, slotFrame);
+			renderer.renderRectangle(r, slotBackground);
+			shield::drawIcon(renderer, {r.x + r.z * 0.5f, r.y + r.w * 0.5f}, r.z * 0.8f);
 			if (modeFlight)
 			{
 				// The shield put away, and the ship going somewhere: two
 				// chevrons pointing up the screen, over the dimmed icon.
-				renderer.renderRectangle(glm::vec4{x, top, size, size}, modeFlightShade);
-				const float arm = size * 0.28f;
-				const float stroke = std::max(2.f, size * 0.07f);
+				renderer.renderRectangle(r, modeFlightShade);
+				const float arm = r.z * 0.28f;
+				const float stroke = std::max(2.f, r.z * 0.07f);
 				for (int k = 0; k < 2; k++)
 				{
-					const glm::vec2 tip = {x + size * 0.5f, top + size * (0.3f + 0.24f * k)};
+					const glm::vec2 tip = {r.x + r.z * 0.5f, r.y + r.w * (0.3f + 0.24f * k)};
 					renderer.renderLine(tip, tip + glm::vec2{-arm, arm * 0.8f}, modeFlightChevron, stroke);
 					renderer.renderLine(tip, tip + glm::vec2{arm, arm * 0.8f}, modeFlightChevron, stroke);
 				}
@@ -214,7 +259,9 @@ namespace
 		for (int i = 0; i < count; i++)
 		{
 			const WeaponSlot &s = slots[i];
-			const float x = left + i * (size + gap);
+			const float g = i < 4 ? grow((Element)((int)Element::Weapon1 + i)) : 1.f;
+			const glm::vec4 r = grown({row.left + i * (row.size + row.gap), row.top, row.size, row.size}, g);
+			const float x = r.x, top = r.y, size = r.z;
 			const float border = size * (s.selected ? 0.08f : 0.035f);
 
 			renderer.renderRectangle(glm::vec4{x - border, top - border,
@@ -239,8 +286,8 @@ namespace
 			{
 				const float pip = size * 0.12f;
 				const float pipGap = pip * 0.5f;
-				const float row = s.maxAmmo * pip + (s.maxAmmo - 1) * pipGap;
-				const float pipLeft = x + (size - row) * 0.5f;
+				const float rowW = s.maxAmmo * pip + (s.maxAmmo - 1) * pipGap;
+				const float pipLeft = x + (size - rowW) * 0.5f;
 				const float pipTop = top + size + border + pip * 0.6f;
 				for (int a = 0; a < s.maxAmmo; a++)
 				{
@@ -248,6 +295,26 @@ namespace
 						a < s.ammo ? pipFull : pipEmpty);
 				}
 			}
+		}
+	}
+
+	// A frame round each highlighted element, over everything else in the
+	// HUD, brightening with the pulse.
+	void drawHighlights(wgpu2d::Renderer2D &renderer, int width, int height)
+	{
+		const float p = pulse();
+		const float thick = std::max(2.f, std::round(height * 0.003f));
+		const float gapOut = std::max(3.f, std::round(height * 0.006f));
+		const glm::vec4 colour = {textLook::hintColour, 0.55f + 0.45f * p};
+		for (int i = 0; i < (int)Element::Count; i++)
+		{
+			if (!highlighted[i]) { continue; }
+			const glm::vec4 r = grown(elementRect((Element)i, width, height), grow((Element)i));
+			const glm::vec4 o = {r.x - gapOut - thick, r.y - gapOut - thick, r.z + 2.f * (gapOut + thick), r.w + 2.f * (gapOut + thick)};
+			renderer.renderRectangle({o.x, o.y, o.z, thick}, colour);
+			renderer.renderRectangle({o.x, o.y + o.w - thick, o.z, thick}, colour);
+			renderer.renderRectangle({o.x, o.y + thick, thick, o.w - 2.f * thick}, colour);
+			renderer.renderRectangle({o.x + o.z - thick, o.y + thick, thick, o.w - 2.f * thick}, colour);
 		}
 	}
 
@@ -392,6 +459,51 @@ void markOffScreen(glm::vec2 target, glm::vec4 colour, float scale)
 	markers.push_back({target, colour, scale});
 }
 
+void highlight(Element element)
+{
+	if (element != Element::Count) { highlighted[(int)element] = true; }
+}
+
+glm::vec4 elementRect(Element element, int width, int height)
+{
+	glm::vec4 health;
+	{
+		glui::Frame frame({0, 0, (float)width, (float)height});
+		health = glui::Box().xLeftPerc(barLeftPerc).yTopPerc(barTopPerc)
+			.xDimensionPercentage(barWidthPerc).yAspectRatio(barAspect)();
+	}
+	glm::vec4 energy = health;
+	energy.y += health.w * energyBarStep;
+
+	const SlotRow row = slotRow(lastSlotCount, width, height);
+	switch (element)
+	{
+	case Element::Weapon1:
+	case Element::Weapon2:
+	case Element::Weapon3:
+	case Element::Weapon4:
+	{
+		const int i = (int)element - (int)Element::Weapon1;
+		return {row.left + i * (row.size + row.gap), row.top, row.size, row.size};
+	}
+	case Element::Ram: return {row.left - row.size - row.gap * 3.f, row.top, row.size, row.size};
+	case Element::Mode: return {row.left + row.total + row.gap * 3.f, row.top, row.size, row.size};
+	case Element::Health: return health;
+	case Element::Energy: return energy;
+	case Element::Haul:
+	{
+		// The line's own box: drawText's position and the text it prints.
+		const float scale = textLook::screenScale(height);
+		char line[64];
+		std::snprintf(line, sizeof(line), "HOLD %.1f   BANKED %.1f", haulHeld, haulBanked);
+		const glm::vec2 size = wgpu2d::measureText(textLook::font(), line, scale);
+		return {energy.x, energy.y + energy.w * (1.f + haulGapPerc), size.x, size.y};
+	}
+	case Element::Count: break;
+	}
+	return {};
+}
+
 void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 	const WeaponSlot *slots, int slotCount, float ramReady, int width, int height)
 {
@@ -403,25 +515,21 @@ void draw(wgpu2d::Renderer2D &renderer, float health, float energy,
 	// window, and the caller is still in whatever camera it drew the world in.
 	renderer.pushCamera();
 	{
-		glui::Frame frame({0, 0, (float)width, (float)height});
+		const glm::vec4 healthRect = elementRect(Element::Health, width, height);
+		drawBar(renderer, grown(healthRect, grow(Element::Health)), healthBarTexture, healthTexture, health);
 
-		glui::Box bar = glui::Box().xLeftPerc(barLeftPerc).yTopPerc(barTopPerc)
-			.xDimensionPercentage(barWidthPerc).yAspectRatio(barAspect);
-
-		const glm::vec4 healthRect = bar();
-		drawBar(renderer, healthRect, healthBarTexture, healthTexture, health);
-
-		glm::vec4 energyRect = healthRect;
-		energyRect.y += healthRect.w * energyBarStep;
-		drawBar(renderer, energyRect, energyBarTexture, energyTexture, energy);
+		const glm::vec4 energyRect = elementRect(Element::Energy, width, height);
+		drawBar(renderer, grown(energyRect, grow(Element::Energy)), energyBarTexture, energyTexture, energy);
 
 		drawSlots(renderer, slots, slotCount, ramReady, width, height);
 		drawPointer(renderer, width, height);
 		drawText(renderer, energyRect, height);
+		drawHighlights(renderer, width, height);
 		pointerShown = false; // for one draw; the game says so every frame
 		modeShown = false;
 		haulShown = false;
 		markers.clear();
+		for (bool &h : highlighted) { h = false; }
 	}
 	renderer.popCamera();
 

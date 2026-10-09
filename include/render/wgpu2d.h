@@ -608,6 +608,58 @@ namespace wgpu2d
 		void drawFullscreenEffect(Texture source, Effect effect, const EffectParams &params);
 	};
 
+	// ---- Callouts (hints roadmap H1) --------------------------------------
+	//
+	// A speech bubble: text in a framed box, and a pointed tail from the box
+	// to a target. Screen space, drawn with rectangles, triangles and
+	// renderText in whatever camera is current -- the caller pushes a screen
+	// camera and turns a world point into screen pixels first, as it would
+	// for any HUD marker.
+	//
+	// The text is markup. `[4]` is a key-cap: the text in a small framed box.
+	// `[!4]` is the same cap lit, for a key being held. `[mouse:left]`,
+	// `[mouse:right]` and `[mouse:wheel]` draw a mouse with that part marked
+	// instead of a word (`[!mouse:left]` lit). '\n' starts a line. A '[' with
+	// no ']' is drawn as it is.
+
+	struct CalloutStyle
+	{
+		const Font *font = nullptr;
+		float scale = 1.f;          // the font's; whole numbers for a pixel font
+
+		// The fills are drawn over the frame colour, inset by one font pixel,
+		// so they should be opaque: a translucent fill shows the frame through.
+		Color4f text = {1, 1, 1, 1};
+		Color4f frame = {1, 1, 1, 1};      // the box's edge and the tail's
+		Color4f fill = {0, 0, 0, 1};       // inside the box and the tail
+		Color4f capFrame = {1, 1, 1, 1};
+		Color4f capFill = {0.15f, 0.15f, 0.15f, 1};
+		Color4f capText = {1, 1, 1, 1};
+		Color4f capLit = {1, 1, 1, 1};     // a lit cap's fill; its text is `fill`'s colour
+
+		// In font pixels, so all of it scales with the text.
+		float padding = 4.f;        // text to the box's edge
+		float tailWidth = 10.f;     // where the tail leaves the box
+		float margin = 6.f;         // the box and the tip from the screen's edge
+	};
+
+	// The box `markup` needs at `style`, padding included.
+	glm::vec2 measureCallout(const char *markup, const CalloutStyle &style);
+
+	// Draws the bubble in the direction of `offset` from `target`, with the
+	// length of `offset` between the target and the box's nearest edge, kept
+	// on screen, and its tail ending on `target`. A target off screen is held
+	// to the screen's edge, the tail pointing out toward it, and the box comes
+	// in from there. A target under the box (pushed there by the screen's
+	// edge) gets no tail. Returns the box drawn: x, y, width, height.
+	glm::vec4 drawCallout(Renderer2D &renderer, glm::vec2 target, glm::vec2 offset,
+		const char *markup, const CalloutStyle &style);
+
+	// The markup alone, without a box, anchored as renderText anchors: for a
+	// key-cap next to a HUD element.
+	void renderMarkup(Renderer2D &renderer, glm::vec2 position, const char *markup,
+		const CalloutStyle &style, glm::vec2 anchor = {0, 0});
+
 	// ---- Menus (gameplay roadmap U2) --------------------------------------
 	//
 	// An immediate-mode menu, the way ImGui is one: each frame the caller
