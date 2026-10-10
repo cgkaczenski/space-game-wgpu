@@ -1,0 +1,693 @@
+# Every tunable the game registers, at the value the code gives it.
+#
+# A line is `key value`. A # starts a comment and is ignored. Bools are 0 or 1.
+# An enum is its integer, names in order in the comment. A colour is r g b, or
+# r g b a, each 0 to 1. A vector is its components in order.
+#
+# Loading a set (debug panel, Tuning) puts every variable back to the code's
+# default, then applies the file. This file is those defaults, so loading it
+# matches the panel's Defaults. The panel's Save writes only what differs from
+# the code, and drops these comments -- saving over this file from the panel
+# would replace it with a short one.
+#
+# The key is the Group's prefix plus the name in that Group. Each section names
+# the file that registers it, which is where the variable lives and is read.
+
+# ---- arena (src/gameLayer/arena.cpp) ----
+# The outer edge, and the closing circle. Ring positions come from the level.
+# The timings are copied onto every stage when the round starts, and re-read
+# live after that.
+
+arena.ringVisible 1          # draw the arena's outer edge
+arena.ringWidthPixels 3      # that edge, in screen pixels
+arena.closingPaused 0        # debug: hold the schedule where it is
+arena.holdSeconds 60         # each stage waits this long before it closes
+arena.firstCloseSpeed 150    # the first close, world units per second; later stages multiply by speedGrowth
+arena.speedGrowth 1.6        # each close after the first is this times the one before
+arena.warnSeconds 10         # the last seconds of a hold, when the ring flashes and turns red
+arena.warnStartHz 1          # flash rate at the start of the warning
+arena.warnEndHz 7            # flash rate at the end of the warning
+arena.burnPerSecond 0.08     # hull per second outside the ring. The player's life is 1
+arena.enemyBurnPerSecond 0.08 # the same, for an enemy. An ordinary enemy's life is 1
+arena.burnTickSeconds 0.5    # damage lands in ticks, so a graze that comes back in costs nothing
+
+# ---- asteroids (src/gameLayer/asteroids.cpp) ----
+# Rocks, fields, cores, and the breaking of a rock into ore. Pushes and the
+# spring are the physics step. The stone numbers are what the rock shader
+# reads. Core rules are what a ship feels on touching a field's core
+# (asteroids::coreRules, used from the game's bump). A change to how a field
+# is grown takes effect when the round restarts.
+
+asteroids.shotPush 12000       # impulse on a rock per unit of a shot's damage
+asteroids.missilePush 4        # a missile pushes this many times a shot
+asteroids.beamPush 400         # steady force while the beam touches a rock
+asteroids.beamCreep 25         # the fastest the beam may push a rock, world units per second
+asteroids.beamRoll 0.25        # the fastest the beam may turn a rock, radians per second
+asteroids.blastPush 3000       # an explosion's push at its centre, falling to 0 at blastReach
+asteroids.blastReach 1800      # how far that push and its damage reach
+asteroids.ramPush 30000        # the ram throws rocks out from the prow
+asteroids.ramForward 0.7       # how much of the ram's own direction is added to that throw
+asteroids.friction 0.4         # rock on rock, at the contact, so a glance hands over spin
+asteroids.restingSpeed 120     # slower than this, a touch does not bounce
+asteroids.springDelay 3        # seconds a struck field rock stays loose before it heads home
+asteroids.springEase 1         # seconds for that spring to come fully on
+asteroids.returnSpeed 500      # the fastest a rock drifts home
+asteroids.linearDamping 0.5    # per second; drift halves in about 1.4 s
+asteroids.angularDamping 0.3   # the same, for spin
+asteroids.maxSpeed 1800        # a pebble is light; without a cap a shot fires it out of the field
+asteroids.maxSpin 10           # radians per second
+asteroids.restitution 0.85     # how lively a rock-on-rock bounce is
+asteroids.springPeriod 5       # seconds for a loose rock to settle home. Mass cancels
+asteroids.springDamping 1      # 1 settles without overshoot
+asteroids.density 0.0001       # mass per unit area. A radius-350 rock weighs about 38
+asteroids.lightAzimuth 225     # where the light comes from, degrees. 0 is from the right, 90 from below
+asteroids.lightElevation 40    # how high above the plane, degrees
+asteroids.lightStrength 1.1
+asteroids.coarsen 0.3          # 0 photographic, 1 blocky and banded
+asteroids.stone.tint 1.154 0.976 0.783  # ordinary rock hue, r g b
+asteroids.stone.ambient 0.35   # light that reaches every side
+asteroids.stone.macro 0.3      # the texture again at 5x: big features on big rocks
+asteroids.stone.round 1.6      # how far the edges turn away
+asteroids.stone.selfShadow 0.8 # how dark a ridge's shadow falls across the cracks
+asteroids.stone.shine 0.06     # specular highlight
+asteroids.coreStone.tint 0.62 0.68 0.82 # a core: dark, cool, glossy
+asteroids.coreStone.ambient 0.2
+asteroids.coreStone.macro 0.8
+asteroids.coreStone.round 2.5
+asteroids.coreStone.selfShadow 1
+asteroids.coreStone.shine 0.5
+asteroids.heatColour 1 0.42 0.08 # the glow while the beam mines, r g b
+asteroids.heatReach 0.8        # how far from the deepest cracks toward the ridges full heat glows
+asteroids.heatRise 0.8         # per second under the beam
+asteroids.heatCool 1.5         # per second after the beam leaves
+asteroids.heatRadius 380       # how far round the burn the glow spreads
+asteroids.shadowDistance 160   # a field rock's shadow on a ship, world units from the light
+asteroids.shadowAlpha 0.6      # how dark a ship fully in that shadow goes
+asteroids.debrisParallax 0.35  # foreground debris: 0 moves with the world
+asteroids.debrisShade 0.25     # how dark that debris is
+asteroids.debrisFill 0         # how much of it there is. 0 is off
+asteroids.healthScale 0.3      # health of a rock of area 10000 (radius about 56). Health grows with area^0.75
+asteroids.beamRockScale 4      # the beam wears rock this many times faster than it wears a ship
+asteroids.blastDamage 0.5      # at a blast's centre, falling off like the push
+asteroids.ramDamage 1.5
+asteroids.orePerArea 0.000012  # ore a rock holds, per unit area. Only the beam sheds it
+asteroids.orbValue 0.25        # ore per orb the beam sheds. resources.cpp turns that into hold units
+asteroids.pieceArea 70000      # a break splits the rock into pieces of about this area
+asteroids.minPieceRadius 20    # smaller than this, a piece is dust
+asteroids.breakKick 220        # outward speed on top of the parent's own motion
+asteroids.breakSpin 1.2        # radians per second as the pieces fly apart
+asteroids.shardFlight 1.2      # seconds the pieces fly before the pull home
+asteroids.shardDrag 1.6        # per second, while they fly
+asteroids.shardSink 2          # seconds to settle into the background
+asteroids.shardShade 0.45      # of a rock's brightness, once sunk
+asteroids.shardScale 0.85      # of its size, once sunk
+asteroids.shardGather 4        # the pull's period, seconds
+asteroids.shardReturnSpeed 300
+asteroids.shardSpread 1.12     # how far apart the gathered pieces sit, so the cracks show
+asteroids.shardLimit 400       # past this the oldest shrink away
+asteroids.crackWidthPixels 2   # the dark cracks, on screen
+asteroids.crackGlowWidthPixels 3.5 # the orange cracks near the beam
+asteroids.coreScale 3          # a core's radius, in the field's max rock size
+asteroids.coreMinFit 0.5       # never smaller than this share of that size, so one dragged out of the paint stays a rock
+asteroids.core.damage 0.15     # to the player's hull, or an enemy's life, on touching a core
+asteroids.core.bounce 0.6      # of the speed into the core that comes back out
+asteroids.core.minOutSpeed 700 # however gently it was touched
+asteroids.core.grace 0.5       # seconds before touching it hurts again
+asteroids.core.enemyKnock 900  # how hard an enemy is thrown back out
+asteroids.core.enemyStun 0.35  # seconds that enemy tumbles
+asteroids.cornerSpacing 160    # world units of outline per corner, so a big rock is as craggy up close as a small one
+asteroids.roughness 0.22
+asteroids.angleJitter 0.6
+asteroids.fieldMinFraction 0.12 # the smallest rock in a field, as a fraction of the largest
+asteroids.fieldLayers 3        # grids, coarse to fine
+asteroids.fieldGapVariation 1  # 0 keeps the full gap; 1 allows anywhere up to it
+asteroids.fieldSmallBias 1.5   # how strongly sizes lean small within a layer
+asteroids.fieldFill 0.9        # the chance a cell holds a rock
+asteroids.areaDotSpacingPixels 14 # the editor's tint of a painted area
+asteroids.shadeInField 0.45    # a hidden ship's light, inside paint
+asteroids.maskCell 50          # the paint mask, world units per cell. Sight, mining and bumps share it
+asteroids.rockGridCell 400     # the spatial hash, world units per bucket
+asteroids.rockGridSlack 100    # how far a rock may move before the buckets are rebuilt
+asteroids.chunkSize 4000       # rocks are grown in squares of this size, around the view
+asteroids.chunkMargin 1        # chunks made past the view, on every side
+asteroids.chunkBudgetMs 4      # making rocks, per frame, once the round is under way
+asteroids.textureWorldSize 1800 # one repeat of the stone texture, so a big rock wraps it
+asteroids.brightness 0.9
+asteroids.showOutlines 0       # debug: draw rock outlines
+
+# ---- clock (src/gameLayer/gameClock.cpp) ----
+# Scales the game step inside gameClock::tick. 50 is 1x. 100 is 1.5x. Below
+# 50 an exponential curve, so 0 is about 1% speed. Hit-stop and pause ignore it.
+
+clock.gameSpeedScale 50
+
+# ---- crates (src/gameLayer/crates.cpp) ----
+# A kill can leave a crate. Hold the pointer on one near the ship and the
+# loadout menu opens with its contents beside the hold (src/gameLayer/loadoutMenu.cpp).
+
+crates.dropChance 0.35     # of kills. A boss always drops, and levels can place crates
+crates.countTwo 0.3        # a rolled crate holds two weapons
+crates.countThree 0.1      # or three. Otherwise one
+crates.weight.burst 35     # kind weights. The beam is a weapon here, not the free slot
+crates.weight.heavy 25
+crates.weight.missile 20
+crates.weight.beam 20
+crates.stunChance 0.15     # each modifier, rolled on its own. Spread is never on the beam
+crates.lockdownChance 0.1
+crates.spreadChance 0.15
+crates.openReach 2200      # the ship must be this close, world units
+crates.openSeconds 3       # hold the pointer that long
+crates.size 170            # the crate, world units
+
+# ---- crt (src/gameLayer/crt.cpp) ----
+# The monitor pass, resources/shaders/crt.wgsl, run as the frame's final
+# effect. strength scales the parts. The glow is wgpu2d::FinalGlow
+# (include/render/wgpu2d.h), three compute dispatches on the frame target.
+
+crt.enabled 1
+crt.strength 1             # master scale on curvature, scanlines, mask, fringing, vignette
+crt.warmth 0.5             # 0 to 1. Highlights and the glow pull toward the shader's warm colour
+crt.curvature 0.06
+crt.scanlines 0.14
+crt.period 8               # scanline spacing, in whole output pixels
+crt.mask 0.08              # the shadow mask
+crt.warpStreak 0.35        # the extraction warp: how far toward the centre the longest streak reaches
+crt.fringing 0.5           # colour fringes at the edges
+crt.vignette 0.35
+crt.glowOn 1               # the phosphor bloom. Off, the rest of the CRT still runs
+crt.glow.threshold 0.55    # brightness that starts to bloom, 0 to 1
+crt.glow.knee 0.25         # how soft that cut is. 0 is a hard edge
+crt.glow.width 3           # blur width, in half-resolution texels (FinalGlow::sigma)
+crt.glow.intensity 0.7     # how much of the blur is added back
+
+# ---- damageNumbers (src/gameLayer/damageNumbers.cpp) ----
+# Floating text on a hit, drawn with textLook. Hits on the same target within
+# mergeSeconds add into one number.
+
+damageNumbers.on 1
+damageNumbers.mergeSeconds 0.35
+damageNumbers.lifeSeconds 0.9    # from the latest hit to gone
+damageNumbers.fadeFrom 0.6       # of the life: fading after this
+damageNumbers.riseScreens 0.04   # of the screen height, over the life
+damageNumbers.lift 0.03          # of the screen height: starts this far above the hit
+damageNumbers.sizeStep 1         # textLook::screenScale's size
+damageNumbers.colour 1 0.92 0.65
+
+# ---- effects (src/gameLayer/effects.cpp) ----
+# Wreckage, explosions, the camera shake, and the drawing of an enemy's sight
+# cone. The cone geometry comes from sight.cpp; this is only how strongly it
+# is filled and rimmed.
+
+effects.sightFill 0.5
+effects.sightRim 1
+effects.sightRimPixels 1.5
+effects.debrisKept 400         # past this the oldest pieces fade out. About 66 kills
+effects.debrisSpeedMax 900     # world units per second, at the burst
+effects.debrisSpinMax 540      # degrees per second, either way
+effects.blastLife 1.1          # seconds
+effects.shakeAmplitude 45      # world units at intensity 1
+effects.shakeDecay 8           # per second
+effects.blastGrowth 2.2        # final size, in ship sizes
+
+# ---- enemies (src/gameLayer/enemyAi.cpp) ----
+# How each class flies and fights. Flight is rolled at spawn onto the shared
+# integrator (include/engine/movement.h), so a change applies to new spawns --
+# restart the round. Tactics are the circle they hold, flown by
+# include/engine/steering.h. Chances are rolled per enemy, except a level line
+# that sets shield, cloak, ram, or a weapon by hand.
+# topSpeed and turn are a range; each spawn rolls inside it.
+# mass is for blows and bumps. The player's is 1.
+# falloff is drag per second: coasting speed halves in ln 2 / falloff.
+# thrust is units per second squared at full intent.
+
+enemies.boss.mass 3
+enemies.boss.thrust 6000
+enemies.boss.falloff 0.3
+enemies.boss.topSpeedMin 2000
+enemies.boss.topSpeedMax 2000
+enemies.boss.turnMin 3.5       # radians per second
+enemies.boss.turnMax 3.5
+enemies.boss.range 1200        # the radius it circles at
+enemies.boss.orbitSpeed 600    # how fast it goes round, world units per second
+enemies.boss.lead 1            # the most it leads the player by, seconds
+enemies.boss.life 10           # an ordinary enemy's is 1
+enemies.boss.size 1.6          # of an ordinary enemy's
+enemies.boss.phase2At 0.6666667 # of its life: below this it rams and cloaks too
+enemies.boss.phase3At 0.3333333 # below this, enraged
+enemies.boss.enragedSpeed 1.3  # thrust and top speed, enraged
+enemies.boss.enragedCooldown 0.6 # its weapons' cooldowns, multiplied, while enraged
+enemies.boss.weaponsMin 2
+enemies.boss.weaponsMax 4
+enemies.boss.modifierChance 0.3 # each modifier on each rolled weapon
+enemies.chance.shield 0.2      # an ordinary enemy, at spawn
+enemies.chance.cloak 0.2
+enemies.chance.ram 0.2
+enemies.chance.secondWeapon 0.1
+enemies.chance.stun 0.1
+enemies.chance.lockdown 0.1
+enemies.chance.spread 0.1
+enemies.spreadShots 2          # a spread weapon's extra shots. Not on a beam
+enemies.ram.reach 1500         # it rams when engaged, off cooldown, lined up, and this close
+enemies.ram.coneDegrees 12
+enemies.ram.memory 1.5         # seconds it still knows where the player is after a ram carries it past
+enemies.cloak.belowLife 0.5    # it cloaks to escape once hurt past this, with a full bar
+enemies.cloak.ambushRange 900  # it fires, which uncloaks it, once this close and lined up
+enemies.cloak.longest 6        # seconds. After that it fires anyway
+enemies.spawningEnabled 0      # endless mode only, with no level loaded: waves around the player
+enemies.conesVisible 1         # draw their sight cones (the look is effects.*)
+enemies.hearingRadius 400      # a shot or a bump this close wakes a wanderer
+enemies.searchSeconds 4        # how long it hunts the last place it knew
+enemies.scanRate 1.2           # radians per second, while searching
+enemies.wanderSpeedFraction 0.45 # of its top speed, while it has not seen the player
+enemies.stunDrag 4             # per second, while stunned: the blow is mostly spent in half a second
+enemies.rusher.mass 0.8
+enemies.rusher.thrust 9000
+enemies.rusher.falloff 0.6
+enemies.rusher.topSpeedMin 800
+enemies.rusher.topSpeedMax 1800
+enemies.rusher.turnMin 2.2
+enemies.rusher.turnMax 4.2
+enemies.rusher.range 550
+enemies.rusher.orbitSpeed 700
+enemies.rusher.lead 1
+enemies.sniper.mass 1.4
+enemies.sniper.thrust 3600
+enemies.sniper.falloff 0.6
+enemies.sniper.topSpeedMin 1200
+enemies.sniper.topSpeedMax 1600
+enemies.sniper.turnMin 1.8
+enemies.sniper.turnMax 2.4
+enemies.sniper.range 1900
+enemies.sniper.orbitSpeed 350
+enemies.sniper.lead 1
+enemies.steer.response 0.25    # seconds to close a gap in velocity. Shorter is twitchier. include/engine/steering.h
+enemies.steer.brakeShare 0.6   # of full thrust the braking curve assumes, so some thrust is left to steer with
+
+# ---- energy (src/gameLayer/energy.cpp) ----
+# One bar per ship: the shield while it is up, the cloak when it is spent.
+# Shared by the player and every enemy.
+
+energy.refillSeconds 8         # from empty to full
+
+# ---- explorationMap (src/gameLayer/explorationMap.cpp) ----
+# The corner map, and the full map while the map key is held. It is also the
+# fog's mask of what has never been seen (worldGrade's unvisited black).
+
+explorationMap.shown 1
+explorationMap.cornerSize 0.26  # of the window's height
+explorationMap.cornerSpan 40000 # world units across the corner map
+explorationMap.fullSize 0.86    # of the window's height
+explorationMap.exploredDim 0.55 # how bright a place that was seen, but is not seen now
+explorationMap.fieldColour 0.42 0.36 0.3
+explorationMap.openColour 0.07 0.09 0.17
+explorationMap.laneColour 0.25 0.6 0.75
+
+# ---- flight (src/gameLayer/shipMode.cpp) ----
+# Fight is the player's own movement (player.*). Flight, Tab, multiplies that
+# top speed and acceleration, and drops the shield. The beam only mines in
+# flight.
+
+flight.topSpeed 1.6            # times player.momentum.topSpeed, or instant.speed
+flight.acceleration 1.5        # times player.momentum.acceleration
+
+# ---- framePacing (src/platform/framePacing.cpp) ----
+# The platform loop. On, the game step is paced to the display instead of
+# taking whatever the frame measured.
+
+framePacing.enabled 1
+
+# ---- game (src/gameLayer/gameLayer.cpp) ----
+# The round itself: regen, which enemies sleep, scenery, ship bumps, the
+# enemy beam, the player's stun, and what a boss leaves.
+
+game.healthRegen 1             # the player heals between hits
+game.wakeMargin 0.25           # of the view, on every side. Enemies outside sleep, unless engaged or searching
+game.scenery 1                 # the planets
+game.bump.bounce 0.4           # of the closing speed that comes back apart. 0 they stop, 1 a perfect bounce
+game.bump.damageToPlayer 0.05  # hull. The shield blocks it, as it blocks a shot
+game.bump.damageToEnemy 0.05   # of an enemy's life
+game.bump.minSpeed 200         # world units per second of closing speed, or the bump is only a touch
+game.bump.grace 0.5            # seconds before the same pair hurts again
+game.enemyBeam.range 3000      # an enemy laser, world units
+game.playerStunDrag 4          # per second, while the player tumbles. Same idea as enemies.stunDrag
+game.boss.orbCount 24          # ore a dead boss leaves
+game.boss.orbValue 0.5         # ore per one of those orbs
+
+# ---- gameState (src/gameLayer/gameState.cpp) ----
+# Death, extraction, and the pause fade. Real seconds, not game time, except
+# the warp, which also shoves the ship's movement for that long.
+
+gameState.lingerSeconds 2      # the world keeps running around the wreck
+gameState.switchOffSeconds 0.45 # static, then the picture collapses
+gameState.switchOnSeconds 0.3  # the same, backwards, over the new round
+gameState.warpDuration 0.8     # the surge before the white, on extraction
+gameState.whiteSeconds 0.4     # up to white
+gameState.fromWhiteSeconds 0.6 # back down, over the new round
+gameState.lookSeconds 0.15     # into and out of the paused grade (worldGrade's pause numbers)
+gameState.warpStartSpeed 300   # the ship's speed at the start of the surge
+gameState.warpSpeedGain 20000  # added over the surge, world units per second
+gameState.warpStretchGain 6    # how far the hull stretches, fed to the CRT warp
+
+# ---- gate (src/gameLayer/gate.cpp) ----
+# The extraction gate. The level places it. Hover inside, uncloaked, and it
+# charges on its own; flying in once it is ready banks the hold and warps out.
+
+gate.hoverSeconds 3
+gate.chargeSeconds 30
+gate.chargeStartHz 0.5         # the pulse at the start of the charge. The tempo is the countdown
+gate.chargeEndHz 6
+gate.gateRadius 600            # matches the editor's marker
+gate.clearing 2500             # open space kept round it in any field. Takes effect when the round restarts
+gate.swirlReach 2.2            # of the radius
+gate.bodyPerRadius 2.45        # how big the body of the gate is, against its radius
+gate.openSpin 0.25             # turns per second while it is open and waiting
+gate.readySpin 3               # turns per second once it is ready
+
+# ---- hitboxes (src/gameLayer/hitboxDebug.cpp) ----
+# Debug outlines on colliders.
+
+hitboxes.showing 0
+hitboxes.freezeDamage 1        # while outlines are on, hits draw but do not apply
+
+# ---- hub (src/gameLayer/hub.cpp) ----
+# Between missions: the stash, the shop, and the level buttons. Prices are
+# ore. Selling pays sellFraction of the price. cellPerc sizes the grids.
+
+hub.stockSize 6
+hub.price.burst 20
+hub.price.heavy 40
+hub.price.missile 50
+hub.price.beam 30
+hub.price.modifier 25          # added per stun, lockdown, or spread
+hub.sellFraction 0.5
+hub.cellPerc 0.06              # of the window height, one square
+
+# ---- interior (src/gameLayer/interior.cpp) ----
+# What asteroid paint does to every ship's top speed, including flight's
+# boost. The ram bursts through. Applied each step on top of movement's options.
+
+interior.rule 2                # 0 Normal (paint changes nothing), 1 SpeedCap (cut at once), 2 BleedsOff (cut, and the excess fades)
+interior.topSpeed 0.5          # of that ship's own top speed, inside paint
+interior.settleHalfLife 0.15   # BleedsOff: seconds for the excess to halve
+
+# ---- inventory (src/gameLayer/inventory.cpp) ----
+# The default loadout: a new player, and what refills on death. Kind is
+# -1 empty, 0 burst, 1 heavy, 2 missile, 3 beam. The beam is free and is not
+# lost. Stun, lockdown and spread are 0 or 1. A shape is a 4x4 bit mask,
+# bit y*4+x set where a square is filled; the hold packs to it
+# (src/engine/hold.cpp).
+
+inventory.slot1.kind -1
+inventory.slot1.stun 0
+inventory.slot1.lockdown 0
+inventory.slot1.spread 0
+inventory.slot2.kind -1
+inventory.slot2.stun 0
+inventory.slot2.lockdown 0
+inventory.slot2.spread 0
+inventory.slot3.kind -1
+inventory.slot3.stun 0
+inventory.slot3.lockdown 0
+inventory.slot3.spread 0
+inventory.slot4.kind 3         # the beam
+inventory.slot4.stun 0
+inventory.slot4.lockdown 0
+inventory.slot4.spread 0
+inventory.shape.burst 51       # 0x0033, a 2x2
+inventory.shape.heavy 119      # 0x0077, a 3x2
+inventory.shape.missile 1809   # 0x0711, an L of 5
+inventory.shape.beam 255       # 0x00FF, a 4x2
+inventory.spreadShots 2        # extra shots on a spread item. Not on the beam
+
+# ---- jumpGates (src/gameLayer/jumpGates.cpp) ----
+# Pairs the level places. Flying in one comes out the other. Chasers that
+# reach the entrance during followSeconds come through too.
+
+jumpGates.transit 1            # 0 Instant, 1 Short (a beat of black, the move at the halfway point)
+jumpGates.transitSeconds 0.6   # Short: the whole of it
+jumpGates.instantFlashSeconds 0.2
+jumpGates.restSeconds 3        # a pair, after a jump, before it can be used again
+jumpGates.graceSeconds 1.5     # coming out: not hit, and not firing
+jumpGates.followSeconds 6
+jumpGates.gateRadius 600
+jumpGates.exitClear 400        # open space kept at the exit
+jumpGates.spinRate 1.2         # turns per second
+jumpGates.colour 0.75 0.45 1
+jumpGates.swirl 0.5
+
+# ---- laneLook (src/gameLayer/laneLook.cpp) ----
+# The speed look while riding a lane: zoom, stretch, a flash on the CRT's
+# zoom blur, and the streaks drawn along the lane.
+
+laneLook.fullAt 2.5            # "full" is this many times the ship's own top speed
+laneLook.zoomOut 0.3           # at full, the zoom is divided by 1 + this
+laneLook.zoomRate 2            # per second, easing in and out
+laneLook.stretch 0.35          # at full, the hull is this much longer
+laneLook.flashStrength 0.35    # of the CRT zoom blur, on entry
+laneLook.flashSeconds 0.3
+laneLook.streaks 1
+laneLook.streakColour 0.45 0.9 1
+laneLook.streakIntensity 1.4   # above 1 so FinalGlow blooms them
+laneLook.ridingBoost 1.8       # the lane the player is on, against the others
+laneLook.streakSpacing 900     # world units of lane per streak
+laneLook.streakWidth 70
+laneLook.streakLengthMin 300
+laneLook.streakLengthMax 800
+laneLook.streakSpeedMin 700    # world units per second
+laneLook.streakSpeedMax 1800
+
+# ---- lanes (src/gameLayer/lanes.cpp) ----
+# What a lane does to a ship. The level draws the path; the lane cuts itself
+# through paint in play. Current pushes along and leaves steering alone. Rail
+# carries the ship on the line.
+
+lanes.rule 1                   # 0 Off (only open space), 1 Current, 2 Rail
+lanes.push 4000                # Current: units per second squared along the lane
+lanes.hold 1.5                 # Current: how strongly the ship is kept in the lane
+lanes.railPush 20000           # Rail: the carry, units per second squared
+lanes.railHold 10              # Rail: how tightly it stays on the line
+lanes.exitHalfLife 0.6         # seconds for the leftover push to halve, once the ship leaves
+lanes.boost 1500               # speed added along the lane, world units per second
+lanes.trailSeconds 0.3         # the kick keeps this long after leaving, so a slide can start
+lanes.reentryGrace 1           # seconds before the same lane catches the ship again
+lanes.slideTurn 4              # radians per second the slide will still allow
+lanes.colour 0.35 0.85 1 0.35
+lanes.edgePixels 2             # the lane's edge, on screen
+lanes.dashPixels 3             # the centre dashes, on screen
+
+# ---- lastKnown (src/gameLayer/lastKnown.cpp) ----
+# Where an enemy was last seen, drawn after it leaves sight. The map and the
+# off-screen chevrons read the same ghosts.
+
+lastKnown.lasts 0              # 0 UntilChecked (gone once you look), 1 Fades, 2 Forever
+lastKnown.fadeSeconds 20       # Fades: gone after this long
+lastKnown.ageing 1             # 0 None, 1 Fade toward faintest
+lastKnown.ageSeconds 20        # Fade: this long to reach faintest
+lastKnown.faintest 0.3
+lastKnown.headingLine 1        # a short line of the heading it had
+lastKnown.offScreenArrows 1    # a HUD chevron toward each ghost off screen
+lastKnown.headingSeconds 0.6   # how long that heading line represents
+lastKnown.colour 0.85 0.35 0.32
+
+# ---- loadoutMenu (src/gameLayer/loadoutMenu.cpp) ----
+# I, mid-round. The round does not stop: the ship coasts, the player's
+# controls are off, and the world takes a share of the pause grade
+# (worldGrade's pause numbers, in src/gameLayer/worldGrade.cpp).
+
+loadoutMenu.cellPerc 0.07      # one square, of the window height
+loadoutMenu.topPerc 0.2        # the panel's top, of the window height
+loadoutMenu.lookSeconds 0.15   # the grey eases in over this
+loadoutMenu.greyAmount 0.45    # of the paused grade, at full
+
+# ---- outline (src/gameLayer/outline.cpp) ----
+# The sprite outline effect: a hidden ship, and the silhouette option inside
+# sight. Width is in the sprite's texels, with a floor in screen pixels.
+
+outline.colour 0.75 1 0.85
+outline.fill 0                 # 0 draws only the line. Above 0, a flat silhouette
+outline.fillColour 0.02 0.03 0.05
+outline.widthTexels 1.2
+outline.minWidthPixels 1.5
+outline.pulseGain 0.35         # how much a pulse brightens it
+
+# ---- player (src/gameLayer/playerMove.cpp) ----
+# The player's movement, on include/engine/movement.h. Momentum is thrust,
+# drag, and a cap. Instant is velocity = intent * speed, with no coast.
+# Flight (flight.*) multiplies the momentum numbers. The control scheme is a
+# player setting, not a tunable.
+
+player.turnSpeed 3.5           # radians per second. Only the A/D-turn scheme uses it
+player.brakeHalfLife 0.08      # Shift: seconds for speed to halve
+player.useMomentum 1           # 0 is the instant scheme
+player.momentum.acceleration 6000 # units per second squared at full thrust
+player.momentum.topSpeed 2000  # the hard cap. With this drag the coast settles under it
+player.momentum.falloff 0.3    # drag per second. Coasting speed halves in about 2.3 s. 0 coasts forever
+player.instant.speed 2000      # world units per second, when useMomentum is 0
+
+# ---- ram (src/gameLayer/ram.cpp) ----
+# Hold the ram key, let go to surge. The same numbers for the player and for
+# an enemy that has a ram. Reach is speed * duration, minus the windup's
+# creep backward.
+
+ram.windup 0.1                 # seconds of the dip before the surge
+ram.duration 0.8               # seconds of surge
+ram.speed 6000                 # against a normal top speed of 2000
+ram.cooldown 8                 # from letting go
+ram.damage 0.4                 # an enemy has 1 life
+ram.stun 2                     # seconds an enemy is disabled
+ram.playerStun 0.5             # seconds the player is disabled, struck by an enemy's ram
+ram.knockback 2200             # on top of the surge speed, fading
+ram.hitStop 0.06               # seconds the game freezes on each strike (gameClock::hitStop)
+ram.leanDistance 220           # world units the camera leans ahead
+
+# ---- ramPath (src/gameLayer/ramPath.cpp) ----
+# The aim line while the ram key is held. It ends at ram's reach, or short of
+# a core.
+
+ramPath.colour 1 0.18 0.15 0.85
+ramPath.coolingDim 0.35        # of the alpha, while the ram is on cooldown
+ramPath.widthPixels 3
+ramPath.barPixels 36           # the bar across the far end
+
+# ---- resources (src/gameLayer/resources.cpp) ----
+# Ore orbs. The beam sheds them (asteroids.orbValue is how much rock makes
+# one). They hang, then chase once the ship is close, the way a missile does.
+# Extracting banks the hold into points. Dying spills the hold.
+
+resources.interruptSeconds 0.6 # a hit stops the beam mining for this long
+resources.spillOrbValue 1      # a dead player's hold scatters in orbs of this much ore
+resources.enemyFragmentValue 0.15 # ore on one fragment a dead enemy leaves
+resources.enemyFragmentCount 2
+resources.orbValue 0.25        # ore per orb the beam emits
+resources.orbEjectSpeed 900    # thrown clear of the rock
+resources.orbPauseSeconds 0.45 # hanging still before it looks for the ship
+resources.orbWakeRadius 2600   # nearer than this, it comes
+resources.orbAccel 3500        # per second squared, once chasing
+resources.orbMaxSpeed 4200
+resources.orbTurnStart 3.5     # radians per second at the start of a chase
+resources.orbTurnGrowth 5      # added per second of chase
+resources.orbPickupRadius 260
+
+# ---- scope (src/gameLayer/scope.cpp) ----
+# Hold the scope key. The pointer at the centre is the near end of each range;
+# at the screen's edge, the far end: longer, narrower, zoomed further out.
+# It also opens the player's look-out cone to the scope's range (sight.cpp).
+
+scope.nearDegrees 30           # cone width, pointer at the centre
+scope.farDegrees 10            # cone width, pointer at the edge
+scope.nearRange 6000
+scope.farRange 16000
+scope.nearZoom 0.5             # of the normal zoom, fully scoped, pointer at the centre
+scope.farZoom 0.2              # pointer at the edge
+scope.aroundRadius 800         # all-round sight around the ship while scoped
+scope.leanShare 0.8            # of half the view, the camera leans with the pointer at the edge
+scope.brakeHalfLife 0.1        # seconds for the ship's speed to halve, while scoped
+scope.easeSeconds 0.4          # in and out of the scope
+scope.lookSeconds 0.5          # the look lags the pointer outward and inward
+scope.turnSeconds 0.6          # and swinging round to the aim
+scope.viewRate 2               # per second, the view following its lean
+
+# ---- sight (src/gameLayer/sight.cpp) ----
+# What can be seen, from paint edges and from rocks. The player's view, every
+# enemy's cone, missile locks, and what the fog (worldGrade) is cut to. A
+# field that touches another is one volume or two, by `fields`. An edge is a
+# wall from one side or both, by `vision`.
+
+sight.fields 0                 # 0 Continuous (touching paint is one), 1 EachField (a wall between them)
+sight.vision 0                 # 0 BothWays, 1 IntoFields (from inside you see out), 2 Rocks (no edges; each rock blocks)
+sight.outline 1                # 0 Mint, 1 MintAmber (amber while an enemy can see you in a field)
+sight.seenColour 1 0.66 0.22   # that amber
+sight.showMask 0               # debug: the paint mask
+sight.showLines 0              # debug: the sight rays
+sight.sightRange 4000          # world units, before a cloak shortens it
+sight.slices 720               # rays around a viewer
+sight.silhouette 0             # 0 Exact (the outline), 1 Circle
+sight.cloakedSight 0           # 0 Unchanged, 1 Shorter while cloaked
+sight.cloakedRange 0.6         # of the range, while cloaked and Shorter
+sight.onRock 0                 # a ship on a single rock: 0 SeeOut (that rock does not block its own view), 1 Blind
+sight.locks 1                  # a missile lock: 0 AnyTarget, 1 SeenOnly
+sight.showPolarMap 0           # debug
+sight.unseenEnemies 0          # 0 Hidden, 1 Greyed
+sight.lookOut 4                # from inside paint, inside the cone: 0 Off, 1 PastEdge, 2 Peeking, 3 Fraction, 4 Arc
+sight.inCone 0                 # 0 Nothing blocks inside the look-out cone, 1 Blockers (rocks, cores, paint re-entered)
+sight.lookIn 1                 # from outside, looking in: 0 Off, 1 RocksBlock
+sight.coneSoftDegrees 8        # the cone's sides fade over this, so it does not flicker
+sight.coneEaseSeconds 0.08     # the cone turns toward the aim over this, rather than snapping
+sight.fogEaseSeconds 0.06      # the fog's edge eases
+sight.beamLightRadius 300      # the beam lights a disc, so mining shows the rock
+sight.lookOutDistance 1500     # PastEdge and Peeking: how far past the edge
+sight.peekDepth 1500           # Peeking: at this depth inside the field, the look-out is gone
+sight.lookOutFraction 0.5      # Fraction: the range, measured from the viewer
+sight.lookOutRadius 2500       # Arc: from the viewer, whatever shape the field is
+sight.playerConeDegrees 90     # the player's cone, full width, around the aim
+sight.unseenExplosions 0       # 0 Greyed, 1 Hidden
+
+# ---- sound (src/gameLayer/sfx.cpp) ----
+
+sound.enabled 0
+
+# ---- theirGhost (src/gameLayer/theirGhost.cpp) ----
+# A faint ship where enemies believe the player is, while they are searching.
+# Beliefs closer than mergeDistance draw as one ghost, stronger for each
+# enemy behind it.
+
+theirGhost.show 1              # 0 Off, 1 AllSearching, 2 Known (only where you have been seen)
+theirGhost.mergeDistance 300
+theirGhost.alpha 0.45          # one enemy's ghost
+theirGhost.perExtra 0.15       # added per further enemy
+theirGhost.colour 0.78 0.86 1
+
+# ---- weapons (src/gameLayer/weapons.cpp, and the player's four kinds in src/gameLayer/gameLayer.cpp) ----
+# The four player kinds are copied from weapons::shipWeapon at startup
+# (the table in weapons.cpp) and then tuned here. Enemies use that table
+# untuned. Damage is per shot, or per second while a beam touches. An enemy
+# has 1 life. A missile's speed is its motor's top speed.
+# Modifiers are on a weapon that rolled them (enemies.chance.*, crates.*,
+# inventory slot flags). A shield blocks the hit, and the effect with it.
+
+weapons.burst.cooldown 0.8     # seconds from the first shot of the burst
+weapons.burst.damage 0.1
+weapons.burst.speed 3000       # world units per second
+weapons.burst.burstGap 0.08    # seconds between the two shots
+weapons.heavy.cooldown 2
+weapons.heavy.damage 0.3
+weapons.heavy.speed 2600
+weapons.missile.cooldown 3
+weapons.missile.damage 0.5
+weapons.missile.speed 6000     # the motor's top speed, after the launch push
+weapons.laser.cooldown 4       # only once the charge is empty
+weapons.laser.damage 0.4       # per second while the beam touches
+weapons.modifier.spreadDegrees 15 # the fan, either side of the aim
+weapons.modifier.stunOnPlayer 0.5 # seconds
+weapons.modifier.stunOnEnemy 2
+weapons.modifier.lockdown 2    # seconds with no weapon, and then the cooldowns start
+weapons.modifier.grace 1       # seconds after an effect before another can land
+weapons.laserChargeSeconds 5   # the beam's charge. It also mines, in flight
+weapons.laserIdleBeforeRegen 1 # seconds after firing stops, before the charge trickles back
+weapons.laserRegenSeconds 8    # empty to full, once that idle has passed. Holding the trigger regains nothing
+weapons.launchSeconds 0.3      # a missile leaves sideways, motor off
+weapons.launchPush 700         # that sideways speed, world units per second
+weapons.driftFade 4            # per second: the push and the ship's velocity fade once the motor lights
+weapons.missileAccel 14000     # world units per second squared, once lit
+weapons.turnRateStart 3        # radians per second as the chase begins
+weapons.turnRateGrowth 6       # added per second of chase
+
+# ---- worldGrade (src/gameLayer/worldGrade.cpp) ----
+# A grade over the world target. Pause is the desaturate and brightness.
+# Outside is the closing circle. Fog is cut to the player's sight
+# (sight.cpp); unvisited is filled from the exploration map's mask.
+
+worldGrade.desaturate 0.85     # pause. 1 is fully grey
+worldGrade.brightness 0.45     # pause. what is left of the light
+worldGrade.outsideOn 1         # grey outside the closing circle
+worldGrade.outsideDesaturate 0.9
+worldGrade.outsideBrightness 0.6
+worldGrade.outsideEdgePixels 24 # the fade from colour to grey, on screen
+worldGrade.fog 1               # 0 Off, 1 Grey, 2 GreyDim (unseen is darker still), 3 Black
+worldGrade.fogGreyDesaturate 0.85
+worldGrade.fogGreyBrightness 0.7
+worldGrade.fogDimDesaturate 0.85 # GreyDim only
+worldGrade.fogDimBrightness 0.4
+worldGrade.fogEdge 1            # 0 Hard, 1 Soft
+worldGrade.fogEdgePixels 60     # the soft edge, on screen
+worldGrade.fogUnvisited 0       # what the map has never seen: 0 Black, 1 LikeUnseen (the fog's own grade)
