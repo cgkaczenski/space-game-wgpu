@@ -23,6 +23,7 @@
 #include <inventory.h>
 #include <loadoutMenu.h>
 #include <crates.h>
+#include <hub.h>
 #include <menu.h>
 #include <playerSettings.h>
 #include <shipThruster.h>
@@ -454,9 +455,19 @@ int startedFeatures = 0;
 // here".
 // Leaving with the haul: the hold becomes points, then the ship warps out.
 // One place, so L5's gate does exactly what the debug button does.
+// What the last run banked, for the hub's tally (I4).
+hub::Tally lastTally;
+// Between missions (I4): the hub, with the last run's tally.
+void openHub(const hub::Tally &tally, bool restock)
+{
+	loadoutMenu::close();
+	hub::open(tally, level::list(levelsDirectory), levelFile, restock);
+}
+
 void startExtraction()
 {
 	if (gameState::current() != gameState::State::Playing) { return; }
+	lastTally = {true, inventory::ore(), inventory::carriedWeapons()};
 	resources::extracted();   // the hold's ore becomes points
 	inventory::extracted();   // and everything carried goes to the stash
 	gameState::extract();
@@ -818,7 +829,9 @@ void debugPanelUi()
 	debugPanel::section("Map", explorationMap::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons, playerKinds); });
 	debugPanel::section("Inventory", [] { inventory::debugUi(); ImGui::SeparatorText("Loadout menu"); loadoutMenu::debugUi();
-		ImGui::SeparatorText("Crates"); crates::debugUi(); });
+		ImGui::SeparatorText("Crates"); crates::debugUi();
+		ImGui::SeparatorText("Hub"); hub::debugUi();
+		if (!hub::isOpen() && ImGui::SmallButton("Open the hub")) { openHub({false, 0, 0}, false); } });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Damage numbers", damageNumbers::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -848,6 +861,38 @@ void debugPanelUi()
 // A frame of the editor instead of the game (gameplay roadmap L2b). The round
 // is not simulated at all -- no clock, no state, no enemies -- and the level is
 // drawn as data over the same backdrop the game uses.
+// The hub (I4): the starfield drifting behind it, and nothing of the round.
+// Returns false when the player quits the game from it.
+bool hubFrame(float deltaTime, int w, int h)
+{
+	crt::setTransition(0.f, 0.f);
+	crt::apply();
+
+	// A slow drift, so the stars are alive.
+	renderer.currentCamera.zoom = 0.5f;
+	renderer.currentCamera.position += glm::vec2(60.f, 20.f) * deltaTime;
+	background::draw(renderer);
+
+	std::string level;
+	const hub::Action action = hub::update(renderer, w, h, level);
+	renderer.flush();
+	debugPanelUi();
+
+	if (action == hub::Action::Quit) { return false; }
+	if (action == hub::Action::Launch)
+	{
+		hub::close();
+		inventory::launch();   // the round keeps the slots and hold as packed
+		if (level != levelFile) { switchLevel(level); }
+		else
+		{
+			gameState::reset();
+			restartGame();
+		}
+	}
+	return true;
+}
+
 void editorFrame(float deltaTime, int w, int h)
 {
 	crt::setTransition(0.f, 0.f);
@@ -957,6 +1002,9 @@ bool gameLogic(float deltaTime)
 		return true;
 	}
 
+	// Between missions (I4): only the hub.
+	if (hub::isOpen()) { return hubFrame(deltaTime, w, h); }
+
 	// Where the round is (gameplay roadmap L1), before the clock is read and
 	// before the CRT is set, because both follow it. A restart happens here,
 	// at the top of a frame, while the transition has the screen covered.
@@ -978,9 +1026,12 @@ bool gameLogic(float deltaTime)
 			loadoutMenu::update(lf, escape, taken);
 			if (taken) { escape = false; }
 		}
+		// An extraction ends on the hub (I4); a death restarts in place.
+		const bool wasExtracting = gameState::current() == gameState::State::Extracting;
 		if (gameState::update(deltaTime, {escape, platform::isFocused()}))
 		{
-			restartGame();
+			if (wasExtracting) { openHub(lastTally, true); }
+			else { restartGame(); }
 		}
 		switch (std::exchange(menuChoice, menu::Choice::None))
 		{
@@ -994,6 +1045,17 @@ bool gameLogic(float deltaTime)
 			restartGame();
 			triggerHeldOver = menu::choseWithPointer();
 			break;
+		case menu::Choice::QuitToHub:
+		{
+			// Leaving the mission banks nothing: what is carried is lost, as
+			// in a death -- the debug panel's picked slots still come back.
+			gameState::resume();
+			const hub::Tally left = {false, 0, inventory::carriedWeapons()};
+			inventory::takeOre();
+			inventory::abandoned();
+			openHub(left, false);
+			break;
+		}
 		case menu::Choice::Quit:
 			return false;
 		case menu::Choice::None:

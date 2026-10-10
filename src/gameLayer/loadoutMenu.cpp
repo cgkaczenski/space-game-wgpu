@@ -5,6 +5,7 @@
 #include <hints.h>
 #include <hud.h>
 #include <inventory.h>
+#include <itemLook.h>
 #include <platformInput.h>
 #include <resources.h>
 #include <textLook.h>
@@ -63,16 +64,8 @@ namespace
 	const glm::vec4 squareFill = {0.06f, 0.07f, 0.12f, 1.f};
 	const glm::vec4 squareLine = {0.22f, 0.24f, 0.34f, 1.f};
 	const glm::vec4 slotLine = {0.45f, 0.45f, 0.6f, 1.f};
-	const glm::vec4 oreColour = {0.85f, 0.55f, 0.18f, 1.f};
-	const glm::vec4 unknownColour = {0.32f, 0.33f, 0.36f, 1.f};   // a crate's weapon not yet looked at
 	const glm::vec4 fitColour = {0.35f, 1.f, 0.55f, 0.55f};
 	const glm::vec4 noFitColour = {1.f, 0.3f, 0.25f, 0.55f};
-	const glm::vec4 weaponColours[weapons::slotCount] = {
-		{0.20f, 0.30f, 0.55f, 1.f},   // burst
-		{0.50f, 0.25f, 0.45f, 1.f},   // heavy
-		{0.55f, 0.35f, 0.15f, 1.f},   // missile
-		{0.15f, 0.45f, 0.45f, 1.f},   // beam
-	};
 
 	struct Layout
 	{
@@ -220,15 +213,6 @@ namespace
 		return sum / (float)std::max<size_t>(s.cells.size(), 1);
 	}
 
-	std::string describe(const inventory::Item &it)
-	{
-		std::string s = weapons::shipWeapon(it.kind).name;
-		if (it.stun) { s += " +STUN"; }
-		if (it.lockdown) { s += " +LOCKDOWN"; }
-		if (it.spread) { s += " +SPREAD"; }
-		for (char &c : s) { c = (char)std::toupper((unsigned char)c); }
-		return s;
-	}
 
 	// What the drag carries, as a crate's thing: for putting it in a crate
 	// or leaving it in space.
@@ -457,20 +441,20 @@ void update(const Frame &f, bool escape, bool &escapeTaken)
 		if (inventory::heldAt(hold::at(inventory::holdGrid(), sq), held))
 		{
 			hoverText = held.isOre ? "ORE  " + std::to_string(held.ore) + " / " + std::to_string(inventory::stackSize)
-				: describe(held.item);
+				: itemLook::describe(held.item);
 		}
 	}
 	if (const int k = slotUnder(l, p); k >= 0)
 	{
 		inventory::Item it;
-		hoverText = inventory::equippedAt(k, it) ? describe(it) : "SLOT " + std::to_string(k + 1) + ": EMPTY";
+		hoverText = inventory::equippedAt(k, it) ? itemLook::describe(it) : "SLOT " + std::to_string(k + 1) + ": EMPTY";
 	}
 	if (l.hasCrate && l.crate.squareAt(p, sq))
 	{
 		const crates::Crate *c = openCrate();
 		if (const crates::Thing *t = c ? crates::thingAt(*c, hold::at(c->grid, sq)) : nullptr)
 		{
-			hoverText = t->isOre ? "ORE  " + std::to_string(t->ore) : t->revealed ? describe(t->item) : "UNKNOWN WEAPON";
+			hoverText = t->isOre ? "ORE  " + std::to_string(t->ore) : t->revealed ? itemLook::describe(t->item) : "UNKNOWN WEAPON";
 		}
 	}
 
@@ -557,7 +541,7 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 		inventory::Item it;
 		if (inventory::equippedAt(k, it) && !from)
 		{
-			renderer.renderRectangle({r.x + b, r.y + b, r.z - 2.f * b, r.w - 2.f * b}, weaponColours[it.kind]);
+			renderer.renderRectangle({r.x + b, r.y + b, r.z - 2.f * b, r.w - 2.f * b}, itemLook::weaponColour(it.kind));
 			bulletLook::drawIcon(renderer, {r.x + r.z * 0.5f, r.y + r.w * 0.5f}, r.w * 0.75f, weapons::shipWeapon(it.kind).style);
 		}
 		textLook::draw(renderer, {r.x + r.z * 0.5f, r.y - b * 2.f}, std::to_string(k + 1).c_str(),
@@ -575,7 +559,7 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 		inventory::Held held;
 		if (!inventory::heldAt(piece.id, held)) { continue; }
 		const bool from = drag.active && !drag.fromSlot && drag.id == piece.id;
-		glm::vec4 colour = held.isOre ? oreColour : weaponColours[held.item.kind];
+		glm::vec4 colour = held.isOre ? itemLook::oreColour : itemLook::weaponColour(held.item.kind);
 		if (from) { colour.a = 0.3f; }
 		l.hold.fillCells(renderer, piece.shape.cells.data(), piece.shape.cells.size(), piece.at, colour);
 		const glm::vec2 c = centroid(l.hold, piece.shape, piece.at);
@@ -605,7 +589,7 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 				const bool from = drag.active && drag.fromCrate && drag.thingId == entry.first;
 				const glm::vec4 sq = l.crate.square(piece->at);
 				const glm::vec2 c = {sq.x + sq.z * 0.5f, sq.y + sq.w * 0.5f};
-				glm::vec4 colour = t.isOre ? oreColour : t.revealed ? weaponColours[t.item.kind] : unknownColour;
+				glm::vec4 colour = t.isOre ? itemLook::oreColour : t.revealed ? itemLook::weaponColour(t.item.kind) : itemLook::unknownColour;
 				if (from) { colour.a = 0.3f; }
 				renderer.renderRectangle(sq, colour);
 				if (from) { continue; }
@@ -664,7 +648,7 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 		{
 			// A stack is its count on an amber square, the size of one in the hold.
 			const float s = l.cell * 0.8f;
-			glm::vec4 c = oreColour;
+			glm::vec4 c = itemLook::oreColour;
 			if (jettisoning) { c = noFitColour; c.a = 0.85f; }
 			renderer.renderRectangle({p.x - s * 0.5f, p.y - s * 0.5f, s, s}, c);
 			textLook::draw(renderer, p, std::to_string(drag.ore).c_str(), {1.f, 0.95f, 0.85f, 1.f}, u, {0.5f, 0.5f});
@@ -673,7 +657,7 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 		{
 			// Not looked at yet: a grey box until it is over the player's things.
 			const float s = l.cell * 0.8f;
-			renderer.renderRectangle({p.x - s * 0.5f, p.y - s * 0.5f, s, s}, unknownColour);
+			renderer.renderRectangle({p.x - s * 0.5f, p.y - s * 0.5f, s, s}, itemLook::unknownColour);
 			textLook::draw(renderer, p, "?", {0.85f, 0.87f, 0.9f, 1.f}, u * 2.f, {0.5f, 0.5f});
 		}
 		else

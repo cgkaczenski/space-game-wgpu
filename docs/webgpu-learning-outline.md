@@ -1746,6 +1746,30 @@ for shapes. The menu learns a third place things can come from and go to.
 `src/gameLayer/loadoutMenu.cpp` · `parseGun` / `writeGun` in
 `src/gameLayer/level.cpp` · the Crate tool in `src/gameLayer/levelEditor.cpp`
 
+### I4. A screen outside the round — *built*
+
+**Concepts:** The hub is the game not running. It is an early return at the
+top of the frame, like the editor's, with its own small picture.
+
+- **Outside the round, not paused in it.** A pause stops the clock but keeps
+  the round. The hub replaces the round: `hubFrame` draws the background
+  and the hub and returns, so nothing else runs. LAUNCH builds a new round,
+  through the same restart every round uses.
+- **Where the flow branches.** The state machine says "restart now" when an
+  extraction's white has filled the screen, and when a death's switch-off
+  has. Which one it was is read just before, and only extraction goes to
+  the hub.
+- **Staging, then a flag.** The hub fills the slots from the stash, and the
+  player repacks. Launching sets one flag so the next round keeps that
+  loadout instead of re-equipping the last one. A death restarts without
+  the flag, as it always did.
+- **One look for things.** Colours, names and tiles moved into `itemLook`, so
+  the loadout menu and the hub cannot drift apart.
+
+**Code:** `src/gameLayer/hub.cpp` · `hubFrame` / `openHub` and the
+extraction branch in `src/gameLayer/gameLayer.cpp` · `stageLast` /
+`launch` in `src/gameLayer/inventory.cpp` · `src/gameLayer/itemLook.cpp`
+
 ---
 
 ## What comes next

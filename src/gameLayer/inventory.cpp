@@ -27,6 +27,7 @@ namespace
 	std::vector<Item> stash;
 	Slot equipped[weapons::slotCount];
 	bool swappedIn[weapons::slotCount] = {};   // put in this frame: applyTo starts its cooldown
+	bool launching = false;                    // the next round keeps the hub's slots and hold
 	Slot lastLoadout[weapons::slotCount];   // what the next round equips (until I4)
 
 	const int holdWidth = 5;
@@ -154,11 +155,17 @@ void newPlayer()
 
 void roundStart()
 {
-	emptyHold();
-	for (int i = 0; i < weapons::slotCount; i++)
+	// Launched from the hub (I4): the slots and hold are as the player packed
+	// them, already out of the stash.
+	if (launching) { launching = false; }
+	else
 	{
-		equipped[i] = {};
-		if (lastLoadout[i].filled && takeFromStash(lastLoadout[i].item)) { equipped[i] = lastLoadout[i]; }
+		emptyHold();
+		for (int i = 0; i < weapons::slotCount; i++)
+		{
+			equipped[i] = {};
+			if (lastLoadout[i].filled && takeFromStash(lastLoadout[i].item)) { equipped[i] = lastLoadout[i]; }
+		}
 	}
 
 	// The default loadout's slots are kept through death: one the stash could
@@ -351,6 +358,46 @@ bool swapSlots(int a, int b)
 	remember();
 	return true;
 }
+
+const std::vector<Item> &stashItems() { return stash; }
+
+bool takeFromStash(int index, Item &out)
+{
+	if (index < 0 || index >= (int)stash.size()) { return false; }
+	out = stash[(size_t)index];
+	stash.erase(stash.begin() + index);
+	return true;
+}
+
+void addToStash(const Item &item) { stash.push_back(item); }
+
+void stageLast()
+{
+	// Whatever is out goes home first, so nothing is lost or doubled.
+	for (Slot &s : equipped) { if (s.filled) { stash.push_back(s.item); } s = {}; }
+	for (const auto &c : contents) { if (!c.second.isOre) { stash.push_back(c.second.item); } }
+	emptyHold();
+	for (int i = 0; i < weapons::slotCount; i++)
+	{
+		if (lastLoadout[i].filled && takeFromStash(lastLoadout[i].item)) { equipped[i] = lastLoadout[i]; }
+	}
+}
+
+int carriedWeapons()
+{
+	int n = 0;
+	for (const Slot &s : equipped) { n += s.filled ? 1 : 0; }
+	for (const auto &c : contents) { n += c.second.isOre ? 0 : 1; }
+	return n;
+}
+
+void launch()
+{
+	remember();
+	launching = true;
+}
+
+void abandoned() { died(); }
 
 bool addToHold(const Item &item, int turns, glm::ivec2 at)
 {

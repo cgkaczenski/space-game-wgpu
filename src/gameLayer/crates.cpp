@@ -101,6 +101,8 @@ namespace
 	}
 }
 
+inventory::Item roll() { return rollItem(); }
+
 void reset(const std::vector<level::CratePlacement> &placed)
 {
 	all.clear();

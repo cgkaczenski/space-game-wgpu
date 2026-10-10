@@ -68,6 +68,11 @@ namespace resources
 	int held();    // orbs in the hold, not yet banked
 	int banked();  // points, across rounds
 
+	// The shop (inventory roadmap I4): false, and nothing spent, if there are
+	// not enough points.
+	bool spend(int points);
+	void earn(int points);
+
 	// The orbs. **Caller must have set BlendMode::Additive.**
 	void drawGlow(wgpu2d::Renderer2D &renderer, float time);
 

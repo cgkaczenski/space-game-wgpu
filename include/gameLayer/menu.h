@@ -4,7 +4,7 @@
 // window losing focus, pauses the game and opens it over the grey world; it
 // is drawn over the HUD and does not shake with it.
 //
-//   PAUSED      Resume, Restart, Settings, Quit. Escape resumes.
+//   PAUSED      Resume, Restart, Settings, Quit to hub, Quit. Escape resumes.
 //   SETTINGS    Volume, CRT, Fullscreen, Back. Escape goes back.
 //
 // The widget is wgpu2d::Menu; what is here is which rows there are, what
@@ -20,6 +20,7 @@ namespace menu
 		None,
 		Resume,
 		Restart,
+		QuitToHub,   // inventory roadmap I4: leave the mission, banking nothing
 		Quit,
 	};
 

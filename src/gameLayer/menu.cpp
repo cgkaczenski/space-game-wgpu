@@ -172,6 +172,7 @@ Choice update(wgpu2d::Renderer2D &renderer, int w, int h, bool takeInput)
 		if (m.button("RESUME")) { choice = Choice::Resume; }
 		if (m.button("RESTART")) { choice = Choice::Restart; }
 		if (m.button("SETTINGS")) { page = Page::Settings; settingsMenu.selected = 0; }
+		if (m.button("QUIT TO HUB")) { choice = Choice::QuitToHub; }
 		if (m.button("QUIT")) { choice = Choice::Quit; }
 		if (m.backPressed()) { choice = Choice::Resume; }
 		m.end();

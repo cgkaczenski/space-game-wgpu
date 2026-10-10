@@ -54,6 +54,10 @@ namespace crates
 	constexpr int width = 4;
 	constexpr int height = 2;
 
+	// One weapon rolled by the crates' percentages: kind by weight, each
+	// modifier by its chance. The shop's stock is rolled the same way (I4).
+	inventory::Item roll();
+
 	// A new round: no crates, then the level's placed ones.
 	void reset(const std::vector<level::CratePlacement> &placed);
 

@@ -787,31 +787,78 @@ the level.
   the gate and ghosts (`explorationMap`, `hud::markOffScreen`), so either
   is a small step.
 
-### I4. Before a mission: choosing what to bring — *proposed*
+### I4. The hub, between missions — *built*
 
 **Asked:** the player chooses what to take, and a light loadout is the
 economical choice.
 
-**Proposed**
-- A screen between missions: the stash on one side and the loadout being
-  taken on the other, built from I2's grid.
-- **The flow has to change.** Death restarts by itself today, and launch goes
-  straight into the last level. A between-missions screen means:
-  - death leads to this screen, not to a new round;
-  - extraction leads to it too;
-  - launch either opens on it, or keeps going straight in.
+**Decided**
+- **Launch goes straight into the last level**, as before. The pause menu
+  has **QUIT TO HUB**, which banks nothing: what is carried is lost, as in
+  a death. The debug panel's picked slots still come back.
+- **Death restarts in place**, as before. **Extraction ends on the hub.**
+- **The hub has:**
+  - the last run's tally;
+  - the stash;
+  - the loadout: what to take, in the four slots and the 5 x 4 hold;
+  - the shop;
+  - level select.
+- **Behind it, the starfield**, drifting slowly.
+- **The shop's stock is rolled**, like crate contents, modifiers and all:
+  6 items, restocked after each mission. Prices are by kind (burst 20,
+  heavy 40, missile 50, beam 30) plus 25 a modifier, all tunable. Click a
+  tile to buy into the stash.
+- **Selling:** drag a weapon onto the shop for half its price.
+- **The stash is unlimited tiles**, 5 wide, scrolling with the wheel.
+- **Spares can be taken in the hold** as well as the slots, at the cost of
+  room for ore, and lost with everything on a death.
 
-  This is also where U3's level select would sit (Play, then a level, then a
-  loadout), and where the shop goes.
+**Built**
+- **`gameLayer/hub`:** the screen, in screen space over the background.
+  - **HANGAR** and the tally, e.g. "EXTRACTED: 37 ORE BANKED, 2 WEAPONS TO
+    THE STASH", or "LEFT THE MISSION: NOTHING BANKED, n WEAPONS LOST".
+  - **Points.**
+  - **Three panels:** STASH, TAKING (slots and hold) and SHOP.
+  - **Drags:**
+    - stash to a slot (what was there goes home);
+    - stash to the hold (its shape, green or red, R to turn);
+    - slot or hold back to the stash;
+    - slot to slot;
+    - any of them onto the shop, to sell.
+  - Under the panels, a line names what the pointer is over, with its sell
+    price or its price.
+  - The levels as buttons, **LAUNCH** and **QUIT GAME**.
+- **The flow:**
+  - an extraction ends on the hub (`openHub`, the shop restocked) instead
+    of restarting;
+  - `hubFrame` runs while it is open and nothing of the round does;
+  - LAUNCH switches level if another was chosen, and starts the round.
+- **`inventory`:**
+  - `stageLast`: the hub opens with the slots as they were, from the
+    stash;
+  - `launch`: the next round keeps the slots and hold as packed, instead of
+    re-equipping;
+  - `abandoned`, `stashItems`, `takeFromStash`, `addToStash`,
+    `carriedWeapons`.
+- `resources::spend` and `earn`. `crates::roll`, for the shop's stock.
+- **`gameLayer/itemLook`:** each kind's colour, its name, a weapon's tile.
+  Shared by the loadout menu and the hub.
+- **Debug panel → Inventory → Hub:** prices, stock, restock, +100 points,
+  and "Open the hub".
+- Checked, with temporary scaffolding since removed:
+  - from code: the hub opened with the beam staged in slot 4 and two
+    weapons in the stash; a heavy into slot 1 and a missile into the hold;
+    LAUNCH kept both rather than re-equipping;
+  - captures of the hub with a tally, six stash tiles, a stocked shop with
+    prices, and the level buttons. The first capture found the top row of
+    prices hidden, and the levels showing `.txt`.
 
-**Open questions**
-- Does launch open on this screen, or keep going straight in?
-- Is the stash shown at extraction, as a tally of what was banked?
+  Buying, selling and the drags have not been played with the mouse.
 
-**Engine ideas**
-- The CRT's switch-off already hides the cut after a death, and the white
-  after an extraction. This screen can come up out of either one, the way the
-  new round does now.
+**Still open**
+- The background is the game's whole parallax backdrop, nebulae and all, not
+  only stars. It is bright behind the panels in places.
+- Saving the stash and points, when wanted.
 
 ---
 

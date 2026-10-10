@@ -117,6 +117,24 @@ namespace inventory
 	bool addToHold(const Item &item, int turns, glm::ivec2 at);
 	bool putInSlot(int slot, const Item &item, Item &displaced, bool &hadOne);
 
+	// ---- The hub, between missions (I4) ------------------------------------
+
+	const std::vector<Item> &stashItems();
+	bool takeFromStash(int index, Item &out);
+	void addToStash(const Item &item);
+
+	// The hub opens: the slots are filled from the stash as they were last
+	// time, as far as it can, and the hold is empty, ready to be packed.
+	void stageLast();
+	// Weapons carried now, in the slots and the hold: the tally's count.
+	int carriedWeapons();
+	// LAUNCH: the next round starts with the slots and hold as the hub left
+	// them, rather than re-equipping from the stash.
+	void launch();
+	// The mission was left from the menu: as a death, nothing carried is
+	// banked.
+	void abandoned();
+
 	// Thrown out: gone from the hold or the slot. Returns what it was, for
 	// the caller to leave in space -- ore as orbs, a weapon as salvage (I3).
 	bool jettisonHeld(int id, Held &out);

@@ -241,6 +241,15 @@ void extracted()
 int held() { return inventory::ore(); }
 int banked() { return points; }
 
+bool spend(int n)
+{
+	if (n < 0 || n > points) { return false; }
+	points -= n;
+	return true;
+}
+
+void earn(int n) { points += std::max(n, 0); }
+
 void drawGlow(wgpu2d::Renderer2D &renderer, float time)
 {
 	for (const Orb &o : orbs)
