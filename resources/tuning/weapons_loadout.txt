@@ -1,0 +1,4 @@
+# Tuning: only what differs from the code's defaults (debug panel, Tuning).
+inventory.slot1.kind 0
+inventory.slot2.kind 1
+inventory.slot3.kind 2
