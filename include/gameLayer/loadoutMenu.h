@@ -24,9 +24,13 @@
 //               rearranged: drag one slot onto another and they swap. Let go
 //               anywhere else and it goes back; nothing is dropped. A press
 //               that starts on a slot does not fire.
+//   Crate       opened from space (crates.h), a crate's 4 x 2 sits beside the
+//               hold: drag from it into the hold or a slot, or put things in
+//               its free squares. A weapon it rolled is a grey box until it
+//               has been dragged over the player's hold or slots.
 //   Drop        let go outside the panel: thrown out behind the ship. Ore
 //               goes as orbs, which wait until the ship has left them once;
-//               a weapon is gone, until salvage (I3) can leave it in space.
+//               a weapon goes in a crate of its own.
 //
 // Escape or the Loadout key closes it. It closes by itself when the round
 // stops being played: dying, leaving, a restart.
@@ -53,6 +57,11 @@ namespace loadoutMenu
 
 	bool isOpen();
 	void close();
+
+	// Opens the menu with crate `id` beside the hold (I3): its hover ring has
+	// filled. And the crate open now, or -1.
+	void openWithCrate(int id);
+	int crateOpen();
 
 	// The mouse is the menu's: it is open, or a weapon is being dragged along
 	// the HUD's row. The trigger waits.

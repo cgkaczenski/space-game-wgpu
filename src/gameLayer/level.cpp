@@ -63,6 +63,51 @@ namespace
 		out << '"';
 	}
 
+	// gun:kind[:stun=..][:lockdown=..][:spread=..] -- an enemy's weapon slot
+	// (B2), and an item in a crate (I3). False if it does not read.
+	bool parseGun(const std::string &word, GunChoice &g)
+	{
+		if (word.rfind("gun:", 0) != 0) { return false; }
+		std::istringstream parts(word.substr(4));
+		std::string part;
+		bool first = true;
+		while (std::getline(parts, part, ':'))
+		{
+			if (first)
+			{
+				first = false;
+				if (part == "random") { g.weapon = -1; continue; }
+				g.weapon = weapons::shipWeaponSlot(part.c_str());
+				if (g.weapon < 0) { return false; }
+				continue;
+			}
+			const size_t eq = part.find('=');
+			if (eq == std::string::npos) { return false; }
+			const std::string name = part.substr(0, eq), choice = part.substr(eq + 1);
+			AbilityChoice *slot = name == "stun" ? &g.stun : name == "lockdown" ? &g.lockdown
+				: name == "spread" ? &g.spread : nullptr;
+			if (!slot) { return false; }
+			if (choice == "yes") { *slot = AbilityChoice::Yes; }
+			else if (choice == "random") { *slot = AbilityChoice::Random; }
+			else if (choice == "no") { *slot = AbilityChoice::No; }
+			else { return false; }
+		}
+		return true;
+	}
+
+	void writeGun(std::ostream &file, const GunChoice &g)
+	{
+		file << " gun:" << (g.weapon >= 0 ? weapons::shipWeaponKey(g.weapon) : "random");
+		auto modifier = [&](const char *name, AbilityChoice c)
+		{
+			if (c == AbilityChoice::Yes) { file << ":" << name << "=yes"; }
+			if (c == AbilityChoice::Random) { file << ":" << name << "=random"; }
+		};
+		modifier("stun", g.stun);
+		modifier("lockdown", g.lockdown);
+		modifier("spread", g.spread);
+	}
+
 	// One line, already stripped of its comment. False if it does not parse.
 	bool parseLine(std::istringstream &in, const std::string &word, Level &out)
 	{
@@ -93,30 +138,7 @@ namespace
 				if (word.rfind("gun:", 0) == 0)
 				{
 					GunChoice g;
-					std::istringstream parts(word.substr(4));
-					std::string part;
-					bool first = true;
-					while (std::getline(parts, part, ':'))
-					{
-						if (first)
-						{
-							first = false;
-							if (part == "random") { g.weapon = -1; continue; }
-							g.weapon = weapons::shipWeaponSlot(part.c_str());
-							if (g.weapon < 0) { return false; }
-							continue;
-						}
-						const size_t eq = part.find('=');
-						if (eq == std::string::npos) { return false; }
-						const std::string name = part.substr(0, eq), choice = part.substr(eq + 1);
-						AbilityChoice *slot = name == "stun" ? &g.stun : name == "lockdown" ? &g.lockdown
-							: name == "spread" ? &g.spread : nullptr;
-						if (!slot) { return false; }
-						if (choice == "yes") { *slot = AbilityChoice::Yes; }
-						else if (choice == "random") { *slot = AbilityChoice::Random; }
-						else if (choice == "no") { *slot = AbilityChoice::No; }
-						else { return false; }
-					}
+					if (!parseGun(word, g)) { return false; }
 					e.guns.push_back(g);
 					continue;
 				}
@@ -228,6 +250,20 @@ namespace
 			out.lanes.back().points.push_back(at);
 			return true;
 		}
+		if (word == "crate")
+		{
+			CratePlacement c;
+			if (!(in >> c.position.x >> c.position.y)) { return false; }
+			std::string w;
+			while (in >> w)
+			{
+				GunChoice g;
+				if (!parseGun(w, g)) { return false; }
+				c.items.push_back(g);
+			}
+			out.crates.push_back(c);
+			return true;
+		}
 		if (word == "hint")
 		{
 			HintStep h;
@@ -323,18 +359,7 @@ bool save(const char *path, const Level &level)
 		file << "enemy " << (e.behaviour == Enemy::Behaviour::KeepDistance ? "sniper"
 			: e.behaviour == Enemy::Behaviour::Boss ? "boss" : "rusher")
 			<< " " << e.position.x << " " << e.position.y << " " << e.facingDegrees;
-		for (const GunChoice &g : e.guns)
-		{
-			file << " gun:" << (g.weapon >= 0 ? weapons::shipWeaponKey(g.weapon) : "random");
-			auto modifier = [&](const char *name, AbilityChoice c)
-			{
-				if (c == AbilityChoice::Yes) { file << ":" << name << "=yes"; }
-				if (c == AbilityChoice::Random) { file << ":" << name << "=random"; }
-			};
-			modifier("stun", g.stun);
-			modifier("lockdown", g.lockdown);
-			modifier("spread", g.spread);
-		}
+		for (const GunChoice &g : e.guns) { writeGun(file, g); }
 		auto ability = [&](const char *name, AbilityChoice c)
 		{
 			if (c == AbilityChoice::Yes) { file << " " << name << ":yes"; }
@@ -385,6 +410,13 @@ bool save(const char *path, const Level &level)
 	{
 		file << "\nlane " << l.width << " " << l.speed << "\n";
 		for (const glm::vec2 &p : l.points) { file << "point " << p.x << " " << p.y << "\n"; }
+	}
+	if (!level.crates.empty()) { file << "\n"; }
+	for (const CratePlacement &c : level.crates)
+	{
+		file << "crate " << c.position.x << " " << c.position.y;
+		for (const GunChoice &g : c.items) { writeGun(file, g); }
+		file << "\n";
 	}
 	if (!level.hints.empty()) { file << "\n"; }
 	for (const HintStep &h : level.hints)

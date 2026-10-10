@@ -1723,6 +1723,29 @@ nothing.
 `src/gameLayer/inventory.cpp` · `wgpu2d::GridView` in `src/render/menu.cpp` ·
 `piloting` in `src/gameLayer/gameLayer.cpp`
 
+### I3. Crates: a second container — *built*
+
+**Concepts:** A crate is the same grid as the hold with a different rule
+for shapes. The menu learns a third place things can come from and go to.
+
+- **One grid, two rules.** The crate is an `engine/hold` grid where every
+  piece is one square, so a heavy laser takes a square in a crate and six in
+  the ship. The grid does not know; the caller chooses the shape it passes.
+- **Hidden information as a flag on the thing.** An unknown weapon knows
+  what it is all along. Only the drawing hides it, until a drag passes over
+  the player's things. The reveal is one bool, set on the crate's thing so
+  it stays known.
+- **Weighted picks and independent rolls.** The kind is one draw against
+  the sum of the weights. Each modifier is its own chance. Checked over
+  2000 rolls against what was tuned.
+- **Every source, every target.** Hold, slots and crate are each a source
+  and a target. Each drop is a pair, written out once, with the refusals
+  that leave everything where it was.
+
+**Code:** `src/gameLayer/crates.cpp` · the crate's half of `drop` in
+`src/gameLayer/loadoutMenu.cpp` · `parseGun` / `writeGun` in
+`src/gameLayer/level.cpp` · the Crate tool in `src/gameLayer/levelEditor.cpp`
+
 ---
 
 ## What comes next

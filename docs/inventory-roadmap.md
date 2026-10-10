@@ -710,35 +710,82 @@ world runs. Swaps start on cooldown.
   item if it matters.
 - Keyboard-only use (arrows and Enter) is not built; the mouse is the way.
 
-### I3. Getting weapons: salvage, pickups, the shop — *proposed*
+### I3. Getting weapons: weapon crates — *built*
 
 **Asked:** salvage from kills, buying with banked points, finding them in
 the level.
 
-**Proposed**
-- **Salvage:** a killed enemy drops one of its weapons, chosen at a tunable
-  chance, as a pickup. It is thrown out of the wreck with the debris, then
-  comes to the ship like an orb once the ship is near.
-- **Placed pickups:** a new marker kind and an editor tool, saved as a line
-  in the level file as gates are.
-- **The shop:** banked points buy weapons. Where it lives depends on I4,
-  because it is a between-missions screen.
-- **Lands:** game. The pickup's motion is the orb's, and the orb's chase
-  could move into `engine/` if a third thing wants it.
+**Decided**
+- **Weapons come in crates.** A crate floats in space.
+  - **Opening:** near the ship, hold the pointer on it. A ring fills over
+    3 s, like the gate's, and the loadout menu opens with the crate's own
+    hold beside the player's.
+  - **Inside:** a crate has 4 x 2 squares, more than it uses, and every
+    thing in it takes one square whatever its shape.
+  - **Unknown until looked at:** a weapon a crate rolled is a grey 1x1 box
+    until it is dragged over the player's hold or slots. Then it shows
+    what it is and its shape, and stays known.
+- **What a crate holds** is rolled by tunable percentages:
+  - 1 to 3 weapons (60/30/10);
+  - each kind by weight (burst 35, heavy 25, missile 20, beam 20);
+  - stun 15%, lockdown 10%, spread 15%, never spread on a beam.
+- **Salvage:** a kill leaves a crate at 35%. A boss always does, with 3.
+- **Placed:** `crate x y gun:...` lines, each item a kind or random with
+  each modifier yes, no or random, as an enemy's guns. No items: rolled. An
+  editor tool places them and edits what is in them.
+- **A crate stays until it is empty**, then goes. The player can come back
+  to it.
+- **A crate holds anything.** The player can drag a weapon or ore into an
+  open crate's free squares. A weapon dropped outside the menu leaves a
+  crate of its own holding it, already known. (I2 destroyed it.)
+- **The shop waits for I4**, the screen between missions.
 
-**Open questions**
-- Does a pickup go to carried automatically, or only when there is room
-  (capacity, I1)?
-- Prices, and whether the shop's stock is fixed or rolled.
-- Can the player see what an enemy carries before killing it?
+**Built**
+- **`gameLayer/crates`:**
+  - each crate is a position, a drift and a spin dying away, and a 4 x 2
+    `hold::Grid` of 1x1 things (a weapon, known or not, or ore);
+  - `reset` (placed crates), `enemyKilled`, `dropped`;
+  - `update` drifts them and fills the hover ring of the one under the
+    pointer, within reach of the ship and not under fog, and returns it
+    when full;
+  - `take`, `put`, `putAnywhere`, `move`;
+  - drawn as a box in the crate's colours, with the ring in the hints'
+    colour;
+  - a **Crates** part of the debug panel's Inventory section tunes all of
+    it.
+- **The loadout menu:**
+  - the crate's grid beside the hold, a `?` on each unknown weapon;
+  - drags from the crate into the hold (its real shape, green or red) or a
+    slot (what was there goes into the crate, in the square it left);
+  - the player's things into a free crate square (green or red);
+  - ore from a crate merges into the hold's stacks, and what does not fit
+    stays in the crate;
+  - the crate's side closes if it drifts out of reach.
+- `inventory::addToHold` and `putInSlot`, for things from outside.
+- The level's `gun:` word parser and writer are shared by enemies and
+  crates.
+- **The editor's Crate tool:** place, move, delete, and the selected
+  crate's items as a list like an enemy's weapons.
+- Checked, with temporary scaffolding since removed:
+  - 2000 kills left 728 crates (36%). They held 1/2/3 weapons in 408/233/87
+    of them (56/32/12%). Kinds came out 37/24/19/19%, stun 16%, lockdown
+    10%, spread on 16% of non-beams and never on a beam;
+  - a boss's crate held 3, and a full square refused a second thing;
+  - placed crates saved and loaded back identical;
+  - a capture of the menu with a crate: two unknown `?`, a stack of 12 ore,
+    a known burst laser;
+  - a capture of a crate in space beside the ship.
 
-**Engine ideas**
-- A pickup is `bulletLook::drawIcon` inside an additive glow, bright enough
-  that FinalGlow blooms it, pulsing on game time. It is hidden under fog like
-  an enemy (`sight::playerSeesShip`), gets an off-screen chevron once seen
-  (`hud::markOffScreen`), and gets a mark on the map (`explorationMap`).
-- "+ SPREAD HEAVY" rising over the ship on pickup reuses the damage
-  numbers' rise and fade.
+  The hover ring was not seen: a capture cannot hold the pointer on a
+  crate. Opening by hovering, the reveal and the crate drags have not been
+  played.
+
+**Still open**
+- With a crate open the panel is wider and covers the HUD's bars at the
+  top right.
+- Crates are not on the map and have no off-screen chevron. Both exist for
+  the gate and ghosts (`explorationMap`, `hud::markOffScreen`), so either
+  is a small step.
 
 ### I4. Before a mission: choosing what to bring — *proposed*
 

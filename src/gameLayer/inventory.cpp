@@ -352,6 +352,22 @@ bool swapSlots(int a, int b)
 	return true;
 }
 
+bool addToHold(const Item &item, int turns, glm::ivec2 at)
+{
+	return stowAt(item, turns, at, false);
+}
+
+bool putInSlot(int slot, const Item &item, Item &displaced, bool &hadOne)
+{
+	if (!validSlot(slot)) { return false; }
+	hadOne = equipped[slot].filled;
+	if (hadOne) { displaced = equipped[slot].item; }
+	equipped[slot] = {true, item};
+	swappedIn[slot] = true;
+	remember();
+	return true;
+}
+
 bool jettisonHeld(int id, Held &out)
 {
 	if (!heldAt(id, out)) { return false; }

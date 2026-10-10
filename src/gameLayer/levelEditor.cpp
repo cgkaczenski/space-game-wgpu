@@ -9,6 +9,7 @@
 #include <scenery.h>
 #include <shipSprite.h>
 #include <hintScript.h>
+#include <crates.h>
 #include <textLook.h>
 #include "platformInput.h"
 #include "imgui.h"
@@ -36,11 +37,11 @@ namespace
 	constexpr float minZoom = 0.01f;
 	constexpr float maxZoom = 1.f;
 
-	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss, Lane, Jump, Hint };
+	enum class Tool { Select, Rusher, Sniper, Gate, Ring, Asteroid, Paint, Scenery, Boss, Lane, Jump, Hint, Crate };
 	Tool tool = Tool::Select;
 	int sceneryArt = 0;
 
-	enum class Kind { None, Start, Enemy, Marker, Ring, Asteroid, Field, Core, Scenery, Lane, LanePoint, Jump };
+	enum class Kind { None, Start, Enemy, Marker, Ring, Asteroid, Field, Core, Scenery, Lane, LanePoint, Jump, Crate };
 	struct Pick
 	{
 		Kind kind = Kind::None;
@@ -61,6 +62,9 @@ namespace
 	int hintSynced = -2;
 	char hintText[256] = "";
 	char hintArgs[128] = "";
+
+	// A crate's size as the editor draws and picks it.
+	constexpr float crateRadius = 120.f;
 
 	// A lane's points are picked by a handle a fixed size on screen.
 	constexpr float lanePointPixels = 12.f;
@@ -145,6 +149,7 @@ namespace
 		case Kind::Start: return level.start;
 		case Kind::Enemy: return level.enemies[p.index].position;
 		case Kind::Marker: return level.markers[p.index].position;
+		case Kind::Crate: return level.crates[p.index].position;
 		case Kind::Ring: return level.rings[p.index].position;
 		case Kind::Asteroid: return level.asteroids[p.index].position;
 		case Kind::Field:
@@ -179,6 +184,7 @@ namespace
 		case Kind::Start: level.start = to; break;
 		case Kind::Enemy: level.enemies[p.index].position = to; break;
 		case Kind::Marker: level.markers[p.index].position = to; break;
+		case Kind::Crate: level.crates[p.index].position = to; break;
 		case Kind::Ring: level.rings[p.index].position = to; break;
 		case Kind::Asteroid: level.asteroids[p.index].position = to; break;
 		case Kind::Field:
@@ -242,6 +248,10 @@ namespace
 		for (int i = 0; i < (int)level.markers.size(); i++)
 		{
 			consider(Kind::Marker, i, level.markers[i].position, gateRadius);
+		}
+		for (int i = 0; i < (int)level.crates.size(); i++)
+		{
+			consider(Kind::Crate, i, level.crates[i].position, crateRadius);
 		}
 		for (int i = 0; i < (int)level.rings.size(); i++)
 		{
@@ -308,6 +318,7 @@ namespace
 		{
 		case Kind::Enemy: level.enemies.erase(level.enemies.begin() + p.index); break;
 		case Kind::Marker: level.markers.erase(level.markers.begin() + p.index); break;
+		case Kind::Crate: level.crates.erase(level.crates.begin() + p.index); break;
 		case Kind::Ring: level.rings.erase(level.rings.begin() + p.index); break;
 		case Kind::Asteroid: level.asteroids.erase(level.asteroids.begin() + p.index); break;
 		// Only ever from the panel's buttons -- a right click on a field or a
@@ -372,6 +383,13 @@ namespace
 			level.markers.push_back(m);
 			return {Kind::Marker, (int)level.markers.size() - 1};
 		}
+		case Tool::Crate:
+		{
+			level::CratePlacement c;
+			c.position = at;
+			level.crates.push_back(c);
+			return {Kind::Crate, (int)level.crates.size() - 1};
+		}
 		case Tool::Ring:
 		{
 			// Half the smallest so far, so a new one starts as the next stage.
@@ -410,6 +428,7 @@ namespace
 		case Kind::Start: return true;
 		case Kind::Enemy: return p.index >= 0 && p.index < (int)level.enemies.size();
 		case Kind::Marker: return p.index >= 0 && p.index < (int)level.markers.size();
+		case Kind::Crate: return p.index >= 0 && p.index < (int)level.crates.size();
 		case Kind::Ring: return p.index >= 0 && p.index < (int)level.rings.size();
 		case Kind::Asteroid: return p.index >= 0 && p.index < (int)level.asteroids.size();
 		case Kind::Field: return p.index >= 0 && p.index < (int)level.fields.size();
@@ -787,6 +806,16 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		}
 	}
 
+	// Weapon crates (I3): a square each, in the crates' colours.
+	for (int i = 0; i < (int)level.crates.size(); i++)
+	{
+		const glm::vec2 at = level.crates[(size_t)i].position;
+		renderer.renderRectangle({at.x - crateRadius * 0.7f, at.y - crateRadius * 0.7f, crateRadius * 1.4f, crateRadius * 1.4f},
+			{0.62f, 0.56f, 0.4f, 1.f});
+		renderer.renderRectangle({at.x - crateRadius * 0.5f, at.y - crateRadius * 0.5f, crateRadius, crateRadius},
+			{0.42f, 0.38f, 0.28f, 1.f});
+	}
+
 	// Hint steps that point at a place (H2): a ring in the hints' colour, the
 	// selected one brighter, and the ring the step will pulse if it has one.
 	for (int i = 0; i < (int)level.hints.size(); i++)
@@ -857,6 +886,7 @@ void draw(const level::Level &level, wgpu2d::Renderer2D &renderer, const Look &l
 		float radius = look.enemySize * 0.6f;
 		if (selected.kind == Kind::Start) { radius = look.shipSize * 0.7f; }
 		if (selected.kind == Kind::Marker) { radius = gateRadius * 1.15f; }
+		if (selected.kind == Kind::Crate) { radius = crateRadius * 1.4f; }
 		if (selected.kind == Kind::Ring) { radius = ringHandlePixels * 1.5f * px; }
 		if (selected.kind == Kind::Asteroid) { radius = level.asteroids[selected.index].radius * 1.4f; }
 		if (selected.kind == Kind::Scenery) { radius = level.scenery[selected.index].size * 0.55f; }
@@ -1017,7 +1047,8 @@ Request debugUi(level::Level &level, bool unsaved)
 	ImGui::RadioButton("Scenery", &t, (int)Tool::Scenery); ImGui::SameLine();
 	ImGui::RadioButton("Lane", &t, (int)Tool::Lane); ImGui::SameLine();
 	ImGui::RadioButton("Jump gates", &t, (int)Tool::Jump); ImGui::SameLine();
-	ImGui::RadioButton("Hints", &t, (int)Tool::Hint);
+	ImGui::RadioButton("Hints", &t, (int)Tool::Hint); ImGui::SameLine();
+	ImGui::RadioButton("Crate", &t, (int)Tool::Crate);
 	tool = (Tool)t;
 	if (tool == Tool::Hint) { hintsPanel(level); }
 	if (tool == Tool::Jump)
@@ -1176,6 +1207,51 @@ Request debugUi(level::Level &level, bool unsaved)
 		level::Marker &m = level.markers[selected.index];
 		ImGui::Text("Extraction gate");
 		if (ImGui::DragFloat2("Position", &m.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		break;
+	}
+	case Kind::Crate:
+	{
+		// A weapon crate (I3): what is in it, each item a kind or Random,
+		// each modifier no, yes or Random -- as an enemy's guns. None: rolled.
+		level::CratePlacement &c = level.crates[selected.index];
+		ImGui::Text("Weapon crate");
+		if (ImGui::DragFloat2("Position", &c.position.x, 10.f, 0.f, 0.f, "%.0f")) { edited = true; }
+		auto choice = [&](const char *label, AbilityChoice &value)
+		{
+			const char *names[] = {"No", "Yes", "Random"};
+			int v = (int)value;
+			ImGui::SetNextItemWidth(110.f);
+			if (ImGui::Combo(label, &v, names, 3)) { value = (AbilityChoice)v; edited = true; }
+		};
+		if (c.items.empty()) { ImGui::TextDisabled("Rolled: 1 to 3 weapons. Add one to choose them."); }
+		int removeAt = -1;
+		for (int i = 0; i < (int)c.items.size(); i++)
+		{
+			GunChoice &g = c.items[(size_t)i];
+			ImGui::PushID(i);
+			ImGui::SetNextItemWidth(150.f);
+			if (ImGui::BeginCombo("##kind", g.weapon < 0 ? "Random" : weapons::shipWeapon(g.weapon).name))
+			{
+				if (ImGui::Selectable("Random", g.weapon < 0)) { g.weapon = -1; edited = true; }
+				for (int k = 0; k < weapons::slotCount; k++)
+				{
+					if (ImGui::Selectable(weapons::shipWeapon(k).name, g.weapon == k)) { g.weapon = k; edited = true; }
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("remove")) { removeAt = i; }
+			ImGui::Indent();
+			choice("Stun", g.stun);
+			choice("Lockdown", g.lockdown);
+			choice("Spread", g.spread);
+			ImGui::Unindent();
+			ImGui::PopID();
+		}
+		if (removeAt >= 0) { c.items.erase(c.items.begin() + removeAt); edited = true; }
+		ImGui::BeginDisabled((int)c.items.size() >= crates::width * crates::height);
+		if (ImGui::SmallButton("Add item")) { c.items.push_back({}); edited = true; }
+		ImGui::EndDisabled();
 		break;
 	}
 	case Kind::Ring:

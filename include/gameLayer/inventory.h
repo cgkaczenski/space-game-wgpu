@@ -112,6 +112,11 @@ namespace inventory
 	// Two slots trade weapons (an empty one too).
 	bool swapSlots(int a, int b);
 
+	// From outside -- a crate (I3): a weapon into the hold at `at`, turned
+	// `turns`; or into a slot, handing back what was there.
+	bool addToHold(const Item &item, int turns, glm::ivec2 at);
+	bool putInSlot(int slot, const Item &item, Item &displaced, bool &hadOne);
+
 	// Thrown out: gone from the hold or the slot. Returns what it was, for
 	// the caller to leave in space -- ore as orbs, a weapon as salvage (I3).
 	bool jettisonHeld(int id, Held &out);

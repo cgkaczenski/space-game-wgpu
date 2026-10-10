@@ -1,6 +1,7 @@
 #include <loadoutMenu.h>
 #include <bulletLook.h>
 #include <controls.h>
+#include <crates.h>
 #include <hints.h>
 #include <hud.h>
 #include <inventory.h>
@@ -24,6 +25,7 @@ namespace loadoutMenu
 namespace
 {
 	bool open = false;
+	int crateId = -1;          // the crate open beside the hold (I3), or -1
 	float lookNow = 0.f;
 	std::chrono::steady_clock::time_point lastTick;
 	bool ticking = false;
@@ -40,6 +42,9 @@ namespace
 		int ore = 0;
 		int turns = 0;
 		bool hotbarOnly = false;  // started on the HUD with the menu closed: slot to slot, nothing else
+		bool fromCrate = false;   // from the open crate (I3)
+		int thingId = -1;
+		bool revealed = true;     // a crate's rolled weapon is unknown until it has been over the player's things
 	};
 	Drag drag;
 
@@ -59,6 +64,7 @@ namespace
 	const glm::vec4 squareLine = {0.22f, 0.24f, 0.34f, 1.f};
 	const glm::vec4 slotLine = {0.45f, 0.45f, 0.6f, 1.f};
 	const glm::vec4 oreColour = {0.85f, 0.55f, 0.18f, 1.f};
+	const glm::vec4 unknownColour = {0.32f, 0.33f, 0.36f, 1.f};   // a crate's weapon not yet looked at
 	const glm::vec4 fitColour = {0.35f, 1.f, 0.55f, 0.55f};
 	const glm::vec4 noFitColour = {1.f, 0.3f, 0.25f, 0.55f};
 	const glm::vec4 weaponColours[weapons::slotCount] = {
@@ -72,6 +78,9 @@ namespace
 	{
 		float cell;
 		wgpu2d::GridView hold;
+		bool hasCrate = false;
+		wgpu2d::GridView crate;                    // beside the hold, when a crate is open (I3)
+		glm::vec2 crateLabelAt;
 		glm::vec4 slots[weapons::slotCount];
 		glm::vec4 hudSlots[weapons::slotCount];   // the HUD's own row: slots too, while the menu is open
 		glm::vec4 panel;
@@ -95,10 +104,20 @@ namespace
 		l.hold.rows = inventory::holdGrid().height;
 		const glm::vec4 hb = l.hold.bounds();
 
+		// A crate open (I3): its 4 x 2 beside the hold, tops level.
+		l.hasCrate = crateId >= 0 && crates::find(crateId) != nullptr;
+		l.crate.cell = l.cell;
+		l.crate.gap = gap;
+		l.crate.columns = crates::width;
+		l.crate.rows = crates::height;
+		const glm::vec4 cb = l.crate.bounds();
+		const float between = std::round(l.cell * 0.6f);
+		const float gridsWidth = hb.z + (l.hasCrate ? between + cb.z : 0.f);
+
 		const float slotSize = std::round(l.cell * 1.25f);
 		const float slotGap = std::round(l.cell * 0.2f);
 		const float slotsWidth = weapons::slotCount * slotSize + (weapons::slotCount - 1) * slotGap;
-		const float width = std::max(hb.z, slotsWidth);
+		const float width = std::max(gridsWidth, slotsWidth);
 		const float left = std::round(w * 0.5f - width * 0.5f);
 
 		float y = std::round(h * topPerc);
@@ -111,7 +130,9 @@ namespace
 		y += slotSize + line * 0.8f;
 		l.holdLabelAt = {left, y};
 		y += line * 1.3f;
-		l.hold.topLeft = {std::round(w * 0.5f - hb.z * 0.5f), y};
+		l.hold.topLeft = {std::round(w * 0.5f - gridsWidth * 0.5f), y};
+		l.crate.topLeft = {l.hold.topLeft.x + hb.z + between, y};
+		l.crateLabelAt = {l.crate.topLeft.x, l.holdLabelAt.y};
 		y += hb.w + line * 0.6f;
 		l.hoverAt = {std::round(w * 0.5f), y};
 		y += line * 1.4f;
@@ -146,6 +167,15 @@ namespace
 	}
 
 	bool inside(glm::vec4 r, glm::vec2 p) { return p.x >= r.x && p.y >= r.y && p.x < r.x + r.z && p.y < r.y + r.w; }
+
+	crates::Crate *openCrate() { return crateId >= 0 ? crates::find(crateId) : nullptr; }
+
+	// Over the player's own things: where a crate's unknown weapon shows
+	// what it is.
+	bool overPlayers(const Layout &l, glm::vec2 p)
+	{
+		return inside(l.hold.bounds(), p) || slotUnder(l, p) >= 0;
+	}
 
 	glm::vec2 pointer(int w, int h)
 	{
@@ -200,14 +230,51 @@ namespace
 		return s;
 	}
 
+	// What the drag carries, as a crate's thing: for putting it in a crate
+	// or leaving it in space.
+	crates::Thing carried()
+	{
+		crates::Thing t;
+		t.isOre = drag.isOre;
+		t.ore = drag.ore;
+		if (drag.fromSlot) { inventory::equippedAt(drag.slot, t.item); }
+		else if (drag.fromCrate) { if (const crates::Crate *c = openCrate()) { if (const crates::Thing *x = crates::thingAt(*c, drag.thingId)) { t = *x; } } }
+		else { inventory::Held h; if (inventory::heldAt(drag.id, h)) { t.item = h.item; t.ore = h.ore; } }
+		t.revealed = drag.revealed;
+		return t;
+	}
+
+	// Takes the dragged thing from where it came from.
+	bool takeFromSource(crates::Thing &out)
+	{
+		out = carried();
+		if (drag.fromSlot) { inventory::Item gone; return inventory::jettisonSlot(drag.slot, gone); }
+		if (drag.fromCrate) { crates::Crate *c = openCrate(); return c && crates::take(*c, drag.thingId, out); }
+		inventory::Held gone;
+		return inventory::jettisonHeld(drag.id, gone);
+	}
+
 	void drop(const Layout &l, glm::vec2 p, const Frame &f)
 	{
 		const hold::Shape shape = dragShape();
 		const glm::ivec2 target = l.hold.nearestSquare(p) - middleSquare(shape);
+		crates::Crate *crate = openCrate();
 
 		if (inside(l.hold.bounds(), p))
 		{
 			if (drag.fromSlot) { inventory::slotToHold(drag.slot, drag.turns, target); }
+			else if (drag.fromCrate && crate)
+			{
+				crates::Thing t;
+				if (!crates::take(*crate, drag.thingId, t)) { return; }
+				if (t.isOre)
+				{
+					// As much ore as fits; the rest stays in the crate.
+					t.ore -= inventory::addOre(t.ore);
+					if (t.ore > 0) { crates::putAnywhere(*crate, t); }
+				}
+				else if (!inventory::addToHold(t.item, drag.turns, target)) { crates::putAnywhere(*crate, t); }
+			}
 			else { inventory::moveInHold(drag.id, drag.turns, target); }
 			return;
 		}
@@ -215,26 +282,47 @@ namespace
 		if (k >= 0)
 		{
 			if (drag.fromSlot) { inventory::swapSlots(drag.slot, k); }
-			else if (!drag.isOre) { inventory::holdToSlot(drag.id, k); }
+			else if (drag.fromCrate && crate && !drag.isOre)
+			{
+				// Into the slot; what was there goes to the crate, in the square
+				// the dragged one leaves.
+				const hold::Piece *piece = hold::find(crate->grid, drag.thingId);
+				const glm::ivec2 sq = piece ? piece->at : glm::ivec2(0);
+				crates::Thing t;
+				if (!crates::take(*crate, drag.thingId, t)) { return; }
+				inventory::Item displaced;
+				bool had = false;
+				inventory::putInSlot(k, t.item, displaced, had);
+				if (had)
+				{
+					crates::Thing back;
+					back.item = displaced;
+					back.revealed = true;
+					if (!crates::put(*crate, back, sq)) { crates::putAnywhere(*crate, back); }
+				}
+			}
+			else if (!drag.isOre && !drag.fromCrate) { inventory::holdToSlot(drag.id, k); }
+			return;
+		}
+		if (l.hasCrate && crate && inside(l.crate.bounds(), p))
+		{
+			const glm::ivec2 sq = l.crate.nearestSquare(p);
+			if (drag.fromCrate) { crates::move(*crate, drag.thingId, sq); return; }
+			// The player's thing into the crate: only into a free square.
+			if (hold::at(crate->grid, sq) >= 0) { return; }
+			crates::Thing t;
+			if (takeFromSource(t)) { t.revealed = true; crates::put(*crate, t, sq); }
 			return;
 		}
 		if (inside(l.panel, p)) { return; } // on the panel but nowhere: put back
 
-		// Outside the panel: thrown out behind the ship.
+		// Outside the panel: thrown out behind the ship. Ore as orbs; a weapon
+		// in a crate of its own, for it or anyone to come back to.
 		const glm::vec2 back = -f.facing;
-		if (drag.fromSlot)
-		{
-			inventory::Item gone;
-			inventory::jettisonSlot(drag.slot, gone);
-		}
-		else
-		{
-			inventory::Held gone;
-			if (inventory::jettisonHeld(drag.id, gone) && gone.isOre)
-			{
-				resources::jettison(f.ship + back * 220.f, back, gone.ore);
-			}
-		}
+		crates::Thing t;
+		if (!takeFromSource(t)) { return; }
+		if (t.isOre) { resources::jettison(f.ship + back * 220.f, back, t.ore); }
+		else { crates::dropped(f.ship + back * 260.f, back, t); }
 	}
 }
 
@@ -251,9 +339,16 @@ void update(const Frame &f, bool escape, bool &escapeTaken)
 	if (!f.live && !f.paused) { close(); }
 	if (f.live && controls::pressed(controls::Action::Loadout))
 	{
-		open = !open;
-		drag = {};
+		if (open) { close(); }
+		else { open = true; crateId = -1; drag = {}; }
 	}
+	// The crate drifted out of reach: its side of the menu closes.
+	if (const crates::Crate *c = openCrate(); c && glm::distance(c->position, f.ship) > crates::reach() * 1.5f)
+	{
+		if (drag.fromCrate) { drag = {}; }
+		crateId = -1;
+	}
+	if (crateId >= 0 && !crates::find(crateId)) { crateId = -1; }
 	if (open && escape)
 	{
 		close();
@@ -315,6 +410,33 @@ void update(const Frame &f, bool escape, bool &escapeTaken)
 		{
 			drag = {true, true, k, -1, false, it.kind, 0, 0};
 		}
+		if (l.hasCrate && l.crate.squareAt(p, sq))
+		{
+			const crates::Crate *c = openCrate();
+			const int tid = c ? hold::at(c->grid, sq) : -1;
+			if (const crates::Thing *t = c && tid >= 0 ? crates::thingAt(*c, tid) : nullptr)
+			{
+				drag = {};
+				drag.active = true;
+				drag.fromCrate = true;
+				drag.thingId = tid;
+				drag.isOre = t->isOre;
+				drag.kind = t->item.kind;
+				drag.ore = t->ore;
+				drag.revealed = t->isOre || t->revealed;
+			}
+		}
+	}
+
+	// A crate's unknown weapon shows what it is once over the player's
+	// things, and stays known.
+	if (drag.active && drag.fromCrate && !drag.revealed && overPlayers(l, p))
+	{
+		drag.revealed = true;
+		if (crates::Crate *c = openCrate())
+		{
+			for (auto &t : c->things) { if (t.first == drag.thingId) { t.second.revealed = true; } }
+		}
 	}
 
 	if (drag.active)
@@ -343,6 +465,15 @@ void update(const Frame &f, bool escape, bool &escapeTaken)
 		inventory::Item it;
 		hoverText = inventory::equippedAt(k, it) ? describe(it) : "SLOT " + std::to_string(k + 1) + ": EMPTY";
 	}
+	if (l.hasCrate && l.crate.squareAt(p, sq))
+	{
+		const crates::Crate *c = openCrate();
+		if (const crates::Thing *t = c ? crates::thingAt(*c, hold::at(c->grid, sq)) : nullptr)
+		{
+			hoverText = t->isOre ? "ORE  " + std::to_string(t->ore) : t->revealed ? describe(t->item) : "UNKNOWN WEAPON";
+		}
+	}
+
 	// Dragging a weapon, the line says how to turn it. (What letting go will
 	// do travels with the item, under the pointer.)
 	if (drag.active)
@@ -359,8 +490,18 @@ bool isOpen() { return open; }
 void close()
 {
 	open = false;
+	crateId = -1;
 	drag = {};
 }
+
+void openWithCrate(int id)
+{
+	open = true;
+	crateId = id;
+	drag = {};
+}
+
+int crateOpen() { return open ? crateId : -1; }
 
 float look() { return lookNow * greyAmount; }
 
@@ -448,6 +589,40 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 		}
 	}
 
+	// The crate, beside the hold (I3): every thing one square. A weapon not
+	// yet looked at is a grey box with a question mark.
+	if (l.hasCrate)
+	{
+		if (const crates::Crate *crate = openCrate())
+		{
+			textLook::draw(renderer, l.crateLabelAt, "CRATE", {0.75f, 0.8f, 0.9f, 1.f}, u);
+			l.crate.draw(renderer, squareFill, squareLine, std::max(1.f, std::round(u * 0.5f)));
+			for (const auto &entry : crate->things)
+			{
+				const hold::Piece *piece = hold::find(crate->grid, entry.first);
+				if (!piece) { continue; }
+				const crates::Thing &t = entry.second;
+				const bool from = drag.active && drag.fromCrate && drag.thingId == entry.first;
+				const glm::vec4 sq = l.crate.square(piece->at);
+				const glm::vec2 c = {sq.x + sq.z * 0.5f, sq.y + sq.w * 0.5f};
+				glm::vec4 colour = t.isOre ? oreColour : t.revealed ? weaponColours[t.item.kind] : unknownColour;
+				if (from) { colour.a = 0.3f; }
+				renderer.renderRectangle(sq, colour);
+				if (from) { continue; }
+				if (t.isOre) { textLook::draw(renderer, c, std::to_string(t.ore).c_str(), {1.f, 0.95f, 0.85f, 1.f}, u, {0.5f, 0.5f}); }
+				else if (t.revealed) { bulletLook::drawIcon(renderer, c, l.cell * 0.8f, weapons::shipWeapon(t.item.kind).style); }
+				else { textLook::draw(renderer, c, "?", {0.85f, 0.87f, 0.9f, 1.f}, u * 2.f, {0.5f, 0.5f}); }
+			}
+			// Under a drag of the player's own: green on a free square, red on a full one.
+			if (drag.active && !drag.fromCrate && inside(l.crate.bounds(), p))
+			{
+				const glm::ivec2 at = l.crate.nearestSquare(p);
+				const glm::ivec2 one = {0, 0};
+				l.crate.fillCells(renderer, &one, 1, at, hold::at(crate->grid, at) < 0 ? fitColour : noFitColour);
+			}
+		}
+	}
+
 	// The HUD's slots are slots too while the menu is open: one a weapon was
 	// lifted from is covered, and one under a drag is framed green or red.
 	{
@@ -484,6 +659,7 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 			l.hold.fillCells(renderer, shape.cells.data(), shape.cells.size(), target, fits ? fitColour : noFitColour);
 		}
 		const bool jettisoning = !inside(l.panel, p) && slotUnder(l, p) < 0;
+		// (Over the hold, a crate's weapon has just been revealed -- see update.)
 		if (drag.isOre)
 		{
 			// A stack is its count on an amber square, the size of one in the hold.
@@ -492,6 +668,13 @@ void draw(wgpu2d::Renderer2D &renderer, int width, int height)
 			if (jettisoning) { c = noFitColour; c.a = 0.85f; }
 			renderer.renderRectangle({p.x - s * 0.5f, p.y - s * 0.5f, s, s}, c);
 			textLook::draw(renderer, p, std::to_string(drag.ore).c_str(), {1.f, 0.95f, 0.85f, 1.f}, u, {0.5f, 0.5f});
+		}
+		else if (!drag.revealed)
+		{
+			// Not looked at yet: a grey box until it is over the player's things.
+			const float s = l.cell * 0.8f;
+			renderer.renderRectangle({p.x - s * 0.5f, p.y - s * 0.5f, s, s}, unknownColour);
+			textLook::draw(renderer, p, "?", {0.85f, 0.87f, 0.9f, 1.f}, u * 2.f, {0.5f, 0.5f});
 		}
 		else
 		{

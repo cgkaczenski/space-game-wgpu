@@ -22,6 +22,7 @@
 #include <hintScript.h>
 #include <inventory.h>
 #include <loadoutMenu.h>
+#include <crates.h>
 #include <menu.h>
 #include <playerSettings.h>
 #include <shipThruster.h>
@@ -512,6 +513,7 @@ void restartGame(const glm::vec2 *startAt = nullptr)
 	}
 
 	loadoutMenu::close(); // a new round starts flying
+	crates::reset(levelLoaded ? currentLevel.crates : std::vector<level::CratePlacement>{}); // the level's placed crates (I3)
 
 	// The round's weapons (I1): taken out of the stash, built into the
 	// loadout, and ready -- a round does not start on a swap's cooldown.
@@ -533,6 +535,7 @@ void killEnemy(int index)
 {
 	session.kills++;
 	const Enemy &e = session.enemies[index];
+	crates::enemyKilled(e.body.position, e.behaviour == Enemy::Behaviour::Boss); // salvage, at a chance (I3)
 	effects::enemyKilled(e, shipSheet, shipAtlas.get(e.type.x, e.type.y));
 	const bool boss = e.behaviour == Enemy::Behaviour::Boss;
 	asteroids::blast(e.body.position, boss ? 3.f : 1.f); // the blast shoves rocks near it (A2)
@@ -814,7 +817,8 @@ void debugPanelUi()
 	debugPanel::section("Jump gates", jumpGates::debugUi);
 	debugPanel::section("Map", explorationMap::debugUi);
 	debugPanel::section("Weapons", [] { weapons::debugUi(playerWeapons, playerKinds); });
-	debugPanel::section("Inventory", [] { inventory::debugUi(); ImGui::SeparatorText("Loadout menu"); loadoutMenu::debugUi(); });
+	debugPanel::section("Inventory", [] { inventory::debugUi(); ImGui::SeparatorText("Loadout menu"); loadoutMenu::debugUi();
+		ImGui::SeparatorText("Crates"); crates::debugUi(); });
 	debugPanel::section("Explosions", effects::debugUi);
 	debugPanel::section("Damage numbers", damageNumbers::debugUi);
 	debugPanel::section("Ram", [] { ram::debugUi(session.ram); ramPath::debugUi(); });
@@ -1467,6 +1471,17 @@ bool gameLogic(float deltaTime)
 	const glm::vec4 view = renderer.getViewRect();
 	const glm::vec2 mouseWorld = glm::vec2(view.x, view.y)
 		+ mousePos / glm::vec2((float)w, (float)h) * glm::vec2(view.z, view.w);
+
+	// Weapon crates (I3): they drift, and holding the pointer on one near the
+	// ship fills its ring; full, the loadout menu opens with it. Only while
+	// flying with the menu shut, and only a crate the fog does not hide.
+	{
+		const bool hiding = !levelEditor::active() && worldGrade::fogOn() && sight::hidesUnseenEnemies();
+		const int opened = crates::update(time.game, session.ship.position, mouseWorld,
+			piloting && !loadoutMenu::isOpen(), loadoutMenu::crateOpen(),
+			hiding ? crates::Shown([](glm::vec2 p) { return sight::playerSeesShip(p, 120.f); }) : crates::Shown());
+		if (opened >= 0) { loadoutMenu::openWithCrate(opened); }
+	}
 
 	weapons::FireContext fire;
 	fire.origin = session.ship.position;
@@ -2270,6 +2285,11 @@ bool gameLogic(float deltaTime)
 
 	// Wrecks sit where ships sit: after them, under everything else.
 	effects::drawDebris(renderer, explosionShown);
+
+	// Weapon crates (I3), with the ring of the one being opened. The fog
+	// hides them as it hides a ship.
+	crates::draw(renderer, fogHides ? crates::Shown([](glm::vec2 p) { return sight::playerSeesShip(p, 120.f); })
+		: crates::Shown());
 
 
 	// A missile's lock on its target: a dashed red box, until impact.

@@ -40,6 +40,11 @@
 //   scenery Planet1 -6000 9000 2700 0                art x y size depth
 //   jump -60000 20000 40000 -50000          x y x y: a pair of jump gates (sight
 //                                           roadmap W5): into one, out of the other
+//   crate 3000 -800 gun:heavy:stun=yes gun:random
+//                                           a weapon crate (inventory roadmap
+//                                           I3): x y, then what is in it, the
+//                                           same words as an enemy's guns. No
+//                                           gun: at all, it is rolled.
 //   hint "PRESS {weapon4} FOR THE BEAM" hud weapon4 until selected 4
 //                                           a step of the level's hint script
 //                                           (hints roadmap H2), in order: its
@@ -125,6 +130,16 @@ namespace level
 		uint32_t seed = 1;
 	};
 
+	// A weapon crate placed in the level (inventory roadmap I3): where, and
+	// what is in it -- each item one of the four or rolled, each modifier yes,
+	// no or rolled, as an enemy's guns are. With none, the contents are rolled
+	// as a salvage crate's are.
+	struct CratePlacement
+	{
+		glm::vec2 position = {};
+		std::vector<GunChoice> items;
+	};
+
 	// One step of the level's hint script (hints roadmap H2). Kept as words,
 	// as written: hintScript reads the condition, the editor edits it, and
 	// the file round-trips exactly.
@@ -207,6 +222,7 @@ namespace level
 		std::vector<Lane> lanes;
 		std::vector<JumpPair> jumps;
 		std::vector<HintStep> hints;
+		std::vector<CratePlacement> crates;
 	};
 
 	// Reads `path` into `out`. False only if the file cannot be opened; a line
